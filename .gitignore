@@ -1,0 +1,8 @@
+node_modules/
+dist/
+test-ui/output/
+test-e2e/output/
+*.tgz
+.DS_Store
+.env
+.env.*

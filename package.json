@@ -1,0 +1,48 @@
+{
+  "name": "pi-gentic",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pi extension for orchestrating durable agent sessions, delegation, and worktrees.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "agents",
+    "orchestration",
+    "session-management",
+    "worktrees"
+  ],
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": "./dist/extension.js",
+  "types": "./dist/extension.d.ts",
+  "pi": {
+    "extensions": [
+      "./dist/extension.js"
+    ]
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.js",
+    "test:ui": "npm run build && node test-ui/capture-ui.mjs",
+    "test:e2e": "npm run build && python test-e2e/capture-terminal-ui.py",
+    "prepack": "npm run build",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.3",
+    "typescript": "6.0.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

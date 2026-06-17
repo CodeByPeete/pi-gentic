@@ -1162,6 +1162,8 @@ class AgentsCard {
   }
 
   statusIcon() {
+    if (this.data.kind === "load") return this.pink("→");
+
     if (this.data.status === "done") return this.green("✓");
 
     if (["error", "aborted", "stopped"].includes(this.data.status))
@@ -1172,8 +1174,6 @@ class AgentsCard {
     if (this.data.status === "running") return this.green("●");
 
     if (this.data.status === "restored") return this.muted("○");
-
-    if (this.data.kind === "load") return this.pink("→");
 
     return this.muted("○");
   }

@@ -23,6 +23,20 @@ import { assertAvailableAgent, filterAvailableAgents } from "../dist/policy.js";
 import { resolveSessionPolicy } from "../dist/policy.js";
 import { prepareWorktree } from "../dist/worktrees.js";
 
+function createGitRepo(prefix = path.join(tmpdir(), "pi-gentic-worktree-repo-")) {
+  const repo = mkdtempSync(prefix);
+
+  execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repo });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
+  execFileSync("git", ["commit", "--allow-empty", "-m", "init"], {
+    cwd: repo,
+    stdio: "ignore",
+  });
+
+  return repo;
+}
+
 test("resolved agent prompt only exposes configured skills and includes available agent descriptions", () => {
   const basePrompt = [
     "Base prompt",
@@ -259,16 +273,11 @@ test("send return invokes stale caller sessions through the background delivery 
 });
 
 test("worktree preparation uses cwd as folder and empty worktree as branch from folder", async () => {
-  const repo = mkdtempSync(path.join(tmpdir(), "pi-gentic-worktree-repo-"));
-  const worktree = path.join(mkdtempSync(path.join(tmpdir(), "pi-gentic-worktree-parent-")), "task-branch");
-
-  execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
-  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repo });
-  execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
-  execFileSync("git", ["commit", "--allow-empty", "-m", "init"], {
-    cwd: repo,
-    stdio: "ignore",
-  });
+  const repo = createGitRepo();
+  const worktree = path.join(
+    mkdtempSync(path.join(tmpdir(), "pi-gentic-worktree-parent-")),
+    "task-branch",
+  );
 
   const resolved = await prepareWorktree({
     repoCwd: repo,
@@ -293,6 +302,51 @@ test("worktree preparation uses cwd as folder and empty worktree as branch from 
   );
 
   assert.equal(existsSync(path.join(defaultWorktree, ".git")), true);
+});
+
+test("worktree preparation can use an explicit absolute source repository", async () => {
+  const caller = mkdtempSync(path.join(tmpdir(), "pi-gentic-caller-"));
+  const repo = createGitRepo();
+
+  const resolved = await prepareWorktree({
+    repoCwd: caller,
+    repo,
+    message: "Use Source Repo",
+    worktree: "",
+  });
+
+  assert.equal(
+    resolved.startsWith(path.join(repo, ".agentfiles", "worktrees")),
+    true,
+  );
+
+  assert.equal(existsSync(path.join(resolved, ".git")), true);
+});
+
+test("worktree preparation resolves relative repositories from the caller cwd", async () => {
+  const caller = mkdtempSync(path.join(tmpdir(), "pi-gentic-caller-"));
+  const repo = createGitRepo(path.join(caller, "source-"));
+  const relativeRepo = path.relative(caller, repo);
+
+  const resolved = await prepareWorktree({
+    repoCwd: caller,
+    repo: relativeRepo,
+    cwd: "trees/relative-target",
+    worktree: "relative-target",
+  });
+
+  assert.equal(resolved, path.join(repo, "trees", "relative-target"));
+
+  assert.equal(existsSync(path.join(resolved, ".git")), true);
+});
+
+test("worktree preparation reports non-git repositories clearly", async () => {
+  const caller = mkdtempSync(path.join(tmpdir(), "pi-gentic-caller-"));
+
+  await assert.rejects(
+    () => prepareWorktree({ repoCwd: caller, repo: ".", worktree: "task" }),
+    /Worktree repository must be a git repository:/,
+  );
 });
 
 test("send confirmation tells callers not to wait or duplicate delegated work", () => {

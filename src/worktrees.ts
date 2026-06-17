@@ -2,6 +2,7 @@
  * Git worktree preparation for delegated agent sessions.
  *
  * The agents tool treats cwd as the worktree folder when worktree is set.
+ * The repo option selects the source repository for that worktree.
  */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -12,14 +13,12 @@ const execFileAsync = promisify(execFile);
 
 export async function prepareWorktree({
   repoCwd,
+  repo,
   cwd,
   worktree,
   message,
 }: AnyRecord) {
-  const repoRoot = await gitOutput(String(repoCwd), [
-    "rev-parse",
-    "--show-toplevel",
-  ]);
+  const repoRoot = await repositoryRoot(repoCwd, repo);
   const branchInput = stringOrUndefined(worktree);
   const fallbackName = worktreeSlug(
     branchInput ?? stringOrUndefined(cwd) ?? stringOrUndefined(message),
@@ -37,6 +36,21 @@ export async function prepareWorktree({
   await ensureGitWorktree(repoRoot, worktreePath, branch);
 
   return worktreePath;
+}
+
+async function repositoryRoot(repoCwd: unknown, repo: unknown) {
+  const base = String(repoCwd || process.cwd());
+  const source = stringOrUndefined(repo);
+  const repositoryPath = source ? path.resolve(base, source) : base;
+
+  try {
+    return await gitOutput(repositoryPath, ["rev-parse", "--show-toplevel"]);
+  } catch (error) {
+    throw new Error(
+      `Worktree repository must be a git repository: ${repositoryPath}`,
+      { cause: error },
+    );
+  }
 }
 
 async function ensureGitWorktree(

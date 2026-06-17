@@ -60,6 +60,11 @@ const AgentsToolParameters = {
       description:
         "Optional git worktree branch name. If empty, the folder name is used; if cwd is omitted too, pi-gentic derives a safe branch and folder from the message under .agentfiles/worktrees/.",
     },
+    repo: {
+      type: "string",
+      description:
+        "Repository to create the worktree from. Relative paths are resolved from the caller cwd. Defaults to the caller cwd.",
+    },
     invokeMeLater: { type: "boolean" },
     overrides: { type: "object", additionalProperties: true },
     rx: { type: "number" },
@@ -270,7 +275,7 @@ export default function piGentic(pi) {
 
       if (!parsed.message) {
         ctx.ui.notify(
-          "Usage: /send <message> [--agent <agentName>] [--session <sessionId>] [--fork] [--bg|--fg] [--no-invoke] [--cwd <dir>] [--worktree [branch]] [override flags]", 
+          "Usage: /send <message> [--agent <agentName>] [--session <sessionId>] [--fork] [--bg|--fg] [--no-invoke] [--cwd <dir>] [--worktree [branch]] [--repo <dir>] [override flags]", 
           "warning",
         );
         return;
@@ -319,7 +324,7 @@ export default function piGentic(pi) {
     description: [
       "Perform one pi-gentic orchestration action.",
       "Sessions are durable collaborators: when continuing, retrying, or referring to the same agent or same work, target the existing sessionId instead of creating a new child session; create a new session only for independent work.",
-      "Actions: list returns available agent names; get returns one agent definition and requires agent; status reports one session and requires sessionId; load sets the active agent and accepts agent plus optional overrides; send delivers message to an existing sessionId or to a new child when no sessionId is supplied, with optional agent, async, fork, cwd, worktree, invokeMeLater, and overrides; abort stops the current session or the supplied sessionId; discoverSessions returns nearby orchestration sessions and accepts rx and ry.",
+      "Actions: list returns available agent names; get returns one agent definition and requires agent; status reports one session and requires sessionId; load sets the active agent and accepts agent plus optional overrides; send delivers message to an existing sessionId or to a new child when no sessionId is supplied, with optional agent, async, fork, cwd, worktree, repo, invokeMeLater, and overrides; abort stops the current session or the supplied sessionId; discoverSessions returns nearby orchestration sessions and accepts rx and ry.",
       "Use one action per call. Do not send slash commands, prose wrappers, or shell commands as the action.",
     ].join(" "),
     promptSnippet:

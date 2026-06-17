@@ -68,6 +68,7 @@ test("send removes known --agent flag from message", () => {
     invokeMeLater: undefined,
     overrides: undefined,
     worktree: undefined,
+    repo: undefined,
   });
 });
 
@@ -130,6 +131,25 @@ test("send parses runtime override flags", () => {
       maxSubagentDepth: 3,
     },
   );
+});
+
+test("send supports --repo values for worktree source selection", () => {
+  assert.equal(parseSendCommand("hello --repo ../source").repo, "../source");
+
+  assert.equal(parseSendCommand("hello --repo=../source").repo, "../source");
+
+  assert.equal(
+    parseSendCommand('hello --repo "../source repo"').repo,
+    "../source repo",
+  );
+});
+
+test("send ignores repo without a value", () => {
+  const parsed = parseSendCommand("hello --repo --worktree task");
+
+  assert.equal(parsed.repo, undefined);
+
+  assert.equal(parsed.worktree, "task");
 });
 
 test("send worktree flag can omit the branch value", () => {

@@ -45,6 +45,11 @@ test("send flag completion includes override and worktree flags", () => {
   assert.ok(
     completeSend("continue --m").some((item) => item.label === "--model"),
   );
+
+  assert.deepEqual(
+    completeSend("continue --r").map((item) => item.label),
+    ["--repo"],
+  );
 });
 
 test("send model completion uses scoped model suggestions", () => {
@@ -56,6 +61,12 @@ test("send model completion uses scoped model suggestions", () => {
   });
 
   assert.equal(completion.value, "continue --model openai-codex/gpt-5.4-mini");
+});
+
+test("send repo value completion suggests the current repository", () => {
+  const [completion] = completeSend("continue --repo ");
+
+  assert.equal(completion.value, "continue --repo .");
 });
 
 test("send worktree value completion suggests a message slug", () => {

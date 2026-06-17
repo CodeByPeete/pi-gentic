@@ -12,6 +12,7 @@ const SEND_VALUE_FLAGS = new Set([
   "session",
   "cwd",
   "worktree",
+  "repo",
   "model",
   "thinking",
   "theme",
@@ -33,6 +34,7 @@ const SEND_FLAGS = [
   "no-invoke",
   "cwd",
   "worktree",
+  "repo",
   "model",
   "thinking",
   "theme",
@@ -102,12 +104,12 @@ function unescapeQuotedCharacter(char) {
   return char;
 }
 
-function readFlagValue(tokens, index, inlineValue, optional = false) {
+function readFlagValue(tokens, index, inlineValue) {
   if (inlineValue !== undefined)
     return { value: inlineValue, nextIndex: index };
   const next = tokens[index + 1];
 
-  if (next === undefined || next === "" || (optional && next.startsWith("--")))
+  if (next === undefined || next === "" || next.startsWith("--"))
     return { value: undefined, nextIndex: index };
   return { value: next, nextIndex: index + 1 };
 }
@@ -148,6 +150,7 @@ export function parseSendCommand(input: string) {
     invokeMeLater: undefined,
     overrides: undefined,
     worktree: undefined,
+    repo: undefined,
   };
 
   for (let index = 0; index < tokens.length; index++) {
@@ -163,7 +166,7 @@ export function parseSendCommand(input: string) {
     const inlineValue = keyValue[2];
 
     if (SEND_VALUE_FLAGS.has(key)) {
-      const value = readFlagValue(tokens, index, inlineValue, key === "worktree");
+      const value = readFlagValue(tokens, index, inlineValue);
 
       applySendFlagValue(result, key, value.value);
       index = value.nextIndex;
@@ -204,6 +207,7 @@ function applySendFlagValue(result: AnyRecord, key: string, value: unknown) {
   else if (key === "session" && text) result.sessionId = text;
   else if (key === "cwd" && text) result.cwd = text;
   else if (key === "worktree") result.worktree = text ?? "";
+  else if (key === "repo" && text) result.repo = text;
   else if (key === "model" && text) setOverride(result, "model", text);
   else if (key === "thinking" && text) setOverride(result, "thinking", text);
   else if (key === "theme" && text) setOverride(result, "theme", text);
@@ -346,6 +350,7 @@ function completeSendFlagValue(prefix: string, options: AnyRecord) {
     { flag: "max-subagent-depth", values: ["1", "2", "3", "4", "5", "6"].map(simpleValue) },
     { flag: "cwd", values: [".agentfiles/worktrees/"].map(simpleValue) },
     { flag: "worktree", values: [suggestedWorktreeName(prefix)].map(simpleValue) },
+    { flag: "repo", values: ["."].map(simpleValue) },
   ];
 
   for (const descriptor of descriptors) {

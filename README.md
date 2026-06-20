@@ -473,7 +473,7 @@ pi install pi-gentic
 Or install from a Git repository:
 
 ```bash
-pi install git+https://github.com/<owner>/pi-gentic.git#<tag-or-commit>
+pi install git+https://github.com/CodeByPeete/pi-gentic.git#v0.1.0
 ```
 
 ---

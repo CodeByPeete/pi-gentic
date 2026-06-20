@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Pi extension for orchestrating durable agent sessions, delegation, and worktrees.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CodeByPeete/pi-gentic.git"
+  },
+  "homepage": "https://github.com/CodeByPeete/pi-gentic#readme",
+  "bugs": {
+    "url": "https://github.com/CodeByPeete/pi-gentic/issues"
+  },
   "keywords": [
     "pi-package",
     "pi",
@@ -22,7 +30,8 @@
   "pi": {
     "extensions": [
       "./dist/extension.js"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/CodeByPeete/pi-gentic/main/docs/assets/orchestration-tree.png"
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",

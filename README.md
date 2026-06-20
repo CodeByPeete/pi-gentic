@@ -423,25 +423,34 @@ or:
 
 ## Agent fields
 
-| Field | Meaning |
-| --- | --- |
-| `name` | The agent id, such as `reviewer`. |
-| `description` | A short explanation shown to people and models. |
-| `instructions` | Extra instructions used while the agent is active. |
-| `disabled` | Turns the agent off. |
-| `agents` | Which agents this agent may see. |
-| `tools` | Which tools this agent may use. |
-| `skills` | Which skills this agent may see. |
-| `model` | The model this agent should use by default. |
-| `thinking` | The thinking level this agent should use by default. |
-| `theme` | The Pi theme used while this agent is active. |
-| `systemPromptFiles` | Prompt files to include or exclude. |
-| `maxSubagentDepth` | How many levels of child sessions this agent may create. |
-| `agentsTool.async` | Whether delegated work should run in the background by default. |
-| `agentsTool.fork` | Whether new child sessions should fork the current context by default. |
-| `agentsTool.cwd` | Default working directory for child sessions. |
-| `agentsTool.rx` | Default horizontal search radius for session discovery. |
-| `agentsTool.ry` | Default vertical search radius for session discovery. |
+Agent fields can be written in `settings.json` under `agentDefinitions`, or in Markdown agent frontmatter. Defaults below describe the resolved behavior when the field is left out of one agent definition.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `name` | Required | The agent id, such as `reviewer`. Empty or missing names are ignored. |
+| `description` | `""` | A short explanation shown to people and models. |
+| `instructions` | `""` | Extra instructions used while the agent is active. In Markdown agent files, the body becomes `instructions` when present. |
+| `disabled` | `false` | Turns the agent off and removes it from the available agent list. |
+| `agents` | `agentDefaults.agents`, then `["*"]` | Which agents this agent may see. |
+| `tools` | `agentDefaults.tools`, then `["*"]` | Which tools this agent may use. |
+| `skills` | `agentDefaults.skills`, then `["*"]` | Which skills this agent may see. |
+| `model` | `agentDefaults.model`, then the current session model | The model this agent should use by default. |
+| `models` | `undefined` | Input alias for `model`. If `model` is absent, the first string in `models` becomes `model`. |
+| `thinking` | `agentDefaults.thinking`, then the current session setting | The thinking level this agent should use by default. |
+| `theme` | `agentDefaults.theme`, then the current theme | The Pi theme used while this agent is active. |
+| `systemPromptFiles` | `agentDefaults.systemPromptFiles`, then no extra prompt file filter | Prompt files to include or exclude. |
+| `maxSubagentDepth` | `agentDefaults.maxSubagentDepth`, then `2` | How many levels of child sessions this agent may create. |
+| `agentsTool` | `agentDefaults.agentsTool`, then `{}` | Defaults used by the `agents` tool and `/send` while this agent is active. |
+| `agentsTool.async` | `agentDefaults.agentsTool.async`, then `false` | Whether new delegated sessions should run in the background by default. Sends to an existing session always run asynchronously. |
+| `agentsTool.fork` | `agentDefaults.agentsTool.fork`, then `false` | Whether new child sessions should fork the current context by default. |
+| `agentsTool.cwd` | `agentDefaults.agentsTool.cwd`, then the caller working directory | Default working directory for child sessions. |
+| `agentsTool.invokeMeLater` | `agentDefaults.agentsTool.invokeMeLater`, then `{}` | Defaults for how delegated answers return to the caller. |
+| `agentsTool.invokeMeLater.async` | `agentDefaults.agentsTool.invokeMeLater.async`, then `true` | Whether a background answer should start a new caller turn when it returns. |
+| `agentsTool.invokeMeLater.withSession` | `agentDefaults.agentsTool.invokeMeLater.withSession`, then `true` | Whether a foreground answer or existing-session answer should start a new caller turn when it returns. |
+| `agentsTool.rx` | `agentDefaults.agentsTool.rx`, then `0` | Default horizontal search radius for session discovery. |
+| `agentsTool.ry` | `agentDefaults.agentsTool.ry`, then `0` | Default vertical search radius for session discovery. |
+| `agentsTool.open` | `agentDefaults.agentsTool.open`, then `undefined` | Reserved flag accepted in agent definitions. |
+| `sourcePath` | Generated | Read-only source location shown by the `agents` tool `get` action. |
 
 ---
 

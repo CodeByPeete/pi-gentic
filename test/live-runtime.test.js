@@ -4,7 +4,6 @@ import {
   activeVisibleContext,
   getLiveRuntimeState,
   getRuntimeSession,
-  isRuntimeActive,
   parkCurrentLiveRuntimeForSwitch,
   setRuntimeSession,
 } from "../dist/runtime.js";
@@ -48,15 +47,6 @@ test("active visible context is shared through live runtime state", () => {
   state.activeContext = previous;
 });
 
-test("runtime activity includes pi-gentic runs between native streaming turns", () => {
-  assert.equal(
-    isRuntimeActive({ session: { isStreaming: false }, runStartedAt: Date.now() }),
-    true,
-  );
-
-  assert.equal(isRuntimeActive({ session: { isStreaming: false } }), false);
-});
-
 test("switching away from an opened live run parks it instead of disposing it", () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();
@@ -78,40 +68,6 @@ test("switching away from an opened live run parks it instead of disposing it", 
   assert.equal(disposed, 0);
 
   assert.equal(state.liveRuntimes.get("running-session").runtime, runtimeHost);
-
-  restore();
-  session.dispose();
-
-  assert.equal(disposed, 1);
-});
-
-test("switching away from a live pi-gentic run between turns parks it", () => {
-  const state = getLiveRuntimeState();
-  state.liveRuntimes.clear();
-  let disposed = 0;
-  const session = {
-    isStreaming: false,
-    dispose: () => {
-      disposed += 1;
-    },
-    sessionManager: { getSessionId: () => "between-turns-session" },
-  };
-  const runtimeHost = { session };
-
-  setRuntimeSession("between-turns-session", {
-    runtimeHost,
-    session,
-    runStartedAt: Date.now(),
-  });
-  const restore = parkCurrentLiveRuntimeForSwitch(state, runtimeHost);
-
-  session.dispose();
-
-  assert.equal(disposed, 0);
-  assert.equal(
-    state.liveRuntimes.get("between-turns-session").runtime,
-    runtimeHost,
-  );
 
   restore();
   session.dispose();

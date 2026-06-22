@@ -6,7 +6,6 @@
  */
 import { formatDuration, getErrorMessage, shortSessionId } from "./core.js";
 import { getActiveState } from "./policy.js";
-import { isRuntimeActive } from "./runtime.js";
 
 export function abortActor(ctx) {
   const agentName = getActiveState(ctx.sessionManager).agentName;
@@ -647,7 +646,7 @@ function assistantText(message) {
 /** Summarizes one runtime for status cards and tool responses. */
 export function sessionStatus(runtime) {
   const now = Date.now();
-  const running = isRuntimeActive(runtime);
+  const running = runtime.session.isStreaming === true;
   runtime.streamingStartedAt = running
     ? (runtime.runStartedAt ??
       runtime.streamingStartedAt ??

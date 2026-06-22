@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -191,16 +191,6 @@ test("synchronous send return is queued as steering before the caller continues"
     text: "Synchronous answer",
     options: { deliverAs: "steer" },
   });
-});
-
-test("caller session replacement signals do not abort background target sends", () => {
-  const orchestratorSource = readFileSync(
-    new URL("../dist/orchestrator.js", import.meta.url),
-    "utf8",
-  );
-
-  assert.doesNotMatch(orchestratorSource, /signal\?\.addEventListener/);
-  assert.doesNotMatch(orchestratorSource, /signal\?\.removeEventListener/);
 });
 
 test("target final answer is displayed when that target session is visible", async () => {

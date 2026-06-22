@@ -13,7 +13,9 @@ import {
   sessionCompletionScope,
   summarizeSession,
   treeSwitchPath,
+  withRuntimeState,
 } from "../dist/sessions.js";
+import { deleteRuntimeSession, setRuntimeSession } from "../dist/runtime.js";
 
 const sessions = [
   { id: "12345678-aaaa", path: "/tmp/one.jsonl", firstMessage: "one" },
@@ -315,6 +317,43 @@ test("cached persisted session lists reuse in-flight loads", async () => {
   assert.equal(calls, 1);
 
   assert.equal(first, second);
+});
+
+test("current visible runtime is shown as running and opens through its live path", () => {
+  const session = {
+    isStreaming: true,
+    sessionManager: {
+      getSessionFile: () => "/sessions/current.jsonl",
+      getSessionId: () => "current-session",
+    },
+  };
+  const runtimeHost = { session };
+
+  setRuntimeSession("current-session", {
+    runtimeHost,
+    session,
+    lastMessage: "normal visible prompt",
+  });
+
+  try {
+    const [current] = buildSessionTree(
+      {
+        id: "current-session",
+        sessionId: "current-session",
+        path: "/sessions/current.jsonl",
+        lastMessage: "Current session",
+      },
+      [],
+    ).map(withRuntimeState);
+
+    assert.equal(current.running, true);
+
+    assert.equal(current.livePath, "pi-gentic-live:current-session");
+
+    assert.equal(treeSwitchPath(current), "pi-gentic-live:current-session");
+  } finally {
+    deleteRuntimeSession("current-session");
+  }
 });
 
 test("tree switch path attaches to live runtimes only while sessions are running", () => {

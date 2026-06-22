@@ -8,17 +8,22 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { defaultAgentDir } from "./config.js";
+import { getActiveState } from "./policy.js";
 
 type LiveRuntimeState = {
   liveRuntimes: Map<string, AnyRecord>;
   hostSwitchSession?: (this: unknown, sessionPath: string, options?: AnyRecord) => Promise<unknown>;
   hostAbortSession?: (this: unknown, ...args: unknown[]) => Promise<unknown>;
+  hostPromptSession?: (this: unknown, ...args: unknown[]) => Promise<unknown>;
   hostSetupKeyHandlers?: (this: unknown, ...args: unknown[]) => unknown;
+  hostSetupEditorSubmitHandler?: (this: unknown, ...args: unknown[]) => unknown;
   activeContext?: PiContext;
   activeSession?: PiAgentSession;
   bridgeInstalled: boolean;
   abortBridgeInstalled: boolean;
+  promptBridgeInstalled: boolean;
   escapeBridgeInstalled: boolean;
+  submitBridgeInstalled: boolean;
 };
 
 type PiCodingAgentPeer = {
@@ -80,12 +85,16 @@ export function getLiveRuntimeState(): LiveRuntimeState {
     liveRuntimes: new Map(),
     hostSwitchSession: undefined,
     hostAbortSession: undefined,
+    hostPromptSession: undefined,
     hostSetupKeyHandlers: undefined,
+    hostSetupEditorSubmitHandler: undefined,
     activeContext: undefined,
     activeSession: undefined,
     bridgeInstalled: false,
     abortBridgeInstalled: false,
+    promptBridgeInstalled: false,
     escapeBridgeInstalled: false,
+    submitBridgeInstalled: false,
   });
 }
 
@@ -180,7 +189,9 @@ export function installLiveSessionBridge() {
   void piCodingAgent().then((peer) => {
     installRuntimeSwitchBridge(state, peer);
     installSessionAbortBridge(state, peer);
+    installSessionPromptBridge(state, peer);
     installInteractiveEscapeBridge(state, peer);
+    installInteractiveSubmitBridge(state, peer);
   });
 }
 
@@ -279,7 +290,9 @@ export function parkCurrentLiveRuntimeForSwitch(
   const session = runtimeHost?.session;
   const sessionId = session?.sessionManager?.getSessionId?.();
   const tracked = sessionId ? getRuntimeSession(sessionId) : undefined;
-  const liveRuntime = tracked?.runtimeHost;
+  const liveRuntime =
+    tracked?.runtimeHost ??
+    (session ? snapshotRuntimeHost(runtimeHost, session) : undefined);
 
   if (
     !sessionId ||
@@ -291,10 +304,21 @@ export function parkCurrentLiveRuntimeForSwitch(
     return () => {};
   const originalDispose = session.dispose;
   const parkedDispose = () => {};
+  const runtime = setRuntimeSession(sessionId, {
+    ...(tracked ?? {}),
+    runtimeHost: liveRuntime,
+    session,
+    agentName:
+      tracked?.agentName ?? getActiveState(session.sessionManager).agentName,
+    parentSessionPath:
+      tracked?.parentSessionPath ??
+      session.sessionManager.getHeader?.()?.parentSession,
+    lastActivityAt: new Date().toISOString(),
+  });
 
   state.liveRuntimes.set(sessionId, {
     runtime: liveRuntime,
-    metadata: { agentName: tracked.agentName },
+    metadata: { agentName: runtime.agentName },
   });
   session.dispose = parkedDispose;
 
@@ -302,6 +326,20 @@ export function parkCurrentLiveRuntimeForSwitch(
     if (session.dispose !== parkedDispose) return;
     session.dispose = originalDispose;
   };
+}
+
+function snapshotRuntimeHost(
+  runtimeHost: PiAgentRuntimeHost | undefined,
+  session: PiAgentSession,
+) {
+  if (!runtimeHost) return undefined;
+
+  return {
+    session,
+    services: runtimeHost.services,
+    diagnostics: runtimeHost.diagnostics,
+    modelFallbackMessage: runtimeHost.modelFallbackMessage,
+  } as PiAgentRuntimeHost;
 }
 
 function installSessionAbortBridge(
@@ -322,6 +360,126 @@ function installSessionAbortBridge(
 
     return state.hostAbortSession?.apply(this, args);
   };
+}
+
+function installSessionPromptBridge(
+  state: LiveRuntimeState,
+  { AgentSession }: Pick<PiCodingAgentPeer, "AgentSession">,
+) {
+  if (state.promptBridgeInstalled) return;
+  state.promptBridgeInstalled = true;
+  state.hostPromptSession =
+    AgentSession.prototype.prompt as LiveRuntimeState["hostPromptSession"];
+
+  AgentSession.prototype.prompt = async function promptWithPiGenticRuntime(
+    ...args
+  ) {
+    return trackSessionPrompt(
+      this,
+      () => state.hostPromptSession?.apply(this, args),
+      args[0],
+    );
+  };
+}
+
+export async function trackSessionPrompt<T>(
+  session: PiAgentSession,
+  run: () => Promise<T> | T,
+  prompt?: unknown,
+) {
+  const sessionId = session.sessionManager?.getSessionId?.();
+  const lastMessage = promptLastMessage(prompt);
+  const mark = () => {
+    if (!sessionId) return undefined;
+    return setRuntimeSession(sessionId, {
+      session,
+      ...(lastMessage ? { lastMessage } : {}),
+      agentName: getActiveState(session.sessionManager).agentName,
+      parentSessionPath: session.sessionManager?.getHeader?.()?.parentSession,
+      lastActivityAt: new Date().toISOString(),
+    });
+  };
+
+  mark();
+
+  try {
+    return await run();
+  } finally {
+    mark();
+
+    if (sessionId && session.isStreaming !== true)
+      unregisterLiveRuntime(sessionId);
+  }
+}
+
+function promptLastMessage(prompt: unknown) {
+  const text = typeof prompt === "string" ? prompt.trim() : "";
+
+  return text && !text.startsWith("/") ? text : undefined;
+}
+
+function installInteractiveSubmitBridge(
+  state: LiveRuntimeState,
+  { InteractiveMode }: Pick<PiCodingAgentPeer, "InteractiveMode">,
+) {
+  if (
+    state.submitBridgeInstalled ||
+    !InteractiveMode?.prototype?.setupEditorSubmitHandler
+  )
+    return;
+  state.submitBridgeInstalled = true;
+  state.hostSetupEditorSubmitHandler = InteractiveMode.prototype
+    .setupEditorSubmitHandler as LiveRuntimeState["hostSetupEditorSubmitHandler"];
+  InteractiveMode.prototype.setupEditorSubmitHandler =
+    function setupEditorSubmitHandlerWithPiGenticCommands(...args) {
+      const result = state.hostSetupEditorSubmitHandler?.apply(this, args);
+      const nativeSubmit = this.defaultEditor?.onSubmit;
+
+      if (typeof nativeSubmit !== "function") return result;
+      this.defaultEditor.onSubmit = async (text) => {
+        const command = String(text ?? "").trim();
+
+        if (shouldRunVisibleExtensionCommandNow(this, command)) {
+          this.editor?.addToHistory?.(command);
+          this.editor?.setText?.("");
+          await this.session.prompt(command);
+          return;
+        }
+
+        return nativeSubmit(text);
+      };
+
+      return result;
+    };
+}
+
+export function shouldRunVisibleExtensionCommandNow(mode: AnyRecord, text: string) {
+  const session = mode.session as AnyRecord | undefined;
+
+  if (!text.startsWith("/") || session?.isStreaming) return false;
+  const commandName = text.slice(1).split(/\s/, 1)[0];
+  const sessionManager = session?.sessionManager as AnyRecord | undefined;
+  const extensionRunner = session?.extensionRunner as AnyRecord | undefined;
+  const getCommand = extensionRunner?.getCommand;
+  const getSessionId = sessionManager?.getSessionId;
+  const visibleSessionId =
+    typeof getSessionId === "function"
+      ? getSessionId.call(sessionManager)
+      : undefined;
+  const command =
+    typeof getCommand === "function"
+      ? getCommand.call(extensionRunner, commandName)
+      : undefined;
+
+  return Boolean(
+    command &&
+      visibleSessionId &&
+      listRuntimeSessions().some(
+        (runtime) =>
+          runtime.session?.isStreaming === true &&
+          runtime.session.sessionManager?.getSessionId?.() !== visibleSessionId,
+      ),
+  );
 }
 
 function installInteractiveEscapeBridge(

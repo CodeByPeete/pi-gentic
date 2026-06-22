@@ -31,7 +31,6 @@ import {
   parseSkillEntries,
 } from "./prompt.js";
 import {
-  abortAgentCall,
   activeVisibleContext,
   activeVisibleSession,
   applyInheritedModel,
@@ -391,11 +390,6 @@ export class PiGenticOrchestrator {
         await target.session.abort();
       },
     });
-    const abortFromSignal = () =>
-      void abortAgentCall(activeCall.id, { actor: abortActor(ctx) });
-    callbacks.signal?.addEventListener?.("abort", abortFromSignal, {
-      once: true,
-    });
     const run = async () => {
       target.runStartedAt ??= startedAt;
       const monitor = createSessionActivityMonitor(details, (nextDetails) => {
@@ -462,6 +456,7 @@ export class PiGenticOrchestrator {
           invoke: invokeMeLater,
           persist: persistSessionImmediately,
           visibleSession: activeVisibleSession(),
+          queue: targetAsync ? undefined : "steer",
           invokeInactiveCaller: (text) =>
             this.invokeCallerSession({
               callerSessionManager,
@@ -496,6 +491,7 @@ export class PiGenticOrchestrator {
           invoke: invokeMeLater,
           persist: persistSessionImmediately,
           visibleSession: activeVisibleSession(),
+          queue: targetAsync ? undefined : "steer",
           invokeInactiveCaller: (text) =>
             this.invokeCallerSession({
               callerSessionManager,
@@ -509,7 +505,6 @@ export class PiGenticOrchestrator {
       } finally {
         unsubscribe?.();
         setRuntimeSession(targetSessionId, target);
-        callbacks.signal?.removeEventListener?.("abort", abortFromSignal);
         activeCall.unregister();
 
         if (target.session.isStreaming !== true)

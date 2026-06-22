@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -160,6 +160,47 @@ test("send return while caller is streaming uses follow-up queueing", async () =
     text: "Queued answer",
     options: { deliverAs: "followUp" },
   });
+});
+
+test("synchronous send return is queued as steering before the caller continues", async () => {
+  const userMessages = [];
+
+  await deliverReturnToCaller({
+    pi: {
+      sendUserMessage: () => {
+        throw new Error("visible session should be used");
+      },
+    },
+    ctx: {
+      cwd: process.cwd(),
+      sessionManager: { getSessionId: () => "caller" },
+      isIdle: () => false,
+    },
+    callerSessionId: "caller",
+    callerSessionManager: { appendMessage() {} },
+    text: "Synchronous answer",
+    invoke: true,
+    queue: "steer",
+    visibleSession: {
+      sendUserMessage: async (text, options) =>
+        userMessages.push({ text, options }),
+    },
+  });
+
+  assert.deepEqual(userMessages[0], {
+    text: "Synchronous answer",
+    options: { deliverAs: "steer" },
+  });
+});
+
+test("caller session replacement signals do not abort background target sends", () => {
+  const orchestratorSource = readFileSync(
+    new URL("../dist/orchestrator.js", import.meta.url),
+    "utf8",
+  );
+
+  assert.doesNotMatch(orchestratorSource, /signal\?\.addEventListener/);
+  assert.doesNotMatch(orchestratorSource, /signal\?\.removeEventListener/);
 });
 
 test("target final answer is displayed when that target session is visible", async () => {

@@ -116,6 +116,7 @@ export async function deliverReturnToCaller({
   persist,
   invokeInactiveCaller,
   visibleSession,
+  queue,
 }) {
   const liveDelivery = await deliverToLiveCaller({
     pi,
@@ -124,6 +125,7 @@ export async function deliverReturnToCaller({
     text,
     invoke,
     visibleSession,
+    queue,
   });
 
   if (liveDelivery.delivered) return liveDelivery.mode;
@@ -146,13 +148,14 @@ export async function deliverToLiveCaller({
   text,
   invoke,
   visibleSession,
+  queue,
 }) {
   if (!contextStillActive(ctx, callerSessionId)) return { delivered: false };
 
   try {
     if (visibleSession) {
       if (invoke && typeof visibleSession.sendUserMessage === "function") {
-        await visibleSession.sendUserMessage(text, sendUserMessageOptions(ctx));
+        await visibleSession.sendUserMessage(text, sendUserMessageOptions(ctx, queue));
 
         return { delivered: true, mode: "live" };
       }
@@ -160,15 +163,15 @@ export async function deliverToLiveCaller({
       if (!invoke && typeof visibleSession.sendCustomMessage === "function") {
         await visibleSession.sendCustomMessage(
           returnContextMessage(text),
-          { triggerTurn: false },
+          customMessageOptions(ctx, queue),
         );
 
         return { delivered: true, mode: "live" };
       }
     }
 
-    if (invoke) pi.sendUserMessage(text, sendUserMessageOptions(ctx));
-    else pi.sendMessage(returnContextMessage(text), { triggerTurn: false });
+    if (invoke) pi.sendUserMessage(text, sendUserMessageOptions(ctx, queue));
+    else pi.sendMessage(returnContextMessage(text), customMessageOptions(ctx, queue));
 
     return { delivered: true, mode: "live" };
   } catch {
@@ -208,8 +211,15 @@ export function persistReturnForCaller({
   persist?.(callerSessionManager);
 }
 
-export function sendUserMessageOptions(ctx) {
-  return ctx.isIdle?.() === false ? { deliverAs: "followUp" } : undefined;
+export function sendUserMessageOptions(ctx, queue = "followUp") {
+  return ctx.isIdle?.() === false ? { deliverAs: queue } : undefined;
+}
+
+function customMessageOptions(ctx, queue = "followUp") {
+  return {
+    triggerTurn: false,
+    ...sendUserMessageOptions(ctx, queue),
+  };
 }
 
 export function persistSynchronousToolCard(

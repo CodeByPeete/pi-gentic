@@ -283,7 +283,7 @@ export function parkCurrentLiveRuntimeForSwitch(
 
   if (
     !sessionId ||
-    session?.isStreaming !== true ||
+    !isRuntimeActive(tracked) ||
     !liveRuntime ||
     liveRuntime.session !== session ||
     typeof session.dispose !== "function"
@@ -479,10 +479,9 @@ export function pruneRuntimeSessions({
   const now = Date.now();
 
   for (const [sessionId, runtime] of runtimeSessions) {
-    const running = runtime.session?.isStreaming === true;
     const lastSeenAt = Number(runtime.lastSeenAt ?? 0);
 
-    if (!running && lastSeenAt && now - lastSeenAt > maxIdleMs)
+    if (!isRuntimeActive(runtime) && lastSeenAt && now - lastSeenAt > maxIdleMs)
       runtimeSessions.delete(sessionId);
   }
 
@@ -490,7 +489,7 @@ export function pruneRuntimeSessions({
 
   if (entries.length <= maxEntries) return;
   const removable = entries
-    .filter(([, runtime]) => runtime.session?.isStreaming !== true)
+    .filter(([, runtime]) => !isRuntimeActive(runtime))
     .sort(
       ([, a], [, b]) => Number(a.lastSeenAt ?? 0) - Number(b.lastSeenAt ?? 0),
     );
@@ -500,6 +499,12 @@ export function pruneRuntimeSessions({
     Math.max(0, entries.length - maxEntries),
   ))
     runtimeSessions.delete(sessionId);
+}
+
+export function isRuntimeActive(runtime: AnyRecord | undefined) {
+  const session = runtime?.session as AnyRecord | undefined;
+
+  return session?.isStreaming === true || runtime?.runStartedAt !== undefined;
 }
 
 export function persistSessionImmediately(sessionManager) {

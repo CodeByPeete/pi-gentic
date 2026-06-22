@@ -10,6 +10,7 @@ import { shortSessionId } from "./core.js";
 import { getActiveState } from "./policy.js";
 import {
   findRuntimeSession,
+  isRuntimeActive,
   listRuntimeSessions,
   livePath,
   registerLiveRuntime,
@@ -411,7 +412,7 @@ export function withRuntimeState(session) {
   );
 
   if (!runtime) return session;
-  const running = runtime.session?.isStreaming === true;
+  const running = isRuntimeActive(runtime);
   const live =
     running && runtime.runtimeHost
       ? { livePath: livePath(runtime.session.sessionManager.getSessionId()) }

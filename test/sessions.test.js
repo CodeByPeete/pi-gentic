@@ -13,7 +13,9 @@ import {
   sessionCompletionScope,
   summarizeSession,
   treeSwitchPath,
+  withRuntimeState,
 } from "../dist/sessions.js";
+import { setRuntimeSession } from "../dist/runtime.js";
 
 const sessions = [
   { id: "12345678-aaaa", path: "/tmp/one.jsonl", firstMessage: "one" },
@@ -315,6 +317,32 @@ test("cached persisted session lists reuse in-flight loads", async () => {
   assert.equal(calls, 1);
 
   assert.equal(first, second);
+});
+
+test("runtime state marks pi-gentic runs between native turns as live", () => {
+  const session = {
+    sessionId: "between-turns-tree",
+    path: "/between-turns-tree.jsonl",
+  };
+
+  setRuntimeSession("between-turns-tree", {
+    runtimeHost: {
+      session: {
+        isStreaming: false,
+        sessionManager: { getSessionId: () => "between-turns-tree" },
+      },
+    },
+    session: {
+      isStreaming: false,
+      sessionManager: { getSessionId: () => "between-turns-tree" },
+    },
+    runStartedAt: Date.now(),
+  });
+
+  const enriched = withRuntimeState(session);
+
+  assert.equal(enriched.running, true);
+  assert.equal(enriched.livePath, "pi-gentic-live:between-turns-tree");
 });
 
 test("tree switch path attaches to live runtimes only while sessions are running", () => {

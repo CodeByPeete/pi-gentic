@@ -9,12 +9,13 @@ import pyte
 import winpty
 from PIL import Image, ImageDraw, ImageFont
 
-ROOT = pathlib.Path(__file__).resolve().parents[3]
+PI_HOME = pathlib.Path(__file__).resolve().parents[3]
 PACKAGE = pathlib.Path(__file__).resolve().parents[1]
 OUTPUT = PACKAGE / "test-e2e" / "output"
 SESSION_DIR = OUTPUT / "sessions"
 WORK_DIR = OUTPUT / "default-agent-work"
-LAG_SESSION_SOURCE = ROOT / "agent" / "sessions" / "--C--Users-petro-Documents-Bewerbungen--" / "2026-06-11T19-02-42-430Z_019eb810-b1fe-7c14-b1f6-f78fbbfaed52.jsonl"
+INTERACTIVE_WORK_DIR = OUTPUT / "interactive-work"
+LAG_SESSION_SOURCE = PI_HOME / "agent" / "sessions" / "--C--Users-petro-Documents-Bewerbungen--" / "2026-06-11T19-02-42-430Z_019eb810-b1fe-7c14-b1f6-f78fbbfaed52.jsonl"
 LAG_SESSION_FILE = OUTPUT / "lag-session-019eb810.jsonl"
 RAW_LOG = OUTPUT / "terminal.raw.log"
 LAG_TIMING = OUTPUT / "lag-regression-tree-019eb810-timing.txt"
@@ -35,7 +36,10 @@ def reset_output():
         shutil.rmtree(SESSION_DIR)
     if WORK_DIR.exists():
         shutil.rmtree(WORK_DIR)
+    if INTERACTIVE_WORK_DIR.exists():
+        shutil.rmtree(INTERACTIVE_WORK_DIR)
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    INTERACTIVE_WORK_DIR.mkdir(parents=True, exist_ok=True)
     (WORK_DIR / ".pi" / "extensions" / "pi-gentic").mkdir(parents=True, exist_ok=True)
     (WORK_DIR / ".pi" / "extensions" / "pi-gentic" / "settings.json").write_text('{"defaultAgent":"reviewer"}', encoding="utf-8")
     if LAG_SESSION_SOURCE.exists():
@@ -112,7 +116,7 @@ def render_png(name):
     return path
 
 
-def spawn(extra_args=None, cwd=ROOT):
+def spawn(extra_args=None, cwd=INTERACTIVE_WORK_DIR):
     env = os.environ.copy()
     env.update({
         "TERM": "xterm-256color",

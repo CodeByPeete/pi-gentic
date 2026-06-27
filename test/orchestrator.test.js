@@ -13,6 +13,7 @@ import {
 import { abortActor } from "../dist/runs.js";
 import { deliverReturnToCaller, displayTargetAnswerIfVisible } from "../dist/runs.js";
 import {
+  resolveReturnDelivery,
   sendConfirmationText,
   sendPendingText,
   shouldDeferSendCompletion,
@@ -139,7 +140,7 @@ test("send return uses the active visible session after a session switch", async
   assert.deepEqual(sent[0][1], { triggerTurn: false });
 });
 
-test("send return while caller is streaming uses follow-up queueing", async () => {
+test("live user delivery defaults to follow-up without an explicit return policy", async () => {
   const userMessages = [];
 
   await deliverReturnToCaller({
@@ -162,7 +163,14 @@ test("send return while caller is streaming uses follow-up queueing", async () =
   });
 });
 
-test("synchronous send return is queued as steering before the caller continues", async () => {
+test("synchronous return policy stays at the tool result boundary", () => {
+  assert.deepEqual(resolveReturnDelivery({ async: false }), {
+    kind: "toolResult",
+  });
+});
+
+test("async return delivery steers the caller at the next model boundary", async () => {
+  const delivery = resolveReturnDelivery({ async: true });
   const userMessages = [];
 
   await deliverReturnToCaller({
@@ -178,9 +186,9 @@ test("synchronous send return is queued as steering before the caller continues"
     },
     callerSessionId: "caller",
     callerSessionManager: { appendMessage() {} },
-    text: "Synchronous answer",
+    text: "Async answer",
     invoke: true,
-    queue: "steer",
+    queue: delivery.queue,
     visibleSession: {
       sendUserMessage: async (text, options) =>
         userMessages.push({ text, options }),
@@ -188,7 +196,7 @@ test("synchronous send return is queued as steering before the caller continues"
   });
 
   assert.deepEqual(userMessages[0], {
-    text: "Synchronous answer",
+    text: "Async answer",
     options: { deliverAs: "steer" },
   });
 });
@@ -293,6 +301,7 @@ test("send return invokes stale caller sessions through the background delivery 
     },
     text: "Returned answer",
     invoke: true,
+    queue: "steer",
     invokeInactiveCaller: async (text) => invoked.push(text),
   });
 

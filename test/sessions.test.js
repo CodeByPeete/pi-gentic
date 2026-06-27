@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
+  assertDifferentSession,
   buildSessionTree,
   cachedPersistedSessions,
   enrichSessionSummaries,
@@ -60,6 +61,17 @@ test("rejects missing session reference", () => {
 
 test("rejects ambiguous session reference", () => {
   assert.throws(() => resolveSessionReference(sessions, "1"), /Ambiguous/);
+});
+
+test("rejects sending a session message to the current session", () => {
+  assert.throws(
+    () => assertDifferentSession("12345678-aaaa", "12345678-aaaa"),
+    /Cannot send a message to the current session 12345678/,
+  );
+
+  assert.doesNotThrow(() =>
+    assertDifferentSession("12345678-aaaa", "87654321-bbbb"),
+  );
 });
 
 test("summary includes short id", () => {

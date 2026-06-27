@@ -15,6 +15,15 @@ import {
   registerLiveRuntime,
 } from "./runtime.js";
 
+export function assertDifferentSession(callerSessionId, targetSessionId) {
+  if (!callerSessionId || !targetSessionId || callerSessionId !== targetSessionId)
+    return;
+
+  throw new Error(
+    `Cannot send a message to the current session ${shortSessionId(callerSessionId)}. Choose a different sessionId or omit sessionId to create a child session.`,
+  );
+}
+
 /** Resolves a full id, short id, prefix, substring, or path to one session. */
 export function resolveSessionReference(sessions, reference) {
   if (!reference) throw new Error("sessionId is required.");

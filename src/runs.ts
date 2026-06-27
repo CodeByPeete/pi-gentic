@@ -20,6 +20,12 @@ export function shouldDeferSendCompletion({
   return async === true || awaitCompletion === false;
 }
 
+export function resolveReturnDelivery(options: AnyRecord = {}) {
+  return shouldDeferSendCompletion(options)
+    ? { kind: "callerMessage", queue: "steer" }
+    : { kind: "toolResult" };
+}
+
 export function sendPendingText({
   async,
   agentName,

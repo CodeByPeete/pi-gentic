@@ -323,12 +323,12 @@ export default function piGentic(pi) {
     label: "Agents",
     description: [
       "Perform one pi-gentic orchestration action.",
-      "Sessions are durable collaborators: when continuing, retrying, or referring to the same agent or same work, target the existing sessionId instead of creating a new child session; create a new session only for independent work.",
-      "Actions: list returns available agent names; get returns one agent definition and requires agent; status reports one session and requires sessionId; load sets the active agent and accepts agent plus optional overrides; send delivers message to an existing sessionId or to a new child when no sessionId is supplied, with optional agent, async, fork, cwd, worktree, repo, invokeMeLater, and overrides; abort stops the current session or the supplied sessionId; discoverSessions returns nearby orchestration sessions and accepts rx and ry.",
+      "Sessions are durable collaborators: when continuing, retrying, or referring to the same agent or same work, target a different existing sessionId instead of creating a new child session; create a new session only for independent work.",
+      "Actions: list returns available agent names; get returns one agent definition and requires agent; status reports one session and requires sessionId; load sets the active agent and accepts agent plus optional overrides; send delivers message to a different existing sessionId or to a new child when no sessionId is supplied, with optional agent, async, fork, cwd, worktree, repo, invokeMeLater, and overrides; abort stops the current session or the supplied sessionId; discoverSessions returns nearby orchestration sessions and accepts rx and ry.",
       "Use one action per call. Do not send slash commands, prose wrappers, or shell commands as the action.",
     ].join(" "),
     promptSnippet:
-      "Orchestrate durable pi-gentic agent sessions; reuse sessionId for the same agent or same work, and use actions list, get, status, load, send, abort, and discoverSessions",
+      "Orchestrate durable pi-gentic agent sessions; reuse a different sessionId for the same agent or same work, and use actions list, get, status, load, send, abort, and discoverSessions",
     parameters: AgentsToolParameters,
     renderShell: "self",
     renderCall: renderAgentsCall,

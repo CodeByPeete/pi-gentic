@@ -54,13 +54,14 @@ import {
   deliverSendContextToCaller,
   displayTargetAnswerIfVisible,
   mergeActivities,
+  resolveReturnDelivery,
   sendPendingText,
   sendStatusText,
   sessionRunOutcome,
   sessionStatus,
-  shouldDeferSendCompletion,
 } from "./runs.js";
 import {
+  assertDifferentSession,
   assignTreeDepths,
   buildSessionTree,
   cachedPersistedSessions,
@@ -73,6 +74,16 @@ import {
 } from "./sessions.js";
 import { setAgentLabel, setLiveCardDetails } from "./ui.js";
 import { prepareWorktree } from "./worktrees.js";
+
+type CallerMessageDelivery = {
+  callerSessionId?: string;
+  callerSessionManager: PiSessionManager;
+  callerCwd?: string;
+  config: AnyRecord;
+  text: string;
+  invoke: boolean;
+  queue?: string;
+};
 
 /** Main application service used by commands, shortcuts, events, and tools. */
 export class PiGenticOrchestrator {
@@ -333,6 +344,10 @@ export class PiGenticOrchestrator {
         : defaults.invokeMeLater?.withSession !== false,
     );
     const startedAt = Date.now();
+    const returnDelivery = resolveReturnDelivery({
+      async: targetAsync,
+      awaitCompletion: callbacks.awaitCompletion,
+    });
     const target = await this.resolveTargetSession(
       ctx,
       { ...input, async: targetAsync, fork: targetFork, cwd },
@@ -450,29 +465,25 @@ export class PiGenticOrchestrator {
             targetSessionId,
             text: outcome.text,
           });
-        await deliverReturnToCaller({
-          pi: this.pi,
-          ctx: activeVisibleContext() ?? ctx,
-          callerSessionId,
-          callerSessionManager,
-          text:
-            outcome.status === "done"
-              ? buildReturnText(target.agentName, targetSessionId, outcome.text)
-              : outcome.text,
-          invoke: invokeMeLater,
-          persist: persistSessionImmediately,
-          visibleSession: activeVisibleSession(),
-          queue: targetAsync ? undefined : "steer",
-          invokeInactiveCaller: (text) =>
-            this.invokeCallerSession({
-              callerSessionManager,
-              callerCwd,
-              text,
-              config,
-            }),
-        });
+        const returnText =
+          outcome.status === "done"
+            ? buildReturnText(target.agentName, targetSessionId, outcome.text)
+            : outcome.text;
+        if (returnDelivery.kind === "callerMessage") {
+          await this.deliverCallerMessage(ctx, {
+            callerSessionId,
+            callerSessionManager,
+            callerCwd,
+            config,
+            text: returnText,
+            invoke: invokeMeLater,
+            queue: returnDelivery.queue,
+          });
 
-        return { answer: outcome.text, details: completed };
+          return { answer: outcome.text, details: completed };
+        }
+
+        return { answer: returnText, details: completed };
       } catch (error) {
         const outcome = sessionRunOutcome(target, {
           request: input.message,
@@ -488,24 +499,16 @@ export class PiGenticOrchestrator {
         target.lastActivities =
           failed.activities ?? target.lastActivities ?? [];
         target.runStartedAt = undefined;
-        await deliverReturnToCaller({
-          pi: this.pi,
-          ctx: activeVisibleContext() ?? ctx,
-          callerSessionId,
-          callerSessionManager,
-          text: outcome.text,
-          invoke: invokeMeLater,
-          persist: persistSessionImmediately,
-          visibleSession: activeVisibleSession(),
-          queue: targetAsync ? undefined : "steer",
-          invokeInactiveCaller: (text) =>
-            this.invokeCallerSession({
-              callerSessionManager,
-              callerCwd,
-              text,
-              config,
-            }),
-        });
+        if (returnDelivery.kind === "callerMessage")
+          await this.deliverCallerMessage(ctx, {
+            callerSessionId,
+            callerSessionManager,
+            callerCwd,
+            config,
+            text: outcome.text,
+            invoke: invokeMeLater,
+            queue: returnDelivery.queue,
+          });
 
         return { answer: outcome.text, details: failed };
       } finally {
@@ -520,12 +523,7 @@ export class PiGenticOrchestrator {
       }
     };
 
-    if (
-      shouldDeferSendCompletion({
-        async: targetAsync,
-        awaitCompletion: callbacks.awaitCompletion,
-      })
-    ) {
+    if (returnDelivery.kind === "callerMessage") {
       void run()
         .catch((error) =>
           this.pi.sendMessage(
@@ -582,6 +580,11 @@ export class PiGenticOrchestrator {
         ctx,
         input.sessionId,
         input.cwd,
+      );
+
+      assertDifferentSession(
+        ctx.sessionManager.getSessionId(),
+        session.session.sessionManager.getSessionId(),
       );
 
       if (input.agent)
@@ -804,7 +807,46 @@ export class PiGenticOrchestrator {
     return `Aborted session ${shortSessionId(runtime.session.sessionManager.getSessionId())}.`;
   }
 
-  async invokeCallerSession({ callerSessionManager, callerCwd, text, config }) {
+  async deliverCallerMessage(
+    ctx: PiContext,
+    {
+      callerSessionId,
+      callerSessionManager,
+      callerCwd,
+      config,
+      text,
+      invoke,
+      queue,
+    }: CallerMessageDelivery,
+  ) {
+    return deliverReturnToCaller({
+      pi: this.pi,
+      ctx: activeVisibleContext() ?? ctx,
+      callerSessionId,
+      callerSessionManager,
+      text,
+      invoke,
+      persist: persistSessionImmediately,
+      visibleSession: activeVisibleSession(),
+      queue,
+      invokeInactiveCaller: (text) =>
+        this.invokeCallerSession({
+          callerSessionManager,
+          callerCwd,
+          text,
+          config,
+          queue,
+        }),
+    });
+  }
+
+  async invokeCallerSession({
+    callerSessionManager,
+    callerCwd,
+    text,
+    config,
+    queue = "steer",
+  }) {
     const sessionId = callerSessionManager.getSessionId();
     const existing = findRuntimeSession(
       (runtime) => runtime.session.sessionManager.getSessionId() === sessionId,
@@ -821,9 +863,7 @@ export class PiGenticOrchestrator {
     void runtime.session
       .prompt(
         text,
-        runtime.session.isStreaming
-          ? { streamingBehavior: "followUp" }
-          : undefined,
+        runtime.session.isStreaming ? { streamingBehavior: queue } : undefined,
       )
       .catch((error) => {
         runtime.lastActivityAt = new Date().toISOString();

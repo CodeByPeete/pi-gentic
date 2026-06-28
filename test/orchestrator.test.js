@@ -70,14 +70,13 @@ test("resolved agent prompt only exposes configured skills and includes availabl
     ["researcher"],
   )}`;
 
-  assert.match(
-    prompt,
-    /Available skills\n- tdd: Test-first development\n  Path: C:\/skills\/tdd\/SKILL\.md/,
-  );
+  assert.match(prompt, /<available_skills>/);
+
+  assert.match(prompt, /<name>tdd<\/name>/);
+
+  assert.match(prompt, /<location>C:\/skills\/tdd\/SKILL\.md<\/location>/);
 
   assert.doesNotMatch(prompt, /frontend-design/);
-
-  assert.doesNotMatch(prompt, /<[^>]+>/);
 
   assert.match(prompt, /researcher: Finds reliable context/);
 });

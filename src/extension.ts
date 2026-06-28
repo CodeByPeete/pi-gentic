@@ -7,14 +7,22 @@
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { getErrorMessage, shortSessionId } from "./core.js";
 import {
+  buildManualSkillMessage,
   completeAgents,
   completeSend,
+  completeSkill,
   isCompletingSendSession,
   normalizeToolInput,
   parseAgentCommand,
   parseSendCommand,
+  parseSkillCommand,
 } from "./commands.js";
-import { enabledModelPatterns, loadAvailableSkills, loadConfiguration } from "./config.js";
+import {
+  enabledModelPatterns,
+  loadConfiguration,
+  loadPiSettings,
+} from "./config.js";
+import { findAvailableSkill, loadAvailableSkills } from "./skills.js";
 import { AGENT_CYCLE_SHORTCUT } from "./policy.js";
 import { installLiveSessionBridge, persistSessionImmediately } from "./runtime.js";
 import { PiGenticOrchestrator } from "./orchestrator.js";
@@ -77,7 +85,15 @@ const AgentsToolParameters = {
 export default function piGentic(pi) {
   installLiveSessionBridge();
   const orchestrator = new PiGenticOrchestrator(pi);
-  const completionContext = createCompletionContext(pi);
+  let skillCommands: ReturnType<typeof createSkillCommandRegistry> | undefined;
+  const completionContext = createCompletionContext(pi, (snapshot, ctx) =>
+    skillCommands?.sync(
+      ctx,
+      Array.isArray(snapshot.skills) ? snapshot.skills : [],
+    ),
+  );
+  skillCommands = createSkillCommandRegistry(pi, orchestrator, completionContext);
+  skillCommands.sync(undefined, completionContext.current().skills);
 
   pi.registerMessageRenderer("pi-gentic:card", (message, options, theme) => {
     const component = renderAgentsResult(
@@ -254,6 +270,23 @@ export default function piGentic(pi) {
     },
   });
 
+  pi.registerCommand("skill", {
+    description: "Manually invoke a Pi skill: /skill <name> [request]",
+    getArgumentCompletions: (prefix) =>
+      completeSkill(prefix, completionContext.current()),
+    handler: async (args, ctx) => {
+      completionContext.capture(ctx);
+      const parsed = parseSkillCommand(args);
+
+      if (!parsed.name) {
+        ctx.ui.notify?.("Usage: /skill <name> [request]", "warning");
+        return;
+      }
+
+      await invokeSkillCommand(pi, parsed.name, parsed.message, ctx);
+    },
+  });
+
   pi.registerCommand("send", {
     description: "Send a message to a pi-gentic child or target session",
     getArgumentCompletions: async (prefix) => {
@@ -368,7 +401,63 @@ export default function piGentic(pi) {
   });
 }
 
-function createCompletionContext(pi: PiApi) {
+function createSkillCommandRegistry(
+  pi: PiApi,
+  _orchestrator: PiGenticOrchestrator,
+  completionContext: ReturnType<typeof createCompletionContext>,
+) {
+  const registered = new Set<string>();
+
+  return {
+    sync(ctx: PiContext | undefined, skillNames: string[] = []) {
+      const cwd = ctx?.cwd ?? completionContext.current().cwd;
+
+      if (!skillCommandsEnabled(cwd)) return;
+      for (const name of skillNames) {
+        if (!name || registered.has(name)) continue;
+        registered.add(name);
+        pi.registerCommand(`skill:${name}`, {
+          description: `Manually invoke the ${name} Pi skill`,
+          handler: async (args, commandCtx) => {
+            completionContext.capture(commandCtx);
+            await invokeSkillCommand(pi, name, args, commandCtx);
+          },
+        });
+      }
+    },
+  };
+}
+
+async function invokeSkillCommand(
+  pi: PiApi,
+  skillName: string,
+  message: string,
+  ctx: PiContext,
+) {
+  if (!skillCommandsEnabled(ctx.cwd)) {
+    ctx.ui.notify?.("Pi skill commands are disabled by settings.", "warning");
+    return;
+  }
+  const skill = findAvailableSkill(skillName, { cwd: ctx.cwd });
+
+  if (!skill) {
+    ctx.ui.notify?.(`Unknown Pi skill "${skillName}".`, "warning");
+    return;
+  }
+
+  await pi.sendUserMessage(buildManualSkillMessage(skill, message));
+}
+
+function skillCommandsEnabled(cwd: string | undefined) {
+  return (
+    loadPiSettings(undefined, cwd ?? process.cwd()).enableSkillCommands !== false
+  );
+}
+
+function createCompletionContext(
+  pi: PiApi,
+  onCapture?: (snapshot: AnyRecord, ctx?: PiContext) => void,
+) {
   let snapshot = {
     cwd: process.cwd(),
     sessionDir: undefined as string | undefined,
@@ -402,6 +491,7 @@ function createCompletionContext(pi: PiApi) {
         systemPromptFiles: systemPromptFileSuggestions(config),
       };
       warmCompletionSessions(snapshot);
+      onCapture?.(snapshot, ctx);
 
       return snapshot;
     },

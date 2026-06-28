@@ -13,7 +13,8 @@ import {
   parseIntegerRadius,
   shortSessionId,
 } from "./core.js";
-import { loadAvailableSkills, loadConfiguration } from "./config.js";
+import { loadConfiguration } from "./config.js";
+import { loadAvailableSkills } from "./skills.js";
 import {
   activeAgentName,
   appendActiveState,

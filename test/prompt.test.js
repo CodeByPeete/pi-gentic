@@ -79,10 +79,11 @@ test("resolved prompt is readable, de-duplicated, and policy-scoped", () => {
     /When generating a session or worktree name, it must be 3 words long max\./,
   );
 
-  assert.match(
-    prompt,
-    /Available skills\n- tdd: Test-first development\n  Path: C:\/skills\/tdd\/SKILL\.md/,
-  );
+  assert.match(prompt, /<available_skills>/);
+
+  assert.match(prompt, /<name>tdd<\/name>/);
+
+  assert.match(prompt, /<location>C:\/skills\/tdd\/SKILL\.md<\/location>/);
 
   assert.ok(
     prompt.indexOf("Extra prompt file content.") <
@@ -96,7 +97,7 @@ test("resolved prompt is readable, de-duplicated, and policy-scoped", () => {
 
   assert.ok(
     prompt.indexOf("When generating a session or worktree name") <
-      prompt.indexOf("Available skills"),
+      prompt.indexOf("<available_skills>"),
   );
 
   assert.match(
@@ -105,8 +106,6 @@ test("resolved prompt is readable, de-duplicated, and policy-scoped", () => {
   );
 
   assert.doesNotMatch(prompt, /frontend-design/);
-
-  assert.doesNotMatch(prompt, /<[^>]+>/);
 
   assert.equal([...prompt.matchAll(/Research instructions\./g)].length, 1);
 });
@@ -133,7 +132,7 @@ test("resolved prompt omits agents and delegation when agents tool is unavailabl
 
   assert.doesNotMatch(prompt, /3 words max/);
 
-  assert.doesNotMatch(prompt, /<[^>]+>/);
+  assert.doesNotMatch(prompt, /<available_skills>/);
 });
 
 test("system prompt file filters can exclude built-in prompt sources by pattern", () => {
@@ -170,6 +169,35 @@ test("system prompt file filters can exclude built-in prompt sources by pattern"
   assert.match(prompt, /Available agents/);
 });
 
+test("resolved prompt excludes skills hidden from model invocation", () => {
+  const prompt = buildResolvedSystemPrompt({
+    baseSystemPrompt: "Base SYSTEM.md prompt.",
+    config: { agents: [], roots: [] },
+    policy: {
+      instructions: "Scoped instructions.",
+      resources: { agents: [], tools: ["read"], skills: ["manual-only", "visible"] },
+      systemPromptFiles: [],
+    },
+    skillEntries: [
+      {
+        name: "manual-only",
+        description: "Manual only",
+        location: "C:/skills/manual/SKILL.md",
+        disableModelInvocation: true,
+      },
+      {
+        name: "visible",
+        description: "Visible skill",
+        location: "C:/skills/visible/SKILL.md",
+      },
+    ],
+  });
+
+  assert.doesNotMatch(prompt, /manual-only/);
+
+  assert.match(prompt, /<name>visible<\/name>/);
+});
+
 test("resolved prompt can render configured skills even when the base prompt has no native skill block", () => {
   const prompt = buildResolvedSystemPrompt({
     baseSystemPrompt: "Base SYSTEM.md prompt.",
@@ -188,8 +216,12 @@ test("resolved prompt can render configured skills even when the base prompt has
     ],
   });
 
+  assert.match(prompt, /<available_skills>/);
+
+  assert.match(prompt, /<name>playwright-cli<\/name>/);
+
   assert.match(
     prompt,
-    /Available skills\n- playwright-cli: Automate browser interactions\n  Path: C:\/Users\/petro\/.agents\/skills\/playwright-cli\/SKILL\.md/,
+    /<location>C:\/Users\/petro\/.agents\/skills\/playwright-cli\/SKILL\.md<\/location>/,
   );
 });

@@ -45,9 +45,25 @@ function findNearestProjectConfigRoot(cwd) {
   }
 }
 
-/** Loads settings, agents, diagnostics, and config roots for one working directory. */
-export function loadPiSettings(agentDir = defaultAgentDir()) {
-  return readJson(path.join(agentDir, "settings.json"), []) ?? {};
+/** Loads Pi settings from global and project scopes for one working directory. */
+export function loadPiSettings(
+  agentDir = defaultAgentDir(),
+  cwd = process.cwd(),
+  diagnostics: AnyRecord[] = [],
+) {
+  const settings: AnyRecord = {};
+  const paths = [
+    path.join(agentDir, "settings.json"),
+    ...ancestorDirs(cwd, ".pi", "settings.json"),
+  ];
+
+  for (const settingsPath of dedupePaths(paths)) {
+    const source = readJson(settingsPath, diagnostics);
+
+    if (source) mergePiSettings(settings, source);
+  }
+
+  return settings;
 }
 
 export function enabledModelPatterns(agentDir = defaultAgentDir()) {
@@ -424,110 +440,21 @@ function parseScalar(value) {
   return trimmed;
 }
 
-const skillCatalogCache = new Map();
-
-/** Discovers skill metadata without loading the full skill instructions. */
-export function loadAvailableSkills(options: AnyRecord = {}) {
-  const cwd = path.resolve(
-    typeof options.cwd === "string" ? options.cwd : process.cwd(),
-  );
-  const agentDir = path.resolve(
-    typeof options.agentDir === "string" ? options.agentDir : defaultAgentDir(),
-  );
-  const configuredSkillRoots = Array.isArray(options.skillRoots)
-    ? options.skillRoots.filter((root): root is string => typeof root === "string")
-    : undefined;
-  const roots =
-    configuredSkillRoots?.map((root) => path.resolve(root)) ??
-    skillRoots(cwd, agentDir);
-  const cacheKey = configuredSkillRoots ? undefined : `${cwd}::${agentDir}`;
-
-  if (cacheKey && skillCatalogCache.has(cacheKey))
-    return skillCatalogCache.get(cacheKey);
-  const skills = [
-    ...new Map(
-      roots
-        .flatMap(collectMarkdownFiles)
-        .map(loadSkillEntry)
-        .filter(Boolean)
-        .map((entry) => [entry.name, entry]),
-    ).values(),
-  ];
-
-  if (cacheKey) skillCatalogCache.set(cacheKey, skills);
-
-  return skills;
-}
-
-function skillRoots(cwd: string, agentDir: string) {
-  return dedupePaths([
-    path.join(agentDir, "skills"),
-    path.join(homedir(), ".agents", "skills"),
-    ...ancestorDirs(cwd, ".agents", "skills"),
-    ...ancestorDirs(cwd, ".pi", "skills"),
-  ]);
+function mergePiSettings(target: AnyRecord, source: AnyRecord) {
+  for (const [key, value] of Object.entries(source))
+    target[key] = isRecord(value) && isRecord(target[key])
+      ? mergeObjects(target[key], value)
+      : value;
 }
 
 function ancestorDirs(cwd: string, ...parts: string[]) {
   const dirs: string[] = [];
-
   for (let current = path.resolve(cwd); ; current = path.dirname(current)) {
     dirs.unshift(path.join(current, ...parts));
-
     if (path.dirname(current) === current) return dirs;
   }
 }
 
 function dedupePaths(paths: string[]) {
-  return [...new Set(paths.map((item) => path.resolve(item)))];
-}
-
-function collectMarkdownFiles(dir: string): string[] {
-  if (!existsSync(dir)) return [];
-  let entries: import("node:fs").Dirent[] = [];
-
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  const files: string[] = [];
-
-  for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue;
-    const fullPath = path.join(dir, entry.name);
-
-    if (entry.isDirectory()) files.push(...collectMarkdownFiles(fullPath));
-    else if (entry.isFile() && entry.name.endsWith(".md")) files.push(fullPath);
-  }
-
-  return files;
-}
-
-function loadSkillEntry(filePath: string) {
-  try {
-    const content = readFileSync(filePath, "utf8");
-    const { frontmatter, body } = parseMarkdownDefinition(content);
-    const metadata = frontmatter as AnyRecord;
-    const name = typeof metadata.name === "string" ? metadata.name.trim() : "";
-
-    if (!name) return undefined;
-    const description =
-      typeof metadata.description === "string"
-        ? metadata.description.trim()
-        : firstParagraph(body);
-
-    return { name, description, location: filePath };
-  } catch {
-    return undefined;
-  }
-}
-
-function firstParagraph(text) {
-  return String(text ?? "")
-    .split(/\r?\n\r?\n/, 1)[0]
-    .replace(/^#+\s*/, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  return [...new Set(paths.filter(Boolean).map((item) => path.resolve(String(item))))];
 }

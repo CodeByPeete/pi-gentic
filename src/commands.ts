@@ -5,6 +5,7 @@
  * surface uses the same flag rules and session id suggestions.
  */
 import { loadConfiguration } from "./config.js";
+import { loadAvailableSkills } from "./skills.js";
 import { isRecord, shortSessionId } from "./core.js";
 
 const SEND_VALUE_FLAGS = new Set([
@@ -137,6 +138,32 @@ export function parseAgentCommand(input) {
 }
 
 /** Converts send command text into the same fields accepted by the agents tool. */
+export function parseSkillCommand(input: string) {
+  const tokens = tokenizeCommandLine(input.trim());
+  const name = tokens[0] ?? "";
+  const message = tokens.slice(1).join(" ").trim();
+
+  return { name, message };
+}
+
+export function buildManualSkillMessage(skill: AnyRecord, message = "") {
+  const allowedTools = Array.isArray(skill.allowedTools)
+    ? skill.allowedTools.filter((tool) => typeof tool === "string")
+    : [];
+  const parts = [
+    `Use the Pi skill "${skill.name}" for this request.`,
+    skill.description ? `Description: ${skill.description}` : "",
+    skill.location ? `Location: ${skill.location}` : "",
+    allowedTools.length ? `Allowed tools: ${allowedTools.join(", ")}` : "",
+    skill.instructions
+      ? `<skill_instructions>\n${skill.instructions}\n</skill_instructions>`
+      : "",
+    message ? `Request:\n${message}` : "Proceed with this skill.",
+  ].filter(Boolean);
+
+  return parts.join("\n\n");
+}
+
 export function parseSendCommand(input: string) {
   const tokens = tokenizeCommandLine(input.trim());
   const messageTokens: string[] = [];
@@ -274,6 +301,23 @@ type CompletionOptions =
       themes?: string[];
       systemPromptFiles?: string[];
     };
+
+export function completeSkill(prefix: string, options: CompletionOptions = {}) {
+  const cwd =
+    typeof options === "string" ? options : (options.cwd ?? process.cwd());
+  const suggestionContext = typeof options === "object" ? options : {};
+  const token = prefix.split(/\s/).at(-1) ?? "";
+  const replaceToken = (value: string) =>
+    `${prefix.slice(0, prefix.length - token.length)}${value}`;
+  const skills = suggestionContext.skills?.length
+    ? suggestionContext.skills
+    : loadAvailableSkills({ cwd }).map((skill) => skill.name);
+  const query = token.toLowerCase();
+
+  return skills
+    .filter((name) => !query || name.toLowerCase().includes(query))
+    .map((name) => ({ value: replaceToken(name), label: name }));
+}
 
 export function completeSend(prefix: string, options: CompletionOptions = {}) {
   const cwd =

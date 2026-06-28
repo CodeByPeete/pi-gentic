@@ -88,8 +88,9 @@ type PiSessionManager = {
 
 type PiApi = {
   getAllTools: () => Array<{ name: string }>;
+  registerCommand: (name: string, command: AnyRecord) => void;
   sendMessage: (message: AnyRecord, options?: AnyRecord) => void;
-  sendUserMessage: (text: string, options?: AnyRecord) => void;
+  sendUserMessage: (text: string, options?: AnyRecord) => void | Promise<void>;
   setActiveTools: (tools: string[]) => void;
   setModel: (model: unknown) => Promise<void> | void;
   setTheme: (theme: string) => void;

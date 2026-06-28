@@ -2,7 +2,7 @@
  * Prompt construction for Pi sessions.
  *
  * Policy decides which agents, skills, and prompt files are visible. This file
- * turns that resolved policy into human-readable system prompt text.
+ * turns that resolved policy into Pi-compatible system prompt text.
  */
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -36,7 +36,7 @@ export function buildResolvedSystemPrompt({
     namingSection(policy),
     skillsSection(resolvedSkillEntries, policy),
   ]
-    .map(cleanSection)
+    .map((section) => String(section ?? "").trim())
     .filter(Boolean);
 
   return sections.join("\n\n");
@@ -49,7 +49,17 @@ export function mergeSkillEntries(
   const merged = new Map();
 
   for (const entry of [...primary, ...secondary]) {
-    if (!entry?.name || merged.has(entry.name)) continue;
+    if (!entry?.name) continue;
+    const current = merged.get(entry.name);
+
+    if (current) {
+      merged.set(entry.name, {
+        ...entry,
+        ...current,
+        block: current.block ?? entry.block,
+      });
+      continue;
+    }
     merged.set(entry.name, entry);
   }
 
@@ -83,6 +93,9 @@ export function parseSkillEntries(systemPrompt) {
         name,
         description: xmlValue(skillBlock, "description") ?? "",
         location: xmlValue(skillBlock, "location") ?? "",
+        allowedTools: splitXmlList(xmlValue(skillBlock, "allowed-tools")),
+        disableModelInvocation:
+          xmlValue(skillBlock, "disable-model-invocation") === "true",
         block: skillBlock,
       });
   }
@@ -92,11 +105,9 @@ export function parseSkillEntries(systemPrompt) {
 
 export function filterSkillPrompt(systemPrompt, skillEntries, allowedSkills) {
   const prompt = removeNativeSkillSection(systemPrompt);
-  const skills = readableSkillLines(skillEntries, allowedSkills);
+  const skills = skillsSection(skillEntries, { resources: { skills: allowedSkills } });
 
-  return skills.length
-    ? [prompt.trim(), "Available skills", ...skills].filter(Boolean).join("\n")
-    : prompt;
+  return [prompt.trim(), skills].filter(Boolean).join("\n\n");
 }
 
 function promptSources({ baseSystemPrompt, config, policy }) {
@@ -211,27 +222,12 @@ function namingSection(policy) {
 }
 
 function skillsSection(skillEntries, policy) {
-  const lines = readableSkillLines(
-    skillEntries,
-    policy.resources?.skills ?? [],
+  const allowed = new Set(policy.resources?.skills ?? []);
+  const skills = skillEntries.filter(
+    (skill) => allowed.has(skill.name) && skill.disableModelInvocation !== true,
   );
 
-  return lines.length ? ["Available skills", ...lines].join("\n") : "";
-}
-
-function readableSkillLines(skillEntries, allowedSkills) {
-  const allowed = new Set(allowedSkills);
-
-  return skillEntries
-    .filter((skill) => allowed.has(skill.name))
-    .map((skill) =>
-      [
-        `- ${skill.name}: ${skill.description}`.trim(),
-        skill.location ? `  Path: ${skill.location}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    );
+  return skills.length ? renderAvailableSkillsBlock(skills) : "";
 }
 
 function canUseAgentsTool(policy) {
@@ -299,8 +295,55 @@ function stripXmlTags(text) {
     .replace(/\n{3,}/g, "\n\n");
 }
 
-function cleanSection(value) {
-  return stripXmlTags(value).trim();
+function renderAvailableSkillsBlock(skills) {
+  return [
+    "The following skills provide specialized instructions for specific tasks.",
+    "Use the read tool to load a skill's file when the task matches its description.",
+    "",
+    "<available_skills>",
+    ...skills.map((skill) => renderSkillBlock(skill)),
+    "</available_skills>",
+  ].join("\n");
+}
+
+function renderSkillBlock(skill) {
+  if (skill.block) return normalizeSkillBlock(skill.block);
+
+  return [
+    "  <skill>",
+    `    <name>${escapeXml(skill.name)}</name>`,
+    `    <description>${escapeXml(skill.description ?? "")}</description>`,
+    skill.location ? `    <location>${escapeXml(skill.location)}</location>` : "",
+    "  </skill>",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function normalizeSkillBlock(block) {
+  return String(block ?? "")
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => `  ${line.trim()}`)
+    .join("\n");
+}
+
+function escapeXml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function splitXmlList(value) {
+  return value
+    ? value
+        .split(/[\s,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : undefined;
 }
 
 function xmlValue(block, tag) {

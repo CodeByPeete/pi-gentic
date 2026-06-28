@@ -4,25 +4,26 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { applyFilterList } from "../dist/core.js";
+import { applyFilterList } from "../dist/catalog.js";
 import {
   availableAgentLines,
   filterSkillPrompt,
   parseSkillEntries,
-} from "../dist/prompt.js";
-import { abortActor } from "../dist/runs.js";
-import { deliverReturnToCaller, displayTargetAnswerIfVisible } from "../dist/runs.js";
+} from "../dist/catalog.js";
+import { abortActor } from "../dist/orchestration.js";
+import { deliverReturnToCaller, displayTargetAnswerIfVisible } from "../dist/orchestration.js";
 import {
   resolveReturnDelivery,
   sendConfirmationText,
   sendPendingText,
   shouldDeferSendCompletion,
-} from "../dist/runs.js";
-import { sessionRunOutcome } from "../dist/runs.js";
-import { formatSessionStatus, sessionStatus } from "../dist/runs.js";
-import { assertAvailableAgent, filterAvailableAgents } from "../dist/policy.js";
-import { resolveSessionPolicy } from "../dist/policy.js";
-import { prepareWorktree } from "../dist/worktrees.js";
+} from "../dist/orchestration.js";
+import { sessionRunOutcome } from "../dist/orchestration.js";
+import { formatSessionStatus, sessionStatus } from "../dist/orchestration.js";
+import { assertAvailableAgent, filterAvailableAgents } from "../dist/catalog.js";
+import { resolveSessionPolicy } from "../dist/catalog.js";
+import { PiGenticOrchestrator, prepareWorktree } from "../dist/orchestration.js";
+import { deleteRuntimeSession, setRuntimeSession } from "../dist/pi-host.js";
 
 function createGitRepo(prefix = path.join(tmpdir(), "pi-gentic-worktree-repo-")) {
   const repo = mkdtempSync(prefix);
@@ -79,6 +80,36 @@ test("resolved agent prompt only exposes configured skills and includes availabl
   assert.doesNotMatch(prompt, /frontend-design/);
 
   assert.match(prompt, /researcher: Finds reliable context/);
+});
+
+test("runtime session references reject ambiguous shared prefixes", async () => {
+  const firstSessionId = "019faaaa-1111-7111-8111-111111111111";
+  const secondSessionId = "019faaaa-2222-7222-8222-222222222222";
+  const runtime = (sessionId) => ({
+    session: { sessionManager: { getSessionId: () => sessionId } },
+  });
+
+  setRuntimeSession(firstSessionId, runtime(firstSessionId));
+  setRuntimeSession(secondSessionId, runtime(secondSessionId));
+
+  try {
+    const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] });
+
+    await assert.rejects(
+      () =>
+        orchestrator.getOrOpenSession(
+          {
+            cwd: process.cwd(),
+            sessionManager: { getSessionDir: () => process.cwd() },
+          },
+          "019faaaa",
+        ),
+      /Ambiguous session reference/, 
+    );
+  } finally {
+    deleteRuntimeSession(firstSessionId);
+    deleteRuntimeSession(secondSessionId);
+  }
 });
 
 test("send with no invoke returns answer as context without triggering a caller turn", async () => {
@@ -277,6 +308,43 @@ test("send return persists when the captured caller is no longer active", async 
     true,
     { kind: "returnContext" },
   ]);
+});
+
+test("no-invoke return steers into a running caller without opening a new run", async () => {
+  const delivered = [];
+  const callerSessionId = "running-caller";
+  setRuntimeSession(callerSessionId, {
+    session: {
+      isStreaming: true,
+      sessionManager: { getSessionId: () => callerSessionId },
+      sendUserMessage: async (...args) => delivered.push(args),
+    },
+  });
+
+  try {
+    const mode = await deliverReturnToCaller({
+      pi: { sendMessage() {}, sendUserMessage() {} },
+      ctx: {
+        cwd: process.cwd(),
+        sessionManager: { getSessionId: () => "visible-other" },
+      },
+      callerSessionId,
+      callerSessionManager: { appendCustomMessageEntry() {} },
+      text: "child answer",
+      invoke: false,
+      persist: () => {
+        throw new Error("should not persist while caller is running");
+      },
+      visibleSession: undefined,
+      queue: "steer",
+    });
+
+    assert.equal(mode, "live");
+
+    assert.deepEqual(delivered, [["child answer", { deliverAs: "steer" }]]);
+  } finally {
+    deleteRuntimeSession(callerSessionId);
+  }
 });
 
 test("send return invokes stale caller sessions through the background delivery hook", async () => {

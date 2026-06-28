@@ -9,11 +9,11 @@ import {
   setRuntimeSession,
   shouldRunVisibleExtensionCommandNow,
   trackSessionPrompt,
-} from "../dist/runtime.js";
+} from "../dist/pi-host.js";
 
 test("live runtime state is shared across duplicate module instances", async () => {
-  const first = await import(`../dist/runtime.js?instance=${Date.now()}-a`);
-  const second = await import(`../dist/runtime.js?instance=${Date.now()}-b`);
+  const first = await import(`../dist/pi-host.js?instance=${Date.now()}-a`);
+  const second = await import(`../dist/pi-host.js?instance=${Date.now()}-b`);
 
   assert.equal(first.getLiveRuntimeState(), second.getLiveRuntimeState());
 });

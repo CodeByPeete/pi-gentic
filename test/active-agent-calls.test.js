@@ -5,7 +5,7 @@ import {
   abortAgentCallsForSession,
   hasAgentCallsForSession,
   registerAgentCall,
-} from "../dist/runtime.js";
+} from "../dist/pi-host.js";
 
 test("aborting a session aborts targeted agent calls recursively", async () => {
   const aborted = [];

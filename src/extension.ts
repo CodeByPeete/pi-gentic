@@ -1,11 +1,14 @@
-/**
- * Pi extension entrypoint.
- *
- * This file only wires Pi surfaces to the orchestrator: commands, shortcuts,
- * renderers, lifecycle events, and the model-callable agents tool.
- */
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { getErrorMessage, shortSessionId } from "./core.js";
+import {
+  AGENT_CYCLE_SHORTCUT,
+  enabledModelPatterns,
+  findAvailableSkill,
+  getErrorMessage,
+  loadAvailableSkills,
+  loadConfiguration,
+  loadPiSettings,
+  shortSessionId,
+} from "./catalog.js";
 import {
   buildManualSkillMessage,
   completeAgents,
@@ -16,16 +19,9 @@ import {
   parseAgentCommand,
   parseSendCommand,
   parseSkillCommand,
-} from "./commands.js";
-import {
-  enabledModelPatterns,
-  loadConfiguration,
-  loadPiSettings,
-} from "./config.js";
-import { findAvailableSkill, loadAvailableSkills } from "./skills.js";
-import { AGENT_CYCLE_SHORTCUT } from "./policy.js";
-import { installLiveSessionBridge, persistSessionImmediately } from "./runtime.js";
-import { PiGenticOrchestrator } from "./orchestrator.js";
+} from "./interface.js";
+import { installLiveSessionBridge, persistSessionImmediately } from "./pi-host.js";
+import { PiGenticOrchestrator, persistSynchronousToolCard } from "./orchestration.js";
 import {
   buildSessionTree,
   cachedPersistedSessions,
@@ -36,13 +32,13 @@ import {
   treeSwitchPath,
   warmPersistedSessions,
 } from "./sessions.js";
-import { persistSynchronousToolCard } from "./runs.js";
 import {
   createSessionTreePicker,
   renderAgentsCall,
   renderAgentsResult,
   showCard,
   startLiveRefresh,
+  startSessionLiveCardRefresh,
 } from "./ui.js";
 
 const AgentsToolParameters = {
@@ -81,7 +77,6 @@ const AgentsToolParameters = {
   required: ["action"],
 };
 
-/** Registers every pi-gentic surface with the host Pi process. */
 export default function piGentic(pi) {
   installLiveSessionBridge();
   const orchestrator = new PiGenticOrchestrator(pi);
@@ -114,7 +109,11 @@ export default function piGentic(pi) {
     return component;
   });
 
+  let stopSessionLiveCardRefresh: (() => void) | undefined;
+
   pi.on("session_start", async (event, ctx) => {
+    stopSessionLiveCardRefresh?.();
+    stopSessionLiveCardRefresh = startSessionLiveCardRefresh(ctx);
     completionContext.capture(ctx);
     try {
       const defaultResult = await orchestrator.loadDefaultAgent(ctx, event);
@@ -125,6 +124,11 @@ export default function piGentic(pi) {
     } catch (error) {
       ctx.ui.notify(`pi-gentic: ${getErrorMessage(error)}`, "warning");
     }
+  });
+
+  pi.on("session_shutdown", async () => {
+    stopSessionLiveCardRefresh?.();
+    stopSessionLiveCardRefresh = undefined;
   });
 
   pi.registerShortcut(AGENT_CYCLE_SHORTCUT, {
@@ -549,7 +553,7 @@ function warmCompletionSessions({ cwd, sessionDir }) {
 async function listCompletionSessionSources(cwd, sessionDir) {
   const fast = listSessionSummariesFast(sessionDir);
 
-  return fast.length > 0 ? fast : SessionManager.list(cwd, sessionDir);
+  return fast.length > 0 ? fast : (SessionManager as any).list(cwd, sessionDir);
 }
 
 function completionSessionCacheKey({ cwd, sessionDir }) {
@@ -621,7 +625,6 @@ function themeSuggestions(config: AnyRecord) {
   return themes.filter((theme, index) => themes.indexOf(theme) === index);
 }
 
-/** Maps one agents-tool action to one orchestrator operation. */
 async function executeAction(orchestrator, ctx, input, onUpdate, signal) {
   if (input.action === "list") {
     const config = loadConfiguration({ cwd: ctx.cwd });

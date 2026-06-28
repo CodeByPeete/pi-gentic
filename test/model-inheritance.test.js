@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   applyInheritedModel,
   inheritedModelForPolicy,
-} from "../dist/runtime.js";
+} from "../dist/pi-host.js";
 
 test("agentless child sessions inherit the active model when policy has no model", () => {
   assert.deepEqual(

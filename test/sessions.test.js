@@ -16,7 +16,7 @@ import {
   treeSwitchPath,
   withRuntimeState,
 } from "../dist/sessions.js";
-import { deleteRuntimeSession, setRuntimeSession } from "../dist/runtime.js";
+import { deleteRuntimeSession, setRuntimeSession } from "../dist/pi-host.js";
 
 const sessions = [
   { id: "12345678-aaaa", path: "/tmp/one.jsonl", firstMessage: "one" },

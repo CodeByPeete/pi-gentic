@@ -1,37 +1,32 @@
-/**
- * Orchestration facade for Pi.
- *
- * The orchestrator coordinates policy, prompts, runtime sessions, and run
- * delivery while keeping Pi-specific APIs behind this single class.
- */
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { promisify } from "node:util";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import {
-  buildReceiptText,
-  buildReturnText,
-  chooseBoolean,
-  getErrorMessage,
-  parseIntegerRadius,
-  shortSessionId,
-} from "./core.js";
-import { loadConfiguration } from "./config.js";
-import { loadAvailableSkills } from "./skills.js";
 import {
   activeAgentName,
   appendActiveState,
   assertAvailableAgent,
   assertCanCreateSubagent,
+  buildReceiptText,
+  buildResolvedSystemPrompt,
+  buildReturnText,
+  chooseBoolean,
   configuredDefaultAgent,
   filterAvailableAgents,
+  formatDuration,
   getActiveState,
-  nextAgentName,
-  resolveSessionPolicy,
-  shouldApplyDefaultAgent,
-} from "./policy.js";
-import {
-  buildResolvedSystemPrompt,
+  getErrorMessage,
+  loadAvailableSkills,
+  loadConfiguration,
   mergeSkillEntries,
+  parseIntegerRadius,
   parseSkillEntries,
-} from "./prompt.js";
+  resolveSessionPolicy,
+  shortSessionId,
+  shouldApplyDefaultAgent,
+  nextAgentName,
+} from "./catalog.js";
 import {
   abortAgentCall,
   activeVisibleContext,
@@ -47,21 +42,7 @@ import {
   resolveModelFromRegistry,
   setRuntimeSession,
   unregisterLiveRuntime,
-} from "./runtime.js";
-import {
-  abortActor,
-  collectSessionActivities,
-  createSessionActivityMonitor,
-  deliverReturnToCaller,
-  deliverSendContextToCaller,
-  displayTargetAnswerIfVisible,
-  mergeActivities,
-  resolveReturnDelivery,
-  sendPendingText,
-  sendStatusText,
-  sessionRunOutcome,
-  sessionStatus,
-} from "./runs.js";
+} from "./pi-host.js";
 import {
   assertDifferentSession,
   assignTreeDepths,
@@ -76,7 +57,900 @@ import {
   withRuntimeState,
 } from "./sessions.js";
 import { setAgentLabel, setLiveCardDetails } from "./ui.js";
-import { prepareWorktree } from "./worktrees.js";
+
+
+export function abortActor(ctx) {
+  const agentName = getActiveState(ctx.sessionManager).agentName;
+
+  return agentName ? `[${agentName}] agent` : "caller session";
+}
+
+export function shouldDeferSendCompletion({
+  async,
+  awaitCompletion,
+}: AnyRecord = {}) {
+  return async === true || awaitCompletion === false;
+}
+
+export function resolveReturnDelivery(options: AnyRecord = {}) {
+  return shouldDeferSendCompletion(options)
+    ? { kind: "callerMessage", queue: "steer" }
+    : { kind: "toolResult" };
+}
+
+export function sendPendingText({
+  async,
+  agentName,
+  sessionId,
+  message,
+  details,
+}) {
+  return async === true
+    ? sendConfirmationText(agentName, sessionId, message, {
+        queued: details?.status === "queued",
+      })
+    : sendStatusText(details);
+}
+
+export function sendConfirmationText(
+  agentName: unknown,
+  sessionId: unknown,
+  message: string,
+  options: AnyRecord = {},
+) {
+  const target = agentName ? `[${agentName}] agent` : "agent";
+  const action = options.queued ? "Queued message for" : "Sent message to";
+  const timing = options.queued
+    ? "The agent is already working and will read this message when ready."
+    : "The agent will return with a full answer once he's done.";
+
+  return `${action} ${target} in session ${shortSessionId(sessionId)}.\nMessage: ${message}\n${timing} Do not wait for it to return, and do not duplicate the delegated work yourself.`;
+}
+
+export function sendStatusText(details: AnyRecord = {}) {
+  if (details.status === "done")
+    return `Agent ${details.agentName ?? ""} answered.`
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (details.status === "queued")
+    return `Queued message for ${details.agentName ?? "agent"}.`;
+
+  if (details.status === "stopped")
+    return details.error ?? "Agent stopped before answering.";
+
+  if (details.status === "error") return details.error ?? "Agent call failed.";
+
+  return `Sending message to ${details.agentName ?? "agent"}...`;
+}
+
+export function deliverSendContextToCaller({
+  pi,
+  ctx,
+  target,
+  message,
+  async,
+  fork,
+}) {
+  if (ctx.isIdle?.() === false) return;
+  const sessionId = target.session.sessionManager.getSessionId();
+  const content = [
+    "pi-gentic sent a message to another session.",
+    `Target agent: ${target.agentName ?? "agentless"}`,
+    `Target session: ${sessionId}`,
+    `Async: ${async === true}`,
+    `Fork: ${fork === true}`,
+    `Message: ${message}`,
+  ].join("\n");
+
+  try {
+    pi.sendMessage(
+      {
+        customType: "pi-gentic:send-context",
+        content,
+        display: false,
+        details: {
+          kind: "sendContext",
+          agentName: target.agentName,
+          sessionId,
+          message,
+        },
+      },
+      { triggerTurn: false },
+    );
+  } catch {
+  }
+}
+
+export async function deliverReturnToCaller({
+  pi,
+  ctx,
+  callerSessionId,
+  callerSessionManager,
+  text,
+  invoke,
+  persist,
+  invokeInactiveCaller,
+  visibleSession,
+  queue,
+}) {
+  const liveDelivery = await deliverToLiveCaller({
+    pi,
+    ctx,
+    callerSessionId,
+    text,
+    invoke,
+    visibleSession,
+    queue,
+  });
+
+  if (liveDelivery.delivered) return liveDelivery.mode;
+
+  if (invoke && invokeInactiveCaller) {
+    await invokeInactiveCaller(text);
+
+    return "background";
+  }
+
+  persistReturnForCaller({ callerSessionManager, text, invoke, persist });
+
+  return "persisted";
+}
+
+export async function deliverToLiveCaller({
+  pi,
+  ctx,
+  callerSessionId,
+  text,
+  invoke,
+  visibleSession,
+  queue,
+}) {
+  const liveSession = liveCallerSession(ctx, callerSessionId, visibleSession);
+
+  try {
+    if (liveSession) {
+      if (
+        (invoke || liveSession.isStreaming === true) &&
+        typeof liveSession.sendUserMessage === "function"
+      ) {
+        await liveSession.sendUserMessage(
+          text,
+          liveSession.isStreaming === true
+            ? { deliverAs: queue }
+            : sendUserMessageOptions(ctx, queue),
+        );
+
+        return { delivered: true, mode: "live" };
+      }
+
+      if (typeof liveSession.sendCustomMessage === "function") {
+        await liveSession.sendCustomMessage(returnContextMessage(text), {
+          triggerTurn: false,
+        });
+
+        return { delivered: true, mode: "live" };
+      }
+    }
+
+    if (!contextStillActive(ctx, callerSessionId)) return { delivered: false };
+
+    if (invoke) pi.sendUserMessage(text, sendUserMessageOptions(ctx, queue));
+    else pi.sendMessage(returnContextMessage(text), customMessageOptions(ctx, queue));
+
+    return { delivered: true, mode: "live" };
+  } catch {
+    return { delivered: false };
+  }
+}
+
+function liveCallerSession(
+  ctx: PiContext,
+  callerSessionId: string | undefined,
+  visibleSession: AnyRecord | undefined,
+) {
+  const registered = callerSessionId ? getRuntimeSession(callerSessionId)?.session : undefined;
+
+  if (registered) return registered;
+
+  if (!visibleSession) return undefined;
+  const visibleSessionId = visibleSession.sessionManager?.getSessionId?.();
+
+  return !callerSessionId ||
+    visibleSessionId === callerSessionId ||
+    (!visibleSessionId && contextStillActive(ctx, callerSessionId))
+    ? visibleSession
+    : undefined;
+}
+
+function returnContextMessage(text: string) {
+  return {
+    customType: "pi-gentic:return-context",
+    content: text,
+    display: true,
+    details: { kind: "returnContext" },
+  };
+}
+
+export function persistReturnForCaller({
+  callerSessionManager,
+  text,
+  invoke,
+  persist,
+}) {
+  if (invoke)
+    callerSessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text }],
+      timestamp: Date.now(),
+    });
+  else
+    callerSessionManager.appendCustomMessageEntry?.(
+      "pi-gentic:return-context",
+      text,
+      true,
+      { kind: "returnContext" },
+    );
+
+  persist?.(callerSessionManager);
+}
+
+function waitForSessionTurnEnd(session: AnyRecord, signal?: AbortSignal) {
+  if (session.isStreaming !== true) return Promise.resolve();
+
+  return new Promise<void>((resolve, reject) => {
+    let done = false;
+    let unsubscribe: (() => void) | undefined;
+    const interval = setInterval(() => {
+      if (session.isStreaming !== true) finish();
+    }, 250);
+    const abort = () => finish(new Error("Agent call aborted."));
+    const finish = (error?: Error) => {
+      if (done) return;
+      done = true;
+      clearInterval(interval);
+      unsubscribe?.();
+      signal?.removeEventListener?.("abort", abort);
+      if (error) reject(error);
+      else resolve();
+    };
+
+    interval.unref?.();
+    signal?.addEventListener?.("abort", abort, { once: true });
+    unsubscribe = session.subscribe?.((event) => {
+      if (event?.type === "agent_end") finish();
+    });
+  });
+}
+
+export function sendUserMessageOptions(ctx, queue = "followUp") {
+  return ctx.isIdle?.() === false ? { deliverAs: queue } : undefined;
+}
+
+function customMessageOptions(ctx, queue = "followUp") {
+  return {
+    triggerTurn: false,
+    ...sendUserMessageOptions(ctx, queue),
+  };
+}
+
+export function persistSynchronousToolCard(
+  ctx: PiContext,
+  input: AnyRecord,
+  result: AnyRecord,
+  persist?: (sessionManager: PiSessionManager) => void,
+) {
+  if (input.action !== "send") return;
+  if (["running", "queued"].includes(String(result.details?.status ?? "")))
+    return;
+
+  ctx.sessionManager.appendCustomMessageEntry?.(
+    "pi-gentic:card",
+    result.text,
+    true,
+    result.details,
+  );
+  persist?.(ctx.sessionManager);
+}
+
+export async function displayTargetAnswerIfVisible({
+  ctx,
+  target,
+  targetSessionId,
+  text,
+}) {
+  if (!contextStillActive(ctx, targetSessionId)) return false;
+
+  const message = {
+    customType: "pi-gentic:return-context",
+    content: `Final answer from this session:\n${text}`,
+    display: true,
+    details: { kind: "targetAnswer", sessionId: targetSessionId },
+  };
+
+  try {
+    if (typeof target.session.sendCustomMessage === "function") {
+      await target.session.sendCustomMessage(message, { triggerTurn: false });
+
+      return true;
+    }
+
+    target.session.sessionManager.appendCustomMessageEntry?.(
+      message.customType,
+      message.content,
+      message.display,
+      message.details,
+    );
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function contextStillActive(ctx, callerSessionId?: string) {
+  try {
+    void ctx.cwd;
+    const activeSessionId = ctx.sessionManager.getSessionId();
+
+    return !callerSessionId || activeSessionId === callerSessionId;
+  } catch {
+    return false;
+  }
+}
+
+export function createSessionActivityMonitor(baseDetails, publish) {
+  const state = {
+    ...baseDetails,
+    activities: [],
+    updatedAt: baseDetails.updatedAt ?? Date.now(),
+  };
+  const publishState = (status = state.status, updates = {}) => {
+    Object.assign(state, updates, { status });
+
+    return publish({ ...state, activities: [...state.activities] });
+  };
+  const touch = () => {
+    state.updatedAt = Date.now();
+  };
+
+  return {
+    get activities() {
+      return state.activities;
+    },
+    observe(event) {
+      const activity = eventToActivity(event);
+
+      if (!activity) return;
+      touch();
+      upsertActivity(state.activities, activity);
+      publishState("running");
+    },
+    finish({ activities }) {
+      state.activities = mergeActivities(state.activities, activities);
+
+      return publishState("done", {
+        completedAt: Date.now(),
+        updatedAt: state.updatedAt,
+      });
+    },
+    stop(status: string, updates: AnyRecord = {}) {
+      state.activities = mergeActivities(
+        state.activities,
+        updates.activities ?? [],
+      );
+
+      return publishState(status, {
+        completedAt: Date.now(),
+        updatedAt: state.updatedAt,
+        ...updates,
+      });
+    },
+    fail(error) {
+      return publishState("error", {
+        completedAt: Date.now(),
+        error: getErrorMessage(error),
+      });
+    },
+  };
+}
+
+export function collectSessionActivities(session) {
+  return session.agent.state.messages.flatMap((message) => {
+    if (message.role === "assistant")
+      return assistantMessageActivities(message);
+
+    if (message.role === "toolResult")
+      return [
+        {
+          id: message.toolCallId,
+          type: "tool",
+          name: message.toolName,
+          summary: summarizeValue(message.content),
+          status: message.isError ? "error" : "done",
+        },
+      ];
+
+    return [];
+  });
+}
+
+export function mergeActivities(...activityLists: unknown[][]) {
+  const merged: AnyRecord[] = [];
+
+  for (const activity of activityLists.flat().filter(Boolean))
+    upsertActivity(merged, activity);
+
+  return merged;
+}
+
+export function lastRuntimeActivities(runtime) {
+  return runtime.lastActivities?.length
+    ? runtime.lastActivities
+    : collectSessionActivities(runtime.session);
+}
+
+export function latestActivityLines(runtime, count = 3) {
+  return lastRuntimeActivities(runtime)
+    .slice(-count)
+    .map(formatActivityLine)
+    .filter(Boolean);
+}
+
+export function formatActivityLine(activity) {
+  if (!activity) return undefined;
+
+  if (activity.type === "assistant")
+    return `assistant ${truncateInline(activity.text, 160)}`;
+  const status = activity.status ? ` (${activity.status})` : "";
+
+  return `[${activity.name ?? activity.type}] ${truncateInline(activity.summary ?? activity.text ?? "", 160)}${status}`.trim();
+}
+
+function eventToActivity(event) {
+  if (!event || typeof event !== "object") return undefined;
+
+  if (event.type === "tool_execution_start")
+    return {
+      id: event.toolCallId,
+      type: "tool",
+      name: event.toolName,
+      summary: summarizeValue(event.args),
+      status: "running",
+    };
+
+  if (event.type === "tool_execution_update")
+    return {
+      id: event.toolCallId,
+      type: "tool",
+      name: event.toolName,
+      summary: summarizeValue(event.partialResult ?? event.args),
+      status: "running",
+    };
+
+  if (event.type === "tool_execution_end")
+    return {
+      id: event.toolCallId,
+      type: "tool",
+      name: event.toolName,
+      summary: summarizeValue(event.result),
+      status: event.isError ? "error" : "done",
+    };
+
+  if (event.type === "message_update" && event.message?.role === "assistant")
+    return assistantActivity(event.message);
+
+  if (event.type === "message_end" && event.message?.role === "assistant")
+    return assistantActivity(event.message);
+  return undefined;
+}
+
+function assistantMessageActivities(message) {
+  const activities = [];
+  const text = messageText(message);
+
+  if (text)
+    activities.push({
+      id: "assistant",
+      type: "assistant",
+      text,
+      status:
+        message.stopReason === "error"
+          ? "error"
+          : message.stopReason === "aborted"
+            ? "aborted"
+            : undefined,
+    });
+  else if (message.stopReason === "aborted")
+    activities.push({
+      id: "assistant",
+      type: "assistant",
+      text: message.errorMessage || "Operation aborted",
+      status: "aborted",
+    });
+  else if (message.stopReason === "error")
+    activities.push({
+      id: "assistant",
+      type: "assistant",
+      text: message.errorMessage || "Unknown error",
+      status: "error",
+    });
+
+  if (Array.isArray(message.content)) {
+    activities.push(
+      ...message.content
+        .filter((part) => part.type === "toolCall")
+        .map((part) => ({
+          id: part.id,
+          type: "tool",
+          name: part.name,
+          summary: summarizeValue(part.arguments ?? {}),
+        })),
+    );
+  }
+
+  return activities;
+}
+
+function assistantActivity(message) {
+  const text = messageText(message);
+
+  return text ? { id: "assistant", type: "assistant", text } : undefined;
+}
+
+function upsertActivity(activities, activity) {
+  const key = activity.id ?? `${activity.type}:${activity.name ?? ""}`;
+  const index = activities.findIndex(
+    (item) => (item.id ?? `${item.type}:${item.name ?? ""}`) === key,
+  );
+
+  if (index === -1) activities.push(activity);
+  else activities[index] = { ...activities[index], ...activity };
+}
+
+function messageText(message) {
+  if (!message) return "";
+
+  if (typeof message.content === "string") return message.content;
+
+  if (!Array.isArray(message.content)) return "";
+
+  return message.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .filter(Boolean)
+    .join("\n");
+}
+
+function summarizeValue(value) {
+  if (Array.isArray(value))
+    return value
+      .map((item) => item.text ?? item.data ?? JSON.stringify(item))
+      .join(" ")
+      .slice(0, 240);
+
+  if (value && typeof value === "object") {
+    if (Array.isArray(value.content)) return summarizeValue(value.content);
+
+    if (typeof value.text === "string") return value.text.slice(0, 240);
+
+    return JSON.stringify(value).slice(0, 240);
+  }
+
+  return String(value ?? "").slice(0, 240);
+}
+
+function truncateInline(text, length) {
+  const normalized = String(text ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return normalized.length > length
+    ? `${normalized.slice(0, Math.max(0, length - 1))}…`
+    : normalized;
+}
+
+export function sessionRunOutcome(
+  runtime: AnyRecord,
+  { request, error }: AnyRecord = {},
+) {
+  const session = runtime.session as {
+    agent: { state: { messages: unknown[] } };
+  };
+  const assistant = lastAssistantMessage(session.agent.state.messages);
+  const text = assistantText(assistant);
+
+  if (
+    text &&
+    assistant?.stopReason !== "aborted" &&
+    assistant?.stopReason !== "error"
+  )
+    return { status: "done", text };
+
+  if (assistant?.stopReason === "aborted")
+    return {
+      status: "aborted",
+      text: sessionOutcomeText(runtime, "aborted", { request }),
+    };
+
+  if (assistant?.stopReason === "error")
+    return {
+      status: "error",
+      text: sessionOutcomeText(runtime, "error", {
+        request,
+        error: assistant.errorMessage,
+      }),
+    };
+
+  if (error)
+    return {
+      status: "error",
+      text: sessionOutcomeText(runtime, "error", {
+        request,
+        error: getErrorMessage(error),
+      }),
+    };
+
+  return {
+    status: "stopped",
+    text: sessionOutcomeText(runtime, "stopped", { request }),
+  };
+}
+
+export function sessionOutcomeText(
+  runtime: AnyRecord,
+  kind: string,
+  { request, error }: AnyRecord = {},
+) {
+  const session = runtime.session as { sessionManager: PiSessionManager };
+  const sessionId = shortSessionId(session.sessionManager.getSessionId?.());
+  const agent = runtime.agentName ? ` [${runtime.agentName}]` : "";
+  const lastAbort = runtime.lastAbort as AnyRecord | undefined;
+  const actor =
+    lastAbort?.actor ??
+    (kind === "aborted" ? "user in that session" : undefined);
+  const activityLines = latestActivityLines(runtime).map((line) => `- ${line}`);
+  const details = [
+    kind === "aborted"
+      ? `Session ${sessionId}${agent} was aborted while handling your request.`
+      : undefined,
+    kind === "aborted" ? `Aborted by: ${actor}.` : undefined,
+    kind === "error"
+      ? `Session ${sessionId}${agent} failed while handling your request.`
+      : undefined,
+    kind === "error" ? `Error: ${error || "Unknown error"}` : undefined,
+    kind === "stopped"
+      ? `Session ${sessionId}${agent} stopped before returning a final answer.`
+      : undefined,
+    request ? `Request: ${request}` : undefined,
+    activityLines.length
+      ? `Last activity:\n${activityLines.join("\n")}`
+      : undefined,
+  ].filter(Boolean);
+
+  return details.join("\n");
+}
+
+function lastAssistantMessage(messages) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+
+    if (message.role === "assistant") return message;
+  }
+
+  return undefined;
+}
+
+function assistantText(message) {
+  if (!message) return "";
+  const text = Array.isArray(message.content)
+    ? message.content
+        .filter((part) => part.type === "text")
+        .map((part) => part.text)
+        .join("\n")
+    : message.content;
+
+  return String(text ?? "").trim();
+}
+
+export function sessionStatus(runtime) {
+  const now = Date.now();
+  const running = runtime.session.isStreaming === true;
+  runtime.streamingStartedAt = running
+    ? (runtime.runStartedAt ??
+      runtime.streamingStartedAt ??
+      runtime.lastActivityAt ??
+      runtime.createdAt ??
+      new Date(now).toISOString())
+    : undefined;
+  const lastActivityAt = runtime.lastActivityAt ?? runtime.createdAt;
+  const inactiveMs = elapsedMs(now, lastActivityAt);
+  const runningMs = running
+    ? elapsedMs(now, runtime.runStartedAt ?? runtime.streamingStartedAt)
+    : undefined;
+  const pendingMessages = Number(runtime.session.pendingMessageCount ?? 0);
+  const status = {
+    sessionId: runtime.session.sessionManager.getSessionId(),
+    agentName: runtime.agentName,
+    running,
+    state: running ? "running" : pendingMessages > 0 ? "queued" : "idle",
+    pendingMessages,
+    pendingText:
+      pendingMessages === 1
+        ? "1 queued message"
+        : `${pendingMessages} queued messages`,
+    inactiveMs,
+    inactiveText: formatDuration(inactiveMs),
+    runningMs: runningMs ?? null,
+    runningText: runningMs === undefined ? null : formatDuration(runningMs),
+    lastActivities: lastRuntimeActivities(runtime).slice(-3),
+  };
+
+  return { ...status, text: formatSessionStatus(status) };
+}
+
+export function formatSessionStatus(status) {
+  const title = `Session ${shortSessionId(status.sessionId)}${status.agentName ? ` [${status.agentName}]` : ""}`;
+  const lines = [
+    title,
+    `State: ${status.state ?? (status.running ? "running" : "idle")}`,
+    status.runningText ? `Running for: ${status.runningText}` : undefined,
+    `Last activity: ${status.inactiveText ?? formatDuration(status.inactiveMs ?? 0)} ago`,
+    Number(status.pendingMessages ?? 0) > 0
+      ? `Queued messages: ${status.pendingMessages}`
+      : undefined,
+  ];
+  const activities = Array.isArray(status.lastActivities)
+    ? status.lastActivities
+    : [];
+
+  if (activities.length > 0) {
+    lines.push("Recent activity:");
+    lines.push(
+      ...activities.map((activity) => `- ${formatStatusActivity(activity)}`),
+    );
+  }
+
+  return lines.filter(Boolean).join("\n");
+}
+
+function elapsedMs(now, value) {
+  const time =
+    typeof value === "number"
+      ? value
+      : value
+        ? new Date(value).getTime()
+        : undefined;
+
+  return Number.isFinite(time) ? Math.max(0, now - time) : 0;
+}
+
+function formatStatusActivity(activity) {
+  if (!activity || typeof activity !== "object") return String(activity ?? "");
+
+  if (activity.type === "tool")
+    return `[${activity.name ?? "tool"}] ${activity.status ?? ""}`.trim();
+  return String(
+    activity.text ?? activity.summary ?? activity.type ?? "activity",
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
+const execFileAsync = promisify(execFile);
+
+export async function prepareWorktree({
+  repoCwd,
+  repo,
+  cwd,
+  worktree,
+  message,
+}: AnyRecord) {
+  const repoRoot = await repositoryRoot(repoCwd, repo);
+  const branchInput = stringOrUndefined(worktree);
+  const fallbackName = worktreeSlug(
+    branchInput ?? stringOrUndefined(cwd) ?? stringOrUndefined(message),
+  );
+  const worktreePath = path.resolve(
+    repoRoot,
+    cwd
+      ? String(cwd)
+      : path.join(".agentfiles", "worktrees", fallbackName),
+  );
+  const branch = gitBranchName(
+    branchInput ?? path.basename(worktreePath) ?? fallbackName,
+  );
+
+  await ensureGitWorktree(repoRoot, worktreePath, branch);
+
+  return worktreePath;
+}
+
+async function repositoryRoot(repoCwd: unknown, repo: unknown) {
+  const base = String(repoCwd || process.cwd());
+  const source = stringOrUndefined(repo);
+  const repositoryPath = source ? path.resolve(base, source) : base;
+
+  try {
+    return await gitOutput(repositoryPath, ["rev-parse", "--show-toplevel"]);
+  } catch (error) {
+    throw new Error(
+      `Worktree repository must be a git repository: ${repositoryPath}`,
+      { cause: error },
+    );
+  }
+}
+
+async function ensureGitWorktree(
+  repoRoot: string,
+  worktreePath: string,
+  branch: string,
+) {
+  if (existsSync(path.join(worktreePath, ".git"))) return;
+
+  try {
+    await gitOutput(repoRoot, ["worktree", "add", worktreePath, branch]);
+  } catch {
+    await gitOutput(repoRoot, [
+      "worktree",
+      "add",
+      "-b",
+      branch,
+      worktreePath,
+      "HEAD",
+    ]);
+  }
+}
+
+async function gitOutput(cwd: string, args: string[]) {
+  const { stdout } = await execFileAsync("git", args, {
+    cwd,
+    timeout: 30_000,
+    windowsHide: true,
+  });
+
+  return stdout.trim();
+}
+
+function stringOrUndefined(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function worktreeSlug(value: unknown) {
+  const source = String(value ?? "agent-worktree");
+  const base = source
+    .toLowerCase()
+    .replace(/[^a-z0-9._/-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+
+  return `${base || "agent-worktree"}-${hashText(source)}`;
+}
+
+function gitBranchName(value: unknown) {
+  return (
+    String(value ?? "agent-worktree")
+      .replace(/\\/g, "/")
+      .split("/")
+      .map((part) =>
+        part
+          .replace(/[^A-Za-z0-9._-]+/g, "-")
+          .replace(/^[-.]+|[-.]+$/g, ""),
+      )
+      .filter(Boolean)
+      .join("/") || "agent-worktree"
+  );
+}
+
+function hashText(value: string) {
+  let hash = 5381;
+
+  for (const char of value) hash = ((hash << 5) + hash) ^ char.charCodeAt(0);
+
+  return Math.abs(hash >>> 0).toString(36).slice(0, 6);
+}
+
 
 type CallerMessageDelivery = {
   callerSessionId?: string;
@@ -88,7 +962,6 @@ type CallerMessageDelivery = {
   queue?: string;
 };
 
-/** Main application service used by commands, shortcuts, events, and tools. */
 export class PiGenticOrchestrator {
   pi: PiApi;
   currentAgentName?: string;
@@ -151,7 +1024,6 @@ export class PiGenticOrchestrator {
     return assertAvailableAgent(agentName, this.availableAgents(ctx, config));
   }
 
-  /** Applies the current session policy to Pi tools, model, thinking, theme, and labels. */
   async applyCurrentPolicy(ctx: PiContext, options: AnyRecord = {}) {
     const config = this.load(ctx);
     const state = getActiveState(ctx.sessionManager);
@@ -251,7 +1123,6 @@ export class PiGenticOrchestrator {
     return this.loadAgent(ctx, agentName ?? "clear");
   }
 
-  /** Stores a handoff in session history, then re-applies the resolved policy. */
   async loadAgent(ctx: PiContext, agentName: unknown, options: AnyRecord = {}) {
     const config = this.load(ctx);
 
@@ -320,7 +1191,6 @@ export class PiGenticOrchestrator {
     });
   }
 
-  /** Sends one message to a child or existing session and tracks the resulting run. */
   async send(ctx: PiContext, input: AnyRecord, callbacks: AnyRecord = {}) {
     const config = this.load(ctx);
 
@@ -426,7 +1296,7 @@ export class PiGenticOrchestrator {
         return publish(nextDetails);
       });
       const unsubscribe =
-        !targetBusy && typeof target.session.subscribe === "function"
+        typeof target.session.subscribe === "function"
           ? target.session.subscribe((event) => monitor.observe(event))
           : undefined;
 
@@ -439,9 +1309,10 @@ export class PiGenticOrchestrator {
         await target.session.prompt(
           receipt,
           target.session.isStreaming
-            ? { streamingBehavior: "followUp" }
+            ? { streamingBehavior: "steer" }
             : undefined,
         );
+        if (targetBusy) await waitForSessionTurnEnd(target.session, callbacks.signal);
         const outcome = sessionRunOutcome(target, { request: input.message });
         const completed =
           outcome.status === "done"
@@ -658,15 +1529,17 @@ export class PiGenticOrchestrator {
     const parentSession = ctx.sessionManager.getSessionFile();
 
     if (input.fork && parentSession) {
-      sessionManager = SessionManager.forkFrom(
+      sessionManager = (SessionManager as any).forkFrom(
         parentSession,
         input.cwd ?? ctx.cwd,
         sessionDir,
       );
     } else {
-      sessionManager = SessionManager.create(input.cwd ?? ctx.cwd, sessionDir, {
-        parentSession,
-      });
+      sessionManager = (SessionManager as any).create(input.cwd ?? ctx.cwd, sessionDir);
+      if (parentSession) {
+        const header = sessionManager.getHeader?.();
+        if (header) header.parentSession = parentSession;
+      }
     }
 
     if (typeof sessionManager.appendSessionInfo === "function")
@@ -697,17 +1570,25 @@ export class PiGenticOrchestrator {
     reference: unknown,
     cwd?: string,
   ): Promise<PiRuntimeSession> {
-    const existing = findRuntimeSession((runtime) =>
+    const runtimeMatches = listRuntimeSessions().filter((runtime) =>
       matchesSession(runtime.session.sessionManager.getSessionId(), reference),
     );
+    const runtimeIds = new Set(
+      runtimeMatches.map((runtime) => runtime.session.sessionManager.getSessionId()),
+    );
 
-    if (existing) return existing;
-    const sessions = await SessionManager.list(
+    if (runtimeIds.size === 1) return runtimeMatches[0];
+
+    if (runtimeIds.size > 1)
+      throw new Error(
+        `Ambiguous session reference "${reference}" matches ${runtimeIds.size} sessions.`,
+      );
+    const sessions = await (SessionManager as any).list(
       cwd ?? ctx.cwd,
       ctx.sessionManager.getSessionDir(),
     );
     const resolved = resolveSessionReference(sessions, reference);
-    const sessionManager = SessionManager.open(
+    const sessionManager = (SessionManager as any).open(
       resolved.path,
       ctx.sessionManager.getSessionDir(),
       cwd,
@@ -927,7 +1808,6 @@ export class PiGenticOrchestrator {
     return runtime;
   }
 
-  /** Builds the orchestration tree visible to the agents tool and TUI picker. */
   async discoverSessions(ctx, input) {
     const policy = this.resolvePolicy(ctx, this.load(ctx));
     const rx = parseIntegerRadius(input.rx, "rx", policy.agentsTool?.rx ?? 0);
@@ -965,7 +1845,7 @@ export class PiGenticOrchestrator {
 async function listDiscoverySessionSources(cwd, sessionDir) {
   const fast = listSessionSummariesFast(sessionDir);
 
-  return fast.length > 0 ? fast : SessionManager.list(cwd, sessionDir);
+  return fast.length > 0 ? fast : (SessionManager as any).list(cwd, sessionDir);
 }
 
 function currentSkillNames(ctx) {

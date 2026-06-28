@@ -1,19 +1,12 @@
-/**
- * Session identity, summaries, and tree discovery.
- *
- * The rest of pi-gentic can ask for sessions by human-friendly ids while this
- * module handles paths, short ids, parent links, and runtime overlays.
- */
 import { existsSync, openSync, readSync, closeSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { shortSessionId } from "./core.js";
-import { getActiveState } from "./policy.js";
+import { getActiveState, shortSessionId } from "./catalog.js";
 import {
   findRuntimeSession,
   listRuntimeSessions,
   livePath,
   registerLiveRuntime,
-} from "./runtime.js";
+} from "./pi-host.js";
 
 export function assertDifferentSession(callerSessionId, targetSessionId) {
   if (!callerSessionId || !targetSessionId || callerSessionId !== targetSessionId)
@@ -24,7 +17,6 @@ export function assertDifferentSession(callerSessionId, targetSessionId) {
   );
 }
 
-/** Resolves a full id, short id, prefix, substring, or path to one session. */
 export function resolveSessionReference(sessions, reference) {
   if (!reference) throw new Error("sessionId is required.");
   const query = String(reference).toLowerCase();
@@ -199,7 +191,6 @@ export function enrichSessionSummaries(sessions: AnyRecord[], limit = sessions.l
   );
 }
 
-/** Orders sessions so every child appears directly under its parent. */
 export function orderSessionTree(sessions) {
   const byKey = sessionKeyMap(sessions);
   const children = new Map();
@@ -312,7 +303,6 @@ export function findSessionSummary(
   );
 }
 
-/** Keeps the current session plus nearby siblings and branch relatives. */
 export function filterSessionNeighborhood(
   sessions,
   currentSession,
@@ -427,7 +417,6 @@ export function runtimeSessionSummary(runtime) {
   };
 }
 
-/** Adds live runtime details without changing persisted session summaries. */
 export function withRuntimeState(session) {
   const runtime = findRuntimeSession(
     (item) => item.session.sessionManager.getSessionId() === session.sessionId,

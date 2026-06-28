@@ -9,7 +9,10 @@ import {
   normalizeAgentDefinition,
   parseMarkdownDefinition,
 } from "../dist/config.js";
-import { resolveSessionPolicy } from "../dist/policy.js";
+import {
+  assertCanCreateSubagent,
+  resolveSessionPolicy,
+} from "../dist/policy.js";
 
 function tempRoot() {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-test-"));
@@ -256,4 +259,61 @@ test("policy uses agentless defaults without active agent", () => {
   assert.equal(policy.thinking, "low");
 
   assert.deepEqual(policy.resources.tools, ["read"]);
+});
+
+test("policy defaults local subagent depth independently from global cap", () => {
+  const agentless = resolveSessionPolicy({
+    settings: {
+      agentDefaults: {},
+      agentlessSession: {},
+      globalMaxSubagentDepth: 6,
+    },
+    allAgents: [],
+    allTools: [],
+    allSkills: [],
+  });
+  const active = resolveSessionPolicy({
+    settings: {
+      agentDefaults: {},
+      agentlessSession: {},
+      globalMaxSubagentDepth: 6,
+    },
+    activeAgent: { name: "builder" },
+    allAgents: [],
+    allTools: [],
+    allSkills: [],
+  });
+
+  assert.equal(agentless.maxSubagentDepth, 1);
+  assert.equal(active.maxSubagentDepth, 1);
+});
+
+test("subagent depth limit uses local budget and absolute global cap", () => {
+  assert.doesNotThrow(() =>
+    assertCanCreateSubagent({
+      currentDepth: 5,
+      maxSubagentDepth: 1,
+      globalMaxSubagentDepth: 6,
+    }),
+  );
+
+  assert.throws(
+    () =>
+      assertCanCreateSubagent({
+        currentDepth: 6,
+        maxSubagentDepth: 1,
+        globalMaxSubagentDepth: 6,
+      }),
+    /globalMaxSubagentDepth is 6/,
+  );
+
+  assert.throws(
+    () =>
+      assertCanCreateSubagent({
+        currentDepth: 1,
+        maxSubagentDepth: 0,
+        globalMaxSubagentDepth: 6,
+      }),
+    /maxSubagentDepth is 0/,
+  );
 });

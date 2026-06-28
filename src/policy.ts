@@ -62,10 +62,7 @@ export function resolveSessionPolicy({
     model: resolved.model,
     thinking: resolved.thinking,
     theme: resolved.theme,
-    maxSubagentDepth: coalesce(
-      resolved.maxSubagentDepth,
-      activeAgent ? 2 : settings.globalMaxSubagentDepth,
-    ),
+    maxSubagentDepth: coalesce(resolved.maxSubagentDepth, 1),
     agentsTool: mergeObjects(
       defaults.agentsTool ?? {},
       mergeObjects(activeAgent?.agentsTool ?? {}, overrides?.agentsTool ?? {}),
@@ -133,6 +130,33 @@ function mergeObjects(base, patch) {
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function assertCanCreateSubagent({
+  currentDepth,
+  maxSubagentDepth,
+  globalMaxSubagentDepth,
+}) {
+  const depth = Math.max(0, integer(currentDepth));
+  const localLimit = integer(maxSubagentDepth);
+  const globalLimit = integer(globalMaxSubagentDepth);
+  const nextDepth = depth + 1;
+
+  if (localLimit < 1)
+    throw new Error(
+      `Cannot create a child session because maxSubagentDepth is ${localLimit}. Reuse an existing session or raise the local limit.`,
+    );
+
+  if (nextDepth > globalLimit)
+    throw new Error(
+      `Cannot create a child session at depth ${nextDepth} because globalMaxSubagentDepth is ${globalLimit}. Reuse an existing session or raise the global limit.`,
+    );
+}
+
+function integer(value) {
+  const number = Number(value);
+
+  return Number.isFinite(number) ? Math.floor(number) : 0;
 }
 
 export const AGENT_CYCLE_SHORTCUT = "f7";

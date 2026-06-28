@@ -421,6 +421,12 @@ or:
 
 ---
 
+## Subagent depth limits
+
+`globalMaxSubagentDepth` is the absolute tree cap, with the root session at depth `0`. `maxSubagentDepth` is local to the current session. A new child session can be created only when the current session has `maxSubagentDepth` of at least `1` and the child would not exceed `globalMaxSubagentDepth`. Sending to an existing session does not affect depth.
+
+---
+
 ## Agent fields
 
 Agent fields can be written in `settings.json` under `agentDefinitions`, or in Markdown agent frontmatter. Defaults below describe the resolved behavior when the field is left out of one agent definition.
@@ -439,7 +445,7 @@ Agent fields can be written in `settings.json` under `agentDefinitions`, or in M
 | `thinking` | `agentDefaults.thinking`, then the current session setting | The thinking level this agent should use by default. |
 | `theme` | `agentDefaults.theme`, then the current theme | The Pi theme used while this agent is active. |
 | `systemPromptFiles` | `agentDefaults.systemPromptFiles`, then no extra prompt file filter | Prompt files to include or exclude. |
-| `maxSubagentDepth` | `agentDefaults.maxSubagentDepth`, then `2` | How many levels of child sessions this agent may create. |
+| `maxSubagentDepth` | `agentDefaults.maxSubagentDepth`, then `1` | Relative child-session budget for this session. `0` blocks new child sessions. Reusing an existing session does not count. |
 | `agentsTool` | `agentDefaults.agentsTool`, then `{}` | Defaults used by the `agents` tool and `/send` while this agent is active. |
 | `agentsTool.async` | `agentDefaults.agentsTool.async`, then `false` | Whether new delegated sessions should run in the background by default. Sends to an existing session always run asynchronously. |
 | `agentsTool.fork` | `agentDefaults.agentsTool.fork`, then `false` | Whether new child sessions should fork the current context by default. |

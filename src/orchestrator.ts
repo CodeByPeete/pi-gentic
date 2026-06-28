@@ -18,6 +18,7 @@ import {
   activeAgentName,
   appendActiveState,
   assertAvailableAgent,
+  assertCanCreateSubagent,
   configuredDefaultAgent,
   filterAvailableAgents,
   getActiveState,
@@ -68,6 +69,7 @@ import {
   currentSessionSummary,
   enrichSessionSummaries,
   listSessionSummariesFast,
+  resolveCurrentSessionDepth,
   resolveSessionReference,
   sessionDiscoveryScope,
   withRuntimeState,
@@ -600,7 +602,7 @@ export class PiGenticOrchestrator {
       return session;
     }
 
-    const session = await this.createChildSession(ctx, input);
+    const session = await this.createChildSession(ctx, input, config);
 
     if (input.agent)
       await this.loadAgentIntoSession(
@@ -623,13 +625,35 @@ export class PiGenticOrchestrator {
     return session;
   }
 
+  async assertCanCreateChildSession(ctx: PiContext, config: AnyRecord) {
+    const policy = this.resolvePolicy(ctx, config);
+    const currentDepth = await this.currentSessionDepth(ctx);
+
+    return assertCanCreateSubagent({
+      currentDepth,
+      maxSubagentDepth: policy.maxSubagentDepth,
+      globalMaxSubagentDepth: config.settings.globalMaxSubagentDepth,
+    });
+  }
+
+  async currentSessionDepth(ctx: PiContext) {
+    const current = currentSessionSummary(ctx);
+
+    if (!current) return 0;
+    const sessionDir = ctx.sessionManager.getSessionDir();
+    const persisted = await listDiscoverySessionSources(ctx.cwd, sessionDir);
+    return resolveCurrentSessionDepth(current, persisted, listRuntimeSessions());
+  }
+
   async createChildSession(
     ctx: PiContext,
     input: AnyRecord,
+    config: AnyRecord = this.load(ctx),
   ): Promise<PiRuntimeSession> {
     let sessionManager;
     const sessionDir = ctx.sessionManager.getSessionDir();
     persistSessionImmediately(ctx.sessionManager);
+    await this.assertCanCreateChildSession(ctx, config);
     const parentSession = ctx.sessionManager.getSessionFile();
 
     if (input.fork && parentSession) {

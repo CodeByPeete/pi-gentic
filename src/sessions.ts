@@ -274,6 +274,20 @@ export function buildSessionTree(
   );
 }
 
+export function resolveCurrentSessionDepth(
+  currentSession: AnyRecord | undefined,
+  persistedSessions: AnyRecord[],
+  runtimeSessions: PiRuntimeSession[] = listRuntimeSessions(),
+) {
+  if (!currentSession) return 0;
+  const session = findSessionSummary(
+    buildSessionTree(currentSession, persistedSessions, runtimeSessions),
+    currentSession,
+  );
+
+  return Math.max(0, Number(session?.depth ?? 0));
+}
+
 export function sessionCompletionScope(
   sessions: AnyRecord[],
   currentSession: AnyRecord | undefined,

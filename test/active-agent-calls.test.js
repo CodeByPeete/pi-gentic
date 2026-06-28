@@ -32,6 +32,30 @@ test("aborting a session aborts targeted agent calls recursively", async () => {
   }
 });
 
+test("aborting a target session passes the session skip guard to active calls", async () => {
+  let received;
+  const call = registerAgentCall({
+    callerSessionId: "parent",
+    targetSessionId: "child",
+    abort: async (options) => {
+      received = options;
+    },
+  });
+
+  try {
+    const count = await abortAgentCallsForSession("child", {
+      actor: "test",
+      skipSessionAbort: "child",
+    });
+
+    assert.equal(count, 1);
+
+    assert.equal(received.skipSessionAbort, "child");
+  } finally {
+    call.unregister();
+  }
+});
+
 test("aborting one tool call leaves sibling calls running", async () => {
   const aborted = [];
   const first = registerAgentCall({

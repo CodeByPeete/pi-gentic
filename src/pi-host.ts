@@ -132,7 +132,8 @@ export async function abortAgentCallsForSession(sessionId, options = {}) {
 
 function activeCallsForSession(sessionId) {
   return [...activeCalls.values()].filter(
-    (call) => call.callerSessionId === sessionId,
+    (call) =>
+      call.callerSessionId === sessionId || call.targetSessionId === sessionId,
   );
 }
 
@@ -345,8 +346,11 @@ function installSessionAbortBridge(
   AgentSession.prototype.abort = async function abortWithPiGenticTargets(
     ...args
   ) {
-    await abortAgentCallsForSession(this.sessionManager.getSessionId?.(), {
+    const sessionId = this.sessionManager.getSessionId?.();
+
+    await abortAgentCallsForSession(sessionId, {
       actor: "aborted session",
+      skipSessionAbort: sessionId,
     });
 
     return state.hostAbortSession?.apply(this, args);

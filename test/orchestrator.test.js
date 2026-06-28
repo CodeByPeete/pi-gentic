@@ -10,8 +10,7 @@ import {
   filterSkillPrompt,
   parseSkillEntries,
 } from "../dist/catalog.js";
-import { abortActor } from "../dist/orchestration.js";
-import { deliverReturnToCaller, displayTargetAnswerIfVisible } from "../dist/orchestration.js";
+import { abortActor, deliverReturnToCaller } from "../dist/orchestration.js";
 import {
   resolveReturnDelivery,
   sendConfirmationText,
@@ -229,52 +228,6 @@ test("async return delivery steers the caller at the next model boundary", async
     text: "Async answer",
     options: { deliverAs: "steer" },
   });
-});
-
-test("target final answer is displayed when that target session is visible", async () => {
-  const sent = [];
-  const delivered = await displayTargetAnswerIfVisible({
-    ctx: {
-      cwd: process.cwd(),
-      sessionManager: { getSessionId: () => "target" },
-    },
-    target: {
-      session: {
-        sendCustomMessage: (...args) => sent.push(args),
-        sessionManager: { appendCustomMessageEntry() {} },
-      },
-    },
-    targetSessionId: "target",
-    text: "final text",
-  });
-
-  assert.equal(delivered, true);
-
-  assert.equal(sent[0][0].content, "Final answer from this session:\nfinal text");
-
-  assert.deepEqual(sent[0][1], { triggerTurn: false });
-});
-
-test("target final answer is not displayed in unrelated visible sessions", async () => {
-  const sent = [];
-  const delivered = await displayTargetAnswerIfVisible({
-    ctx: {
-      cwd: process.cwd(),
-      sessionManager: { getSessionId: () => "other" },
-    },
-    target: {
-      session: {
-        sendCustomMessage: (...args) => sent.push(args),
-        sessionManager: { appendCustomMessageEntry() {} },
-      },
-    },
-    targetSessionId: "target",
-    text: "final text",
-  });
-
-  assert.equal(delivered, false);
-
-  assert.deepEqual(sent, []);
 });
 
 test("send return persists when the captured caller is no longer active", async () => {
@@ -502,6 +455,52 @@ test("abort actor is always defined for caller and agent sessions", () => {
     }),
     "[researcher] agent",
   );
+});
+
+test("aborted child outcomes are delivered back so parent sessions can continue", async () => {
+  const userMessages = [];
+  const outcome = sessionRunOutcome(
+    {
+      agentName: "worker",
+      session: {
+        sessionManager: { getSessionId: () => "child-session" },
+        agent: {
+          state: {
+            messages: [
+              {
+                role: "assistant",
+                content: "",
+                stopReason: "aborted",
+              },
+            ],
+          },
+        },
+      },
+    },
+    { request: "do work" },
+  );
+
+  assert.equal(outcome.status, "aborted");
+
+  await deliverReturnToCaller({
+    pi: {
+      sendUserMessage: (text, options) => userMessages.push({ text, options }),
+    },
+    ctx: {
+      cwd: process.cwd(),
+      sessionManager: { getSessionId: () => "parent" },
+      isIdle: () => false,
+    },
+    callerSessionId: "parent",
+    callerSessionManager: { appendMessage() {} },
+    text: outcome.text,
+    invoke: true,
+    queue: "steer",
+  });
+
+  assert.match(userMessages[0].text, /was aborted while handling your request/);
+
+  assert.deepEqual(userMessages[0].options, { deliverAs: "steer" });
 });
 
 test("sessions that stop without an answer keep a stopped status", () => {

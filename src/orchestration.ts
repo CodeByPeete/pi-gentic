@@ -353,41 +353,6 @@ export function persistSynchronousToolCard(
   persist?.(ctx.sessionManager);
 }
 
-export async function displayTargetAnswerIfVisible({
-  ctx,
-  target,
-  targetSessionId,
-  text,
-}) {
-  if (!contextStillActive(ctx, targetSessionId)) return false;
-
-  const message = {
-    customType: "pi-gentic:return-context",
-    content: `Final answer from this session:\n${text}`,
-    display: true,
-    details: { kind: "targetAnswer", sessionId: targetSessionId },
-  };
-
-  try {
-    if (typeof target.session.sendCustomMessage === "function") {
-      await target.session.sendCustomMessage(message, { triggerTurn: false });
-
-      return true;
-    }
-
-    target.session.sessionManager.appendCustomMessageEntry?.(
-      message.customType,
-      message.content,
-      message.display,
-      message.details,
-    );
-
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function contextStillActive(ctx, callerSessionId?: string) {
   try {
     void ctx.cwd;
@@ -1276,7 +1241,8 @@ export class PiGenticOrchestrator {
           actor: options.actor ?? abortActor(ctx),
           at: Date.now(),
         };
-        await target.session.abort();
+        if (options.skipSessionAbort !== targetSessionId)
+          await target.session.abort();
       },
     });
     const abortFromSignal = () =>
@@ -1332,13 +1298,6 @@ export class PiGenticOrchestrator {
         target.lastActivities =
           completed.activities ?? target.lastActivities ?? [];
         target.runStartedAt = undefined;
-        if (outcome.status === "done")
-          await displayTargetAnswerIfVisible({
-            ctx: activeVisibleContext() ?? ctx,
-            target: getRuntimeSession(targetSessionId) ?? target,
-            targetSessionId,
-            text: outcome.text,
-          });
         const returnText =
           outcome.status === "done"
             ? buildReturnText(target.agentName, targetSessionId, outcome.text)

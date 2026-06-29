@@ -1,6 +1,6 @@
 {
   "name": "pi-gentic",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "description": "Pi extension for orchestrating durable agent sessions, delegation, and worktrees.",
   "repository": {

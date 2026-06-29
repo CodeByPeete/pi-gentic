@@ -295,24 +295,17 @@ The extension is organized around one main entrypoint and a small set of focused
 flowchart TD
     Pi[Pi runtime] --> Extension[src/extension.ts]
 
-    Extension --> Commands[src/commands.ts]
-    Extension --> Orchestrator[src/orchestrator.ts]
+    Extension --> Interface[src/interface.ts]
+    Extension --> Orchestration[src/orchestration.ts]
     Extension --> UI[src/ui.ts]
 
-    Orchestrator --> Policy[src/policy.ts]
-    Orchestrator --> Prompt[src/prompt.ts]
-    Orchestrator --> Sessions[src/sessions.ts]
-    Orchestrator --> Runtime[src/runtime.ts]
-    Orchestrator --> Runs[src/runs.ts]
-    Orchestrator --> Worktrees[src/worktrees.ts]
+    Orchestration --> Catalog[src/catalog.ts]
+    Orchestration --> Sessions[src/sessions.ts]
+    Orchestration --> Host[src/pi-host.ts]
 
-    Config[src/config.ts] --> Policy
-    Config --> Prompt
-
-    Commands --> Orchestrator
+    Interface --> Orchestration
     Sessions --> UI
-    Runs --> UI
-    Runtime --> Sessions
+    Host --> Sessions
 
     classDef edge fill:#101820,stroke:#79ffe1,color:#ffffff;
     classDef core fill:#251a3f,stroke:#b991ff,color:#ffffff;
@@ -320,23 +313,20 @@ flowchart TD
     classDef data fill:#23351f,stroke:#a6e875,color:#ffffff;
 
     class Pi,Extension edge;
-    class Orchestrator core;
+    class Orchestration core;
     class UI ui;
-    class Commands,Policy,Prompt,Sessions,Runtime,Runs,Worktrees,Config data;
+    class Interface,Catalog,Sessions,Host data;
 ```
 
 In plain English:
 
 - `extension.ts` connects `pi-gentic` to Pi.
-- `commands.ts` parses `/agent` and `/send`.
-- `orchestrator.ts` decides what should happen.
-- `policy.ts` resolves agent permissions and defaults.
-- `prompt.ts` builds the prompt additions for active agents.
+- `interface.ts` parses commands and tool input.
+- `orchestration.ts` decides what should happen.
+- `catalog.ts` loads configuration, skills, prompts, policies, and worktrees.
 - `sessions.ts` finds and organizes related sessions.
-- `runtime.ts` tracks live running sessions.
-- `runs.ts` formats run status and return messages.
+- `pi-host.ts` bridges Pi runtime behavior.
 - `ui.ts` renders cards and trees.
-- `worktrees.ts` prepares Git worktrees.
 
 ---
 
@@ -488,7 +478,7 @@ pi install pi-gentic
 Or install from a Git repository:
 
 ```bash
-pi install git+https://github.com/CodeByPeete/pi-gentic.git#v0.1.0
+pi install git+https://github.com/CodeByPeete/pi-gentic.git#v0.2.0
 ```
 
 ---

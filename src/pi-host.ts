@@ -1,14 +1,7 @@
-/**
- * Runtime integration with Pi.
- *
- * This module owns live session hosts, background runtime lookup, recursive
- * abort wiring, and the prototype bridges needed to resume live sessions.
- */
 import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { defaultAgentDir } from "./config.js";
-import { getActiveState } from "./policy.js";
+import { defaultAgentDir, getActiveState } from "./catalog.js";
 
 type LiveRuntimeState = {
   liveRuntimes: Map<string, AnyRecord>;
@@ -43,7 +36,6 @@ type PiCodingAgentPeer = {
 
 let peerModule: Promise<PiCodingAgentPeer> | undefined;
 
-/** Resolves Pi peer APIs from tests, local installs, or Pi managed installs. */
 async function piCodingAgent(): Promise<PiCodingAgentPeer> {
   const managedCli = path.join(
     homedir(),
@@ -61,8 +53,8 @@ async function piCodingAgent(): Promise<PiCodingAgentPeer> {
     .map((file) => path.join(path.dirname(String(file)), "index.js"));
 
   peerModule ??= importFirst([
-    "@earendil-works/pi-coding-agent",
     ...indexFiles.map((file) => pathToFileURL(file).href),
+    "@earendil-works/pi-coding-agent",
   ]);
 
   return peerModule;
@@ -140,7 +132,8 @@ export async function abortAgentCallsForSession(sessionId, options = {}) {
 
 function activeCallsForSession(sessionId) {
   return [...activeCalls.values()].filter(
-    (call) => call.callerSessionId === sessionId,
+    (call) =>
+      call.callerSessionId === sessionId || call.targetSessionId === sessionId,
   );
 }
 
@@ -182,7 +175,6 @@ function isAbortState(value: unknown): value is AbortState {
 
 export const LIVE_SESSION_PREFIX = "pi-gentic-live:";
 
-/** Installs bridge hooks once so live background sessions can be resumed in Pi. */
 export function installLiveSessionBridge() {
   const state = getLiveRuntimeState();
 
@@ -354,8 +346,11 @@ function installSessionAbortBridge(
   AgentSession.prototype.abort = async function abortWithPiGenticTargets(
     ...args
   ) {
-    await abortAgentCallsForSession(this.sessionManager.getSessionId?.(), {
+    const sessionId = this.sessionManager.getSessionId?.();
+
+    await abortAgentCallsForSession(sessionId, {
       actor: "aborted session",
+      skipSessionAbort: sessionId,
     });
 
     return state.hostAbortSession?.apply(this, args);
@@ -526,7 +521,6 @@ export function livePath(sessionId) {
 
 const state = getLiveRuntimeState();
 
-/** Creates a Pi AgentSessionRuntime for a background or reopened session. */
 export async function createLiveRuntime({
   cwd,
   sessionManager,
@@ -602,7 +596,6 @@ export function findRuntimeSession(predicate: (runtime: PiRuntimeSession) => boo
   return [...runtimeSessions.values()].find(predicate);
 }
 
-/** Registers the latest known runtime state for session discovery and status. */
 export function setRuntimeSession(sessionId: string, runtime: PiRuntimeSession) {
   const existing = runtimeSessions.get(sessionId);
   const next = existing ?? runtime;

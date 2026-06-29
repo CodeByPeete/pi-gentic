@@ -1,12 +1,4 @@
-/**
- * User-facing command language for pi-gentic.
- *
- * This file keeps slash-command parsing and completion together so every
- * surface uses the same flag rules and session id suggestions.
- */
-import { loadConfiguration } from "./config.js";
-import { loadAvailableSkills } from "./skills.js";
-import { isRecord, shortSessionId } from "./core.js";
+import { loadAvailableSkills, loadConfiguration, isRecord, shortSessionId } from "./catalog.js";
 
 const SEND_VALUE_FLAGS = new Set([
   "agent",
@@ -48,7 +40,6 @@ const SEND_FLAGS = [
 
 const THINKING_LEVELS = ["low", "medium", "high"];
 
-/** Splits a slash command like a shell, while preserving quoted message text. */
 export function tokenizeCommandLine(input: string) {
   const tokens: string[] = [];
   let current = "";
@@ -137,7 +128,6 @@ export function parseAgentCommand(input) {
   return { agent: words[0], sessionId };
 }
 
-/** Converts send command text into the same fields accepted by the agents tool. */
 export function parseSkillCommand(input: string) {
   const tokens = tokenizeCommandLine(input.trim());
   const name = tokens[0] ?? "";
@@ -287,7 +277,6 @@ export function completeAgents(prefix, activeAgentName, cwd = process.cwd()) {
     }));
 }
 
-/** Suggests only the values that make sense at the cursor position. */
 type CompletionOptions =
   | string
   | {

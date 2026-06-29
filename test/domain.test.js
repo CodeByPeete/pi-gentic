@@ -7,13 +7,13 @@ import {
   formatDuration,
   parseIntegerRadius,
   shortSessionId,
-} from "../dist/core.js";
+} from "../dist/catalog.js";
 import {
   normalizeToolInput,
   parseAgentCommand,
   parseSendCommand,
   tokenizeCommandLine,
-} from "../dist/commands.js";
+} from "../dist/interface.js";
 
 const names = ["read", "write", "bash", "agents", "ask_question", "reviewer"];
 

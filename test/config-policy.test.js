@@ -7,17 +7,17 @@ import {
   buildManualSkillMessage,
   completeSkill,
   parseSkillCommand,
-} from "../dist/commands.js";
+} from "../dist/interface.js";
 import {
   loadConfiguration,
   normalizeAgentDefinition,
   parseMarkdownDefinition,
-} from "../dist/config.js";
-import { loadAvailableSkills } from "../dist/skills.js";
+} from "../dist/catalog.js";
+import { loadAvailableSkills } from "../dist/catalog.js";
 import {
   assertCanCreateSubagent,
   resolveSessionPolicy,
-} from "../dist/policy.js";
+} from "../dist/catalog.js";
 
 function tempRoot() {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-test-"));

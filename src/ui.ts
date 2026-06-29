@@ -1,16 +1,11 @@
-/**
- * Terminal UI rendering for pi-gentic.
- *
- * Cards and tree pickers render in plain terminal cells, so width calculations
- * must account for ANSI colors, emoji, combining marks, and wide characters.
- */
-import { formatDuration, isRecord, shortSessionId } from "./core.js";
+import { formatDuration, isRecord, shortSessionId } from "./catalog.js";
 
 const RUNNING_CARD_TTL_MS = 10 * 60_000;
 
 const COMPLETED_CARD_TTL_MS = 60_000;
 
 const liveCards = new Map();
+const liveCardRefreshers = new Set<() => void>();
 
 export function liveCardKey(details) {
   if (!details || typeof details !== "object") return undefined;
@@ -35,6 +30,7 @@ export function setLiveCardDetails(
   timer.unref?.();
 
   liveCards.set(key, { details: nextDetails, timer });
+  notifyLiveCardRefreshers();
 
   return nextDetails;
 }
@@ -52,6 +48,12 @@ export function clearLiveCardDetails(details) {
   if (entry?.timer) clearTimeout(entry.timer);
 
   if (key) liveCards.delete(key);
+
+  notifyLiveCardRefreshers();
+}
+
+function notifyLiveCardRefreshers() {
+  for (const refresh of liveCardRefreshers) refresh();
 }
 
 function defaultTtl(details) {
@@ -145,7 +147,6 @@ export function fit(text, width) {
   return `${takeVisiblePrefix(value, Math.max(0, width - 1), true).text}…`;
 }
 
-/** Measures terminal cell width after stripping ANSI control sequences. */
 export function visibleLength(text) {
   const value = String(text ?? "");
   let width = 0;
@@ -413,6 +414,7 @@ export function startLiveRefresh(
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    liveCardRefreshers.delete(stop.refresh);
     clearRefreshTimer();
     clearPulseTimer();
 
@@ -421,7 +423,6 @@ export function startLiveRefresh(
     try {
       ctx.ui.setWidget(widgetKey, undefined, { placement: "belowEditor" });
     } catch {
-      // Stale command contexts are expected after session switches.
     }
   };
   const renderPulse = () => {
@@ -447,6 +448,8 @@ export function startLiveRefresh(
     refreshTimer.unref?.();
   };
 
+  if (options.trackLiveCards !== false) liveCardRefreshers.add(stop.refresh);
+
   if (options.autoPulse !== false) {
     pulseTimer = setInterval(
       renderPulse,
@@ -463,6 +466,39 @@ export function startLiveRefresh(
   timeout.unref?.();
 
   return stop;
+}
+
+
+export function startSessionLiveCardRefresh(ctx: PiContext) {
+  if (!sessionHasVisibleLiveCard(ctx)) {
+    const stop = (() => {}) as (() => void) & { refresh?: () => void };
+
+    stop.refresh = () => {};
+
+    return stop;
+  }
+  const stop = startLiveRefresh(ctx, "session-live-cards", {
+    pulseIntervalMs: 1000,
+    ttlMs: RUNNING_CARD_TTL_MS,
+  });
+
+  stop.refresh?.();
+
+  return stop;
+}
+
+export function sessionHasVisibleLiveCard(ctx: PiContext) {
+  const entries = [
+    ...(ctx.sessionManager?.getEntries?.() ?? []),
+    ...(ctx.sessionManager?.getBranch?.() ?? []),
+  ];
+
+  return entries.some((entry) => {
+    if (entry?.customType !== CARD_MESSAGE_TYPE || entry.display === false) return false;
+    const details = getLiveCardDetails(entry.details) ?? entry.details;
+
+    return ["queued", "running"].includes(details?.status);
+  });
 }
 
 export function styleAgentName(
@@ -536,7 +572,6 @@ export function createSessionTreePicker(
   });
 }
 
-/** Interactive orchestration tree used by the orchestration-tree picker. */
 export class SessionTreeCard {
   sessions: AnyRecord[];
   theme: PiTheme;
@@ -773,7 +808,7 @@ export class SessionTreeCard {
         session.name ??
         "Untitled session",
     );
-    const id = this.dim(`(${shortSessionId(session.sessionId ?? session.id)})`);
+    const id = this.dim(`(${visibleSessionId(session, this.sessions)})`);
     const isSelected = this.onSelect && index === this.clampedSelectedIndex();
     const selectMarker = this.onSelect
       ? isSelected
@@ -824,6 +859,26 @@ export class SessionTreeCard {
   }
 }
 
+function visibleSessionId(session: AnyRecord, sessions: AnyRecord[]) {
+  const full = String(session.sessionId ?? session.id ?? "");
+
+  if (!full) return shortSessionId(full);
+  let length = 8;
+
+  while (
+    length < full.length &&
+    sessions.some((item) => {
+      const other = String(item.sessionId ?? item.id ?? "");
+
+      return other && other !== full && other.slice(0, length) === full.slice(0, length);
+    })
+  ) {
+    length = Math.min(full.length, length + 4);
+  }
+
+  return full.slice(0, length);
+}
+
 export function sessionInactiveMs(session: AnyRecord) {
   if (!session.running) return Number(session.inactiveMs ?? 0);
   const timestamp = session.lastActivityAt ?? session.modified ?? 0;
@@ -852,7 +907,6 @@ export function renderAgentsCall() {
   return new InvisibleComponent();
 }
 
-/** Reuses card instances during streaming updates so live details stay smooth. */
 export function renderAgentsResult(
   result: AnyRecord,
   options: AnyRecord,
@@ -920,7 +974,6 @@ class InvisibleComponent {
   }
 }
 
-/** Chat card renderer for load, send, status, discovery, and error results. */
 class AgentsCard {
   theme: PiTheme;
   data: AnyRecord;
@@ -1087,7 +1140,7 @@ class AgentsCard {
       ? `${this.agentName(session.agentName)} `
       : "";
     const message = this.sessionMessage(session);
-    const id = this.dim(`(${shortSessionId(session.sessionId ?? session.id)})`);
+    const id = this.dim(`(${visibleSessionId(session, this.data.sessions ?? [])})`);
     const left = `${this.dim(connector)}${indicator} ${agent}`;
     const inactive = session.running
       ? ` ${this.dim("Inactive:")} ${this.timer(formatDuration(sessionInactiveMs(session)))}`
@@ -1117,7 +1170,7 @@ class AgentsCard {
       lines.push(
         "",
         this.bold("Resolved system prompt"),
-        ...wrap(this.data.systemPrompt, width),
+        ...wrap(formatSystemPromptForCard(this.data.systemPrompt), width),
       );
     }
 
@@ -1225,6 +1278,32 @@ class AgentsCard {
   agentName(text: string) {
     return this.theme.bold(styleAgentName(text, { bracketed: true }));
   }
+}
+
+function formatSystemPromptForCard(systemPrompt: unknown) {
+  return String(systemPrompt ?? "")
+    .replace(
+      "The following skills provide specialized instructions for specific tasks.",
+      "Available skills",
+    )
+    .replace(/<available_skills>\s*([\s\S]*?)\s*<\/available_skills>/g, (_full, body) =>
+      String(body)
+        .replace(/<skill>\s*([\s\S]*?)\s*<\/skill>/g, (_skill, skillBody) => {
+          const name = xmlText(skillBody, "name");
+          const description = xmlText(skillBody, "description");
+          const location = xmlText(skillBody, "location");
+          return [name ? `Skill: ${name}` : "", description, location ? `Path: ${location}` : ""]
+            .filter(Boolean)
+            .join("\n");
+        })
+        .replace(/<\/?(?:skill|name|description|location)[^>]*>/g, "")
+        .trim(),
+    )
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+function xmlText(text: string, tag: string) {
+  return text.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`))?.[1]?.trim();
 }
 
 function formatActivity(activity: unknown) {

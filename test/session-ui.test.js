@@ -3,9 +3,12 @@ import test from "node:test";
 import {
   AGENT_WIDGET_KEY,
   LIVE_REFRESH_WIDGET_KEY,
+  clearLiveCardDetails,
   setAgentLabel,
+  setLiveCardDetails,
   showCard,
   startLiveRefresh,
+  startSessionLiveCardRefresh,
 } from "../dist/ui.js";
 
 test("agent label appears right-aligned below the editor without a prefix", () => {
@@ -93,6 +96,40 @@ test("live refresh stop clears the widget even before the first pulse", () => {
       { placement: "belowEditor" },
     ],
   ]);
+});
+
+test("resumed sessions with visible live cards refresh from live updates", async () => {
+  const calls = [];
+  const cardId = "send:live-child:1";
+  const ctx = {
+    mode: "tui",
+    ui: { setWidget: (...args) => calls.push(args) },
+    sessionManager: {
+      getEntries: () => [
+        {
+          customType: "pi-gentic:card",
+          display: true,
+          details: { cardId, kind: "send", status: "running" },
+        },
+      ],
+    },
+  };
+
+  setLiveCardDetails({ cardId, kind: "send", status: "running" });
+  const stop = startSessionLiveCardRefresh(ctx);
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const rendered = calls.length;
+
+  setLiveCardDetails({ cardId, updatedAt: Date.now() });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+
+  stop();
+  clearLiveCardDetails({ cardId });
+
+  assert.ok(rendered > 0);
+
+  assert.ok(calls.length > rendered);
 });
 
 test("agent load cards are sent immediately to the visible session", () => {

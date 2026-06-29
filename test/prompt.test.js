@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildResolvedSystemPrompt } from "../dist/prompt.js";
+import { buildResolvedSystemPrompt } from "../dist/catalog.js";
 
 const basePrompt = [
   "Base SYSTEM.md prompt.",

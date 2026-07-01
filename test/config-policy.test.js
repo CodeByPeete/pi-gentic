@@ -93,6 +93,31 @@ test("configuration leaves defaultAgent undefined when it is not configured", ()
   assert.equal(config.settings.defaultAgent, undefined);
 });
 
+test("configuration defaults session messaging to the current tree", () => {
+  const config = loadConfiguration({ roots: [] });
+
+  assert.equal(config.settings.sessionMessagingScope, "tree");
+});
+
+test("configuration accepts top-level opt out for cross-tree messaging", () => {
+  const { dir, cleanup } = tempRoot();
+
+  try {
+    const root = path.join(dir, "extensions", "pi-gentic");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      path.join(root, "settings.json"),
+      JSON.stringify({ sessionMessagingScope: "all" }),
+    );
+
+    const config = loadConfiguration({ agentDir: dir, cwd: dir });
+
+    assert.equal(config.settings.sessionMessagingScope, "all");
+  } finally {
+    cleanup();
+  }
+});
+
 test("project agents override global agents", () => {
   const { dir, cleanup } = tempRoot();
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   assertDifferentSession,
+  assertSessionMessagingScope,
   buildSessionTree,
   cachedPersistedSessions,
   enrichSessionSummaries,
@@ -71,6 +72,57 @@ test("rejects sending a session message to the current session", () => {
 
   assert.doesNotThrow(() =>
     assertDifferentSession("12345678-aaaa", "87654321-bbbb"),
+  );
+});
+
+test("session messaging scope keeps existing session sends inside one tree", () => {
+  const scopedSessions = [
+    { sessionId: "root-a", path: "/sessions/root-a.jsonl" },
+    {
+      sessionId: "child-a",
+      path: "/sessions/child-a.jsonl",
+      parentSessionPath: "/sessions/root-a.jsonl",
+    },
+    {
+      sessionId: "sibling-a",
+      path: "/sessions/sibling-a.jsonl",
+      parentSessionPath: "/sessions/root-a.jsonl",
+    },
+    { sessionId: "root-b", path: "/sessions/root-b.jsonl" },
+    {
+      sessionId: "child-b",
+      path: "/sessions/child-b.jsonl",
+      parentSessionPath: "/sessions/root-b.jsonl",
+    },
+  ];
+
+  assert.doesNotThrow(() =>
+    assertSessionMessagingScope(
+      scopedSessions[1],
+      scopedSessions[2],
+      scopedSessions,
+      { scope: "tree" },
+    ),
+  );
+
+  assert.throws(
+    () =>
+      assertSessionMessagingScope(
+        scopedSessions[1],
+        scopedSessions[4],
+        scopedSessions,
+        { scope: "tree" },
+      ),
+    /different session tree.*Caller root: root-a.*Target root: root-b/,
+  );
+
+  assert.doesNotThrow(() =>
+    assertSessionMessagingScope(
+      scopedSessions[1],
+      scopedSessions[4],
+      scopedSessions,
+      { scope: "all" },
+    ),
   );
 });
 

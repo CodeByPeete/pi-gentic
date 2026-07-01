@@ -275,6 +275,7 @@ function createDefaultSettings() {
     agentDefinitions: [],
     agentDefaults: {},
     globalMaxSubagentDepth: 6,
+    sessionMessagingScope: "tree",
   };
 }
 
@@ -319,6 +320,9 @@ function mergeRootSettings(target, source) {
       Number(source.globalMaxSubagentDepth),
     );
   }
+
+  if (["tree", "all"].includes(source.sessionMessagingScope))
+    target.sessionMessagingScope = source.sessionMessagingScope;
 }
 
 function mergeObjects(base, patch) {

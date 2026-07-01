@@ -45,6 +45,7 @@ import {
 } from "./pi-host.js";
 import {
   assertDifferentSession,
+  assertSessionMessagingScope,
   assignTreeDepths,
   buildSessionTree,
   cachedPersistedSessions,
@@ -53,6 +54,7 @@ import {
   listSessionSummariesFast,
   resolveCurrentSessionDepth,
   resolveSessionReference,
+  runtimeSessionSummary,
   sessionDiscoveryScope,
   withRuntimeState,
 } from "./sessions.js";
@@ -1419,6 +1421,7 @@ export class PiGenticOrchestrator {
         ctx.sessionManager.getSessionId(),
         session.session.sessionManager.getSessionId(),
       );
+      await this.assertCanMessageSession(ctx, session, config);
 
       if (input.agent)
         await this.loadAgentIntoSession(
@@ -1465,6 +1468,26 @@ export class PiGenticOrchestrator {
       maxSubagentDepth: policy.maxSubagentDepth,
       globalMaxSubagentDepth: config.settings.globalMaxSubagentDepth,
     });
+  }
+
+  async assertCanMessageSession(
+    ctx: PiContext,
+    target: PiRuntimeSession,
+    config: AnyRecord,
+  ) {
+    if (config.settings.sessionMessagingScope === "all") return;
+    const sessionDir = ctx.sessionManager.getSessionDir();
+    const persisted = await listDiscoverySessionSources(ctx.cwd, sessionDir);
+
+    assertSessionMessagingScope(
+      currentSessionSummary(ctx),
+      runtimeSessionSummary(target),
+      [
+        ...persisted,
+        ...listRuntimeSessions().map(runtimeSessionSummary),
+      ],
+      { scope: config.settings.sessionMessagingScope },
+    );
   }
 
   async currentSessionDepth(ctx: PiContext) {

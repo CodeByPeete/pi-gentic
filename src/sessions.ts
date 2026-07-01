@@ -17,6 +17,57 @@ export function assertDifferentSession(callerSessionId, targetSessionId) {
   );
 }
 
+export function assertSessionMessagingScope(
+  callerSession: AnyRecord | undefined,
+  targetSession: AnyRecord | undefined,
+  sessions: AnyRecord[],
+  options: AnyRecord = {},
+) {
+  if (options.scope === "all") return;
+  const tree = mergeSessionSummaries([
+    ...sessions,
+    callerSession,
+    targetSession,
+  ]);
+  const callerRoot = sessionTreeRoot(callerSession, tree);
+  const targetRoot = sessionTreeRoot(targetSession, tree);
+
+  if (callerRoot && targetRoot && sameSessionIdentity(callerRoot, targetRoot))
+    return;
+
+  throw new Error(
+    `Cannot send a message to session ${sessionDisplayId(targetSession)} because it belongs to a different session tree. Caller root: ${sessionDisplayId(callerRoot)}. Target root: ${sessionDisplayId(targetRoot)}.`,
+  );
+}
+
+export function sessionTreeRoot(
+  session: AnyRecord | undefined,
+  sessions: AnyRecord[],
+) {
+  if (!session) return undefined;
+  const byKey = sessionKeyMap(sessions);
+  let current = findSessionSummary(sessions, session) ?? session;
+
+  for (let guard = 0; guard < 100; guard++) {
+    const parentKey = parentKeys(current).find((key) => byKey.has(key));
+
+    if (!parentKey) {
+      const unresolvedParentKey = parentKeys(current)[0];
+
+      return unresolvedParentKey
+        ? {
+            sessionId: idFromPath(unresolvedParentKey),
+            path: unresolvedParentKey,
+          }
+        : current;
+    }
+
+    current = byKey.get(parentKey);
+  }
+
+  return current;
+}
+
 export function resolveSessionReference(sessions, reference) {
   if (!reference) throw new Error("sessionId is required.");
   const query = String(reference).toLowerCase();
@@ -543,6 +594,21 @@ function cleanSessionMessage(text) {
 
 function isAncestorOrDescendant(a, b, byKey) {
   return isAncestor(a, b, byKey) || isAncestor(b, a, byKey);
+}
+
+function sameSessionIdentity(a, b) {
+  const rightKeys = new Set(sessionKeys(b));
+
+  return sessionKeys(a).some((key) => rightKeys.has(key));
+}
+
+function sessionDisplayId(session) {
+  return (
+    shortSessionId(session?.sessionId ?? session?.id) ||
+    shortSessionId(idFromPath(session?.path)) ||
+    shortSessionId(session?.path) ||
+    "unknown"
+  );
 }
 
 function isAncestor(ancestor, session, byKey) {

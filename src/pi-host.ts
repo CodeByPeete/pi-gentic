@@ -17,6 +17,7 @@ type LiveRuntimeState = {
   newSessionBridgeInstalled: boolean;
   abortBridgeInstalled: boolean;
   promptBridgeInstalled: boolean;
+  disposeBridgeInstalled: boolean;
   escapeBridgeInstalled: boolean;
   submitBridgeInstalled: boolean;
 };
@@ -89,6 +90,7 @@ export function getLiveRuntimeState(): LiveRuntimeState {
     newSessionBridgeInstalled: false,
     abortBridgeInstalled: false,
     promptBridgeInstalled: false,
+    disposeBridgeInstalled: false,
     escapeBridgeInstalled: false,
     submitBridgeInstalled: false,
   });
@@ -187,6 +189,7 @@ export function installLiveSessionBridge() {
     installRuntimeNewSessionBridge(state, peer);
     installSessionAbortBridge(state, peer);
     installSessionPromptBridge(state, peer);
+    installSessionDisposeBridge(state, peer);
     installInteractiveEscapeBridge(state, peer);
     installInteractiveSubmitBridge(state, peer);
   });
@@ -402,6 +405,30 @@ function installSessionPromptBridge(
       () => state.hostPromptSession?.apply(this, args),
       args[0],
     );
+  };
+}
+
+function installSessionDisposeBridge(
+  state: LiveRuntimeState,
+  { AgentSession }: Pick<PiCodingAgentPeer, "AgentSession">,
+) {
+  if (state.disposeBridgeInstalled) return;
+  state.disposeBridgeInstalled = true;
+  const dispose = AgentSession.prototype.dispose;
+
+  AgentSession.prototype.dispose = function disposeWithPiGenticRuntimeCleanup(
+    ...args
+  ) {
+    const sessionId = this.sessionManager?.getSessionId?.();
+
+    try {
+      return dispose?.apply(this, args);
+    } finally {
+      if (typeof sessionId === "string" && sessionId) {
+        unregisterLiveRuntime(sessionId);
+        deleteRuntimeSession(sessionId);
+      }
+    }
   };
 }
 

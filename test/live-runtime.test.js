@@ -135,6 +135,44 @@ test("visible extension commands run while a background session is streaming", (
   }
 });
 
+test("AgentSession dispose cleans stale pi-gentic runtime references", async () => {
+  const state = getLiveRuntimeState();
+
+  state.liveRuntimes.clear();
+  await installBridgeForTest(state, "disposeBridgeInstalled");
+  const { AgentSession } = await import(
+    pathToFileURL(
+      path.resolve(
+        "node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js",
+      ),
+    ).href
+  );
+  const session = Object.assign(Object.create(AgentSession.prototype), {
+    sessionManager: { getSessionId: () => "disposed-agent-session" },
+    abortRetry: () => {},
+    abortCompaction: () => {},
+    abortBranchSummary: () => {},
+    abortBash: () => {},
+    agent: { state: { isStreaming: false }, abort: () => {} },
+    _extensionRunner: { invalidate: () => {} },
+    _disconnectFromAgent: () => {},
+    _eventListeners: [],
+  });
+
+  state.liveRuntimes.set("disposed-agent-session", { runtime: { session } });
+  setRuntimeSession("disposed-agent-session", { session });
+
+  try {
+    session.dispose();
+
+    assert.equal(getRuntimeSession("disposed-agent-session"), undefined);
+    assert.equal(state.liveRuntimes.has("disposed-agent-session"), false);
+  } finally {
+    deleteRuntimeSession("disposed-agent-session");
+    state.liveRuntimes.clear();
+  }
+});
+
 test("/new parks the active visible run instead of disposing it", async () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();

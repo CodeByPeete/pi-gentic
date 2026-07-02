@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import {
   activeVisibleContext,
   deleteRuntimeSession,
   getLiveRuntimeState,
   getRuntimeSession,
+  installLiveSessionBridge,
   parkCurrentLiveRuntimeForSwitch,
   setRuntimeSession,
   shouldRunVisibleExtensionCommandNow,
@@ -130,6 +135,70 @@ test("visible extension commands run while a background session is streaming", (
   }
 });
 
+test("/new parks the active visible run instead of disposing it", async () => {
+  const state = getLiveRuntimeState();
+  state.liveRuntimes.clear();
+  await installBridgeForTest(state, "newSessionBridgeInstalled");
+  const { AgentSessionRuntime } = await import(
+    pathToFileURL(
+      path.resolve(
+        "node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js",
+      ),
+    ).href
+  );
+  const sessionDir = mkdtempSync(path.join(tmpdir(), "pi-gentic-new-"));
+  let disposed = 0;
+  const session = {
+    isStreaming: true,
+    sessionFile: path.join(sessionDir, "running.jsonl"),
+    dispose: () => {
+      disposed += 1;
+    },
+    extensionRunner: { hasHandlers: () => false, emit: async () => ({}) },
+    sessionManager: {
+      getHeader: () => ({}),
+      getSessionDir: () => sessionDir,
+      getSessionId: () => "new-running-session",
+    },
+  };
+  const runtimeHost = new AgentSessionRuntime(
+    session,
+    { cwd: process.cwd(), agentDir: process.cwd() },
+    async ({ sessionManager }) => ({
+      diagnostics: [],
+      services: { cwd: process.cwd(), agentDir: process.cwd() },
+      session: {
+        agent: { state: { messages: [] } },
+        createReplacedSessionContext: () => ({}),
+        dispose: () => {},
+        extensionRunner: { hasHandlers: () => false, emit: async () => ({}) },
+        isStreaming: false,
+        sessionFile: sessionManager.getSessionFile(),
+        sessionManager: {
+          buildSessionContext: () => ({ messages: [] }),
+          getHeader: () => ({}),
+          getSessionId: () => "new-created-session",
+        },
+      },
+    }),
+  );
+
+  setRuntimeSession("new-running-session", { runtimeHost, session });
+
+  try {
+    await runtimeHost.newSession();
+
+    assert.equal(disposed, 0);
+    assert.equal(
+      state.liveRuntimes.get("new-running-session").runtime,
+      runtimeHost,
+    );
+  } finally {
+    deleteRuntimeSession("new-running-session");
+    state.liveRuntimes.clear();
+  }
+});
+
 test("switching away from an opened live run parks it instead of disposing it", () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();
@@ -195,3 +264,17 @@ test("switching away from an unregistered visible run parks it instead of dispos
 
   assert.equal(disposed, 1);
 });
+
+async function installBridgeForTest(state, flag) {
+  process.env.PI_CLI = path.resolve(
+    "node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+  );
+  installLiveSessionBridge();
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (state[flag]) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  assert.equal(state[flag], true);
+}

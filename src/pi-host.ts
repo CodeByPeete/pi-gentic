@@ -6,6 +6,7 @@ import { defaultAgentDir, getActiveState } from "./catalog.js";
 type LiveRuntimeState = {
   liveRuntimes: Map<string, AnyRecord>;
   hostSwitchSession?: (this: unknown, sessionPath: string, options?: AnyRecord) => Promise<unknown>;
+  hostNewSession?: (this: unknown, options?: AnyRecord) => Promise<unknown>;
   hostAbortSession?: (this: unknown, ...args: unknown[]) => Promise<unknown>;
   hostPromptSession?: (this: unknown, ...args: unknown[]) => Promise<unknown>;
   hostSetupKeyHandlers?: (this: unknown, ...args: unknown[]) => unknown;
@@ -13,6 +14,7 @@ type LiveRuntimeState = {
   activeContext?: PiContext;
   activeSession?: PiAgentSession;
   bridgeInstalled: boolean;
+  newSessionBridgeInstalled: boolean;
   abortBridgeInstalled: boolean;
   promptBridgeInstalled: boolean;
   escapeBridgeInstalled: boolean;
@@ -76,6 +78,7 @@ export function getLiveRuntimeState(): LiveRuntimeState {
   return (globalThis[LIVE_RUNTIME_STATE_KEY] ??= {
     liveRuntimes: new Map(),
     hostSwitchSession: undefined,
+    hostNewSession: undefined,
     hostAbortSession: undefined,
     hostPromptSession: undefined,
     hostSetupKeyHandlers: undefined,
@@ -83,6 +86,7 @@ export function getLiveRuntimeState(): LiveRuntimeState {
     activeContext: undefined,
     activeSession: undefined,
     bridgeInstalled: false,
+    newSessionBridgeInstalled: false,
     abortBridgeInstalled: false,
     promptBridgeInstalled: false,
     escapeBridgeInstalled: false,
@@ -180,6 +184,7 @@ export function installLiveSessionBridge() {
 
   void piCodingAgent().then((peer) => {
     installRuntimeSwitchBridge(state, peer);
+    installRuntimeNewSessionBridge(state, peer);
     installSessionAbortBridge(state, peer);
     installSessionPromptBridge(state, peer);
     installInteractiveEscapeBridge(state, peer);
@@ -245,6 +250,29 @@ function installRuntimeSwitchBridge(
       await this.finishSessionReplacement(switchOptions.withSession);
 
       return { cancelled: false };
+    };
+}
+
+function installRuntimeNewSessionBridge(
+  state: LiveRuntimeState,
+  { AgentSessionRuntime }: Pick<PiCodingAgentPeer, "AgentSessionRuntime">,
+) {
+  if (state.newSessionBridgeInstalled) return;
+  state.newSessionBridgeInstalled = true;
+  state.hostNewSession = AgentSessionRuntime.prototype
+    .newSession as LiveRuntimeState["hostNewSession"];
+  AgentSessionRuntime.prototype.newSession =
+    async function newSessionWithLiveRuntime(options) {
+      const restore = parkCurrentLiveRuntimeForSwitch(state, this);
+
+      try {
+        return await state.hostNewSession?.call(
+          this,
+          withVisibleContextTracking(state, this, options),
+        );
+      } finally {
+        restore();
+      }
     };
 }
 

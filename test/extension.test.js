@@ -91,6 +91,37 @@ test("send filter override completion preserves comma prefixes", () => {
   assert.equal(completion.value, "continue --tools read,+bash");
 });
 
+test("send message completion includes available slash commands", () => {
+  const completions = completeSend("/", {
+    skills: ["tdd"],
+    commands: [
+      { name: "review", source: "prompt", description: "Review changes" },
+      { name: "skill:frontend-design", source: "skill", description: "Design UI" },
+      { name: "goal", source: "extension", description: "Complete goal" },
+      { name: "send", source: "extension", description: "Pi-gentic send" },
+    ],
+  });
+
+  assert.deepEqual(
+    completions.map((completion) => completion.value),
+    ["/review", "/skill:frontend-design", "/goal", "/send"],
+  );
+});
+
+test("send skill command completion falls back to discovered skills", () => {
+  const [completion] = completeSend("/skill:t", { skills: ["tdd"] });
+
+  assert.equal(completion.value, "/skill:tdd");
+});
+
+test("send prompt command completion preserves the typed command token", () => {
+  const [completion] = completeSend("please use /rev", {
+    commands: [{ name: "review", source: "prompt" }],
+  });
+
+  assert.equal(completion.value, "please use /review");
+});
+
 test("completed synchronous send tool cards are persisted for reopen", () => {
   const entries = [];
   const sessionManager = {

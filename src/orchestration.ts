@@ -329,6 +329,124 @@ export function sendUserMessageOptions(ctx, queue = "followUp") {
   return ctx.isIdle?.() === false ? { deliverAs: queue } : undefined;
 }
 
+export function isTargetSlashCommand(message: unknown, session: AnyRecord = {}) {
+  return Boolean(resolveTargetSlashCommand(message, session));
+}
+
+export function resolveTargetSlashCommand(
+  message: unknown,
+  session: AnyRecord = {},
+) {
+  const name = slashCommandName(message);
+
+  if (!name) return undefined;
+
+  return (
+    targetSlashCommands(session).find((command) => command.name === name) ??
+    fallbackSlashCommand(name, session)
+  );
+}
+
+export async function prepareTargetPromptForSend(
+  session: AnyRecord,
+  message: string,
+  context: string,
+) {
+  const command = resolveTargetSlashCommand(message, session);
+
+  if (!command) return { text: context };
+  if (
+    startsAgentTurn(command) &&
+    typeof session.sendCustomMessage === "function"
+  )
+    await session.sendCustomMessage(sendContextMessage(context), {
+      triggerTurn: false,
+      deliverAs: session.isStreaming === true ? "steer" : "nextTurn",
+    });
+
+  return { text: message, command };
+}
+
+export function slashCommandDeliveryText(command: AnyRecord, sessionId: unknown) {
+  return [
+    `Command /${command.name} delivered to session`,
+    `${shortSessionId(sessionId)}.`,
+  ].join(" ");
+}
+
+function startsAgentTurn(command: AnyRecord) {
+  return command.source !== "extension";
+}
+
+function sendContextMessage(content: string) {
+  return {
+    customType: "pi-gentic:send-context",
+    content,
+    display: false,
+    details: { kind: "sendContext", slashCommand: true },
+  };
+}
+
+function slashCommandName(message: unknown) {
+  const text = String(message ?? "").trim();
+  const match = text.match(/^\/([^\s]+)(?:\s|$)/);
+
+  return match?.[1];
+}
+
+function targetSlashCommands(session: AnyRecord) {
+  try {
+    const context = session.createReplacedSessionContext?.();
+    const commands = context?.getCommands?.() ?? session.getCommands?.() ?? [];
+
+    return Array.isArray(commands)
+      ? commands
+          .filter(
+            (command) => typeof command?.name === "string" && command.name,
+          )
+          .map((command) => ({ ...command, name: String(command.name) }))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function fallbackSlashCommand(name: string, session: AnyRecord) {
+  if (
+    name.startsWith("skill:") &&
+    skillNames(session).has(name.slice("skill:".length))
+  )
+    return { name, source: "skill" };
+
+  if (promptTemplateNames(session).has(name)) return { name, source: "prompt" };
+
+  return undefined;
+}
+
+function skillNames(session: AnyRecord) {
+  const skills = session.resourceLoader?.getSkills?.()?.skills;
+
+  return new Set(
+    Array.isArray(skills)
+      ? skills
+          .map((skill) => skill?.name)
+          .filter((name) => typeof name === "string")
+      : [],
+  );
+}
+
+function promptTemplateNames(session: AnyRecord) {
+  const prompts = session.promptTemplates;
+
+  return new Set(
+    Array.isArray(prompts)
+      ? prompts
+          .map((prompt) => prompt?.name)
+          .filter((name) => typeof name === "string")
+      : [],
+  );
+}
+
 function customMessageOptions(ctx, queue = "followUp") {
   return {
     triggerTurn: false,
@@ -1274,12 +1392,36 @@ export class PiGenticOrchestrator {
           callerSessionId,
           input.message,
         );
-        await target.session.prompt(
+        const targetPrompt = await prepareTargetPromptForSend(
+          target.session,
+          input.message,
           receipt,
+        );
+        await target.session.prompt(
+          targetPrompt.text,
           target.session.isStreaming
             ? { streamingBehavior: "steer" }
             : undefined,
         );
+        if (targetPrompt.command && !startsAgentTurn(targetPrompt.command)) {
+          const completed = monitor.finish({
+            activities: mergeActivities(
+              monitor.activities,
+              collectSessionActivities(target.session),
+            ),
+          });
+          target.lastActivities =
+            completed.activities ?? target.lastActivities ?? [];
+          target.runStartedAt = undefined;
+
+          return {
+            answer: slashCommandDeliveryText(
+              targetPrompt.command,
+              targetSessionId,
+            ),
+            details: completed,
+          };
+        }
         if (targetBusy) await waitForSessionTurnEnd(target.session, callbacks.signal);
         const outcome = sessionRunOutcome(target, { request: input.message });
         const completed =

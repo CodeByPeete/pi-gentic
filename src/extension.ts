@@ -80,15 +80,7 @@ const AgentsToolParameters = {
 export default function piGentic(pi) {
   installLiveSessionBridge();
   const orchestrator = new PiGenticOrchestrator(pi);
-  let skillCommands: ReturnType<typeof createSkillCommandRegistry> | undefined;
-  const completionContext = createCompletionContext(pi, (snapshot, ctx) =>
-    skillCommands?.sync(
-      ctx,
-      Array.isArray(snapshot.skills) ? snapshot.skills : [],
-    ),
-  );
-  skillCommands = createSkillCommandRegistry(pi, orchestrator, completionContext);
-  skillCommands.sync(undefined, completionContext.current().skills);
+  const completionContext = createCompletionContext(pi);
 
   pi.registerMessageRenderer("pi-gentic:card", (message, options, theme) => {
     const component = renderAgentsResult(
@@ -405,33 +397,6 @@ export default function piGentic(pi) {
   });
 }
 
-function createSkillCommandRegistry(
-  pi: PiApi,
-  _orchestrator: PiGenticOrchestrator,
-  completionContext: ReturnType<typeof createCompletionContext>,
-) {
-  const registered = new Set<string>();
-
-  return {
-    sync(ctx: PiContext | undefined, skillNames: string[] = []) {
-      const cwd = ctx?.cwd ?? completionContext.current().cwd;
-
-      if (!skillCommandsEnabled(cwd)) return;
-      for (const name of skillNames) {
-        if (!name || registered.has(name)) continue;
-        registered.add(name);
-        pi.registerCommand(`skill:${name}`, {
-          description: `Manually invoke the ${name} Pi skill`,
-          handler: async (args, commandCtx) => {
-            completionContext.capture(commandCtx);
-            await invokeSkillCommand(pi, name, args, commandCtx);
-          },
-        });
-      }
-    },
-  };
-}
-
 async function invokeSkillCommand(
   pi: PiApi,
   skillName: string,
@@ -471,6 +436,7 @@ function createCompletionContext(
     models: [] as AnyRecord[],
     tools: [] as string[],
     skills: [] as string[],
+    commands: [] as AnyRecord[],
     themes: [] as string[],
     systemPromptFiles: [] as string[],
   };
@@ -491,6 +457,7 @@ function createCompletionContext(
         models: scopedModelSuggestions(ctx),
         tools: safeToolNames(pi),
         skills: loadAvailableSkills({ cwd }).map((skill) => skill.name),
+        commands: safeCommands(pi),
         themes: themeSuggestions(config),
         systemPromptFiles: systemPromptFileSuggestions(config),
       };
@@ -588,6 +555,14 @@ function safeAvailableModels(modelRegistry) {
 function safeToolNames(pi: PiApi) {
   try {
     return pi.getAllTools().map((tool) => tool.name).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function safeCommands(pi: PiApi) {
+  try {
+    return pi.getCommands?.() ?? [];
   } catch {
     return [];
   }

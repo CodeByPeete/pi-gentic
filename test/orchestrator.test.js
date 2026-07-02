@@ -12,10 +12,13 @@ import {
 } from "../dist/catalog.js";
 import { abortActor, deliverReturnToCaller } from "../dist/orchestration.js";
 import {
+  isTargetSlashCommand,
+  prepareTargetPromptForSend,
   resolveReturnDelivery,
   sendConfirmationText,
   sendPendingText,
   shouldDeferSendCompletion,
+  slashCommandDeliveryText,
 } from "../dist/orchestration.js";
 import { sessionRunOutcome } from "../dist/orchestration.js";
 import { formatSessionStatus, sessionStatus } from "../dist/orchestration.js";
@@ -109,6 +112,84 @@ test("runtime session references reject ambiguous shared prefixes", async () => 
     deleteRuntimeSession(firstSessionId);
     deleteRuntimeSession(secondSessionId);
   }
+});
+
+test("target command prompts keep slash commands and attach caller context", async () => {
+  const customMessages = [];
+  const session = {
+    isStreaming: false,
+    promptTemplates: [{ name: "review" }],
+    resourceLoader: { getSkills: () => ({ skills: [{ name: "tdd" }] }) },
+    sendCustomMessage: (...args) => customMessages.push(args),
+  };
+
+  assert.equal(isTargetSlashCommand("/review staged", session), true);
+
+  assert.equal(isTargetSlashCommand("/skill:tdd add coverage", session), true);
+
+  assert.equal(isTargetSlashCommand("/send nested", session), false);
+
+  const prompt = await prepareTargetPromptForSend(
+    session,
+    "/review staged",
+    "Message from agent from session caller",
+  );
+
+  assert.equal(prompt.text, "/review staged");
+
+  assert.equal(prompt.command.source, "prompt");
+
+  assert.equal(customMessages[0][0].customType, "pi-gentic:send-context");
+
+  assert.equal(customMessages[0][1].deliverAs, "nextTurn");
+});
+
+test("extension slash commands are recognized without command-specific code", async () => {
+  const customMessages = [];
+  const session = {
+    createReplacedSessionContext: () => ({
+      getCommands: () => [
+        { name: "goal", source: "extension", description: "Complete goal" },
+      ],
+    }),
+    sendCustomMessage: (...args) => customMessages.push(args),
+  };
+
+  assert.equal(isTargetSlashCommand("/goal done", session), true);
+
+  const prompt = await prepareTargetPromptForSend(
+    session,
+    "/goal done",
+    "Message from agent from session caller",
+  );
+
+  assert.equal(prompt.text, "/goal done");
+
+  assert.equal(prompt.command.source, "extension");
+
+  assert.equal(slashCommandDeliveryText(prompt.command, "019eabcd-0000"), "Command /goal delivered to session 019eabcd.");
+
+  assert.deepEqual(customMessages, []);
+});
+
+test("busy target command prompts steer context before queuing slash command", async () => {
+  const customMessages = [];
+  const session = {
+    isStreaming: true,
+    promptTemplates: [{ name: "review" }],
+    resourceLoader: { getSkills: () => ({ skills: [] }) },
+    sendCustomMessage: (...args) => customMessages.push(args),
+  };
+
+  const prompt = await prepareTargetPromptForSend(
+    session,
+    "/review staged",
+    "Message from agent from session caller",
+  );
+
+  assert.equal(prompt.text, "/review staged");
+
+  assert.equal(customMessages[0][1].deliverAs, "steer");
 });
 
 test("send with no invoke returns answer as context without triggering a caller turn", async () => {

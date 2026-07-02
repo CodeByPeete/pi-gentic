@@ -287,6 +287,7 @@ type CompletionOptions =
       models?: AnyRecord[];
       tools?: string[];
       skills?: string[];
+      commands?: AnyRecord[];
       themes?: string[];
       systemPromptFiles?: string[];
     };
@@ -353,11 +354,73 @@ export function completeSend(prefix: string, options: CompletionOptions = {}) {
     }));
   }
 
-  return null;
+  const commandCompletions = completeSlashSendCommand(
+    token,
+    replaceToken,
+    suggestionContext,
+  );
+
+  return commandCompletions ?? null;
 }
 
 export function isCompletingSendSession(prefix: string) {
   return Boolean(flagValueCompletion(prefix, "session"));
+}
+
+function completeSlashSendCommand(
+  token: string,
+  replaceToken: (value: string) => string,
+  options: AnyRecord,
+) {
+  if (!token.startsWith("/")) return undefined;
+  const query = token.toLowerCase();
+
+  return sendSlashCommandValues(options)
+    .filter((command) => completionItemMatches(command, query))
+    .map((command) => ({ ...command, value: replaceToken(command.value) }));
+}
+
+function sendSlashCommandValues(options: AnyRecord) {
+  const commands = recordArray(options.commands)
+    .filter((command) => stringValue(command.name))
+    .map((command) => commandCompletion(String(command.name), command));
+  const hasSkillCommands = commands.some((command) =>
+    command.value.startsWith("/skill:"),
+  );
+  const skillFallbacks = hasSkillCommands
+    ? []
+    : stringArray(options.skills).map((name) =>
+        commandCompletion(`skill:${name}`),
+      );
+  const byValue = new Map();
+
+  for (const command of [...commands, ...skillFallbacks]) {
+    if (command.value && !byValue.has(command.value))
+      byValue.set(command.value, command);
+  }
+
+  return [...byValue.values()];
+}
+
+function commandCompletion(name: string, command: AnyRecord = {}) {
+  const value = `/${name}`;
+
+  return {
+    value,
+    label: value,
+    description: stringValue(command.description),
+  };
+}
+
+function completionItemMatches(item: AnyRecord, query: string) {
+  return Boolean(
+    !query ||
+      [item.value, item.label, item.description].some((text) =>
+        String(text ?? "")
+          .toLowerCase()
+          .includes(query),
+      ),
+  );
 }
 
 function completeSendFlagValue(prefix: string, options: AnyRecord) {

@@ -11,6 +11,7 @@ import {
   getRuntimeSession,
   installLiveSessionBridge,
   parkCurrentLiveRuntimeForSwitch,
+  renderVisibleLiveSessionState,
   setRuntimeSession,
   shouldRunVisibleExtensionCommandNow,
   trackSessionPrompt,
@@ -133,6 +134,83 @@ test("visible extension commands run while a background session is streaming", (
   } finally {
     deleteRuntimeSession("background-session");
   }
+});
+
+test("live visible session state hydrates unpersisted assistant activity immediately", () => {
+  const user = { role: "user", content: "work now" };
+  const assistant = {
+    role: "assistant",
+    content: [
+      { type: "text", text: "working" },
+      {
+        type: "toolCall",
+        id: "tool-call-1",
+        name: "agents",
+        arguments: { action: "send" },
+      },
+    ],
+  };
+  const events = [];
+  const mode = liveHydrationMode({
+    persistedMessages: [user],
+    liveMessages: [user, assistant],
+    events,
+  });
+
+  assert.equal(renderVisibleLiveSessionState(mode), true);
+
+  assert.deepEqual(
+    mode.renderedContexts.map((context) => context.messages),
+    [[user]],
+  );
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["message_start", "message_update", "tool_execution_start"],
+  );
+  assert.equal(events[0].message, assistant);
+  assert.equal(events[2].toolName, "agents");
+});
+
+test("live visible session state restarts already-rendered pending tool activity", () => {
+  const user = { role: "user", content: "delegate" };
+  const assistant = {
+    role: "assistant",
+    stopReason: "toolUse",
+    content: [
+      {
+        type: "toolCall",
+        id: "agents-call",
+        name: "agents",
+        arguments: { action: "send" },
+      },
+    ],
+  };
+  const events = [];
+  const mode = liveHydrationMode({
+    persistedMessages: [user, assistant],
+    liveMessages: [user, assistant],
+    events,
+  });
+
+  assert.equal(renderVisibleLiveSessionState(mode), true);
+
+  assert.deepEqual(
+    mode.renderedContexts.map((context) => context.messages),
+    [[user, assistant]],
+  );
+  assert.deepEqual(events.map((event) => event.type), ["tool_execution_start"]);
+  assert.equal(events[0].toolCallId, "agents-call");
+});
+
+test("live visible session hydration leaves non-streaming sessions alone", () => {
+  const mode = liveHydrationMode({
+    persistedMessages: [],
+    liveMessages: [{ role: "user", content: "done" }],
+    streaming: false,
+  });
+
+  assert.equal(renderVisibleLiveSessionState(mode), false);
+  assert.deepEqual(mode.renderedContexts, []);
 });
 
 test("AgentSession dispose cleans stale pi-gentic runtime references", async () => {
@@ -302,6 +380,54 @@ test("switching away from an unregistered visible run parks it instead of dispos
 
   assert.equal(disposed, 1);
 });
+
+function liveHydrationMode({
+  persistedMessages,
+  liveMessages,
+  events = [],
+  streaming = true,
+}) {
+  return {
+    renderedContexts: [],
+    chatContainer: { clear() {} },
+    pendingMessagesContainer: { clear() {} },
+    pendingTools: new Map(
+      liveMessages
+        .flatMap((message) =>
+          Array.isArray(message.content)
+            ? message.content.filter((part) => part.type === "toolCall")
+            : [],
+        )
+        .map((toolCall) => [toolCall.id, {}]),
+    ),
+    session: {
+      isStreaming: streaming,
+      agent: { state: { messages: liveMessages } },
+      sessionManager: {
+        buildSessionContext: () => ({ messages: persistedMessages }),
+      },
+    },
+    renderSessionContext(context) {
+      this.renderedContexts.push(context);
+      for (const message of context.messages) {
+        if (!Array.isArray(message.content)) continue;
+        for (const toolCall of message.content.filter(
+          (part) => part.type === "toolCall",
+        ))
+          this.pendingTools.set(toolCall.id, {});
+      }
+    },
+    handleEvent(event) {
+      events.push(event);
+      if (event.type === "message_update") {
+        for (const toolCall of event.message.content?.filter(
+          (part) => part.type === "toolCall",
+        ) ?? [])
+          this.pendingTools.set(toolCall.id, {});
+      }
+    },
+  };
+}
 
 async function installBridgeForTest(state, flag) {
   process.env.PI_CLI = path.resolve(

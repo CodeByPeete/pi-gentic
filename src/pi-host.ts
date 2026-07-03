@@ -11,6 +11,7 @@ type LiveRuntimeState = {
   hostPromptSession?: (this: unknown, ...args: unknown[]) => Promise<unknown>;
   hostSetupKeyHandlers?: (this: unknown, ...args: unknown[]) => unknown;
   hostSetupEditorSubmitHandler?: (this: unknown, ...args: unknown[]) => unknown;
+  hostRenderCurrentSessionState?: (this: unknown, ...args: unknown[]) => unknown;
   activeContext?: PiContext;
   activeSession?: PiAgentSession;
   bridgeInstalled: boolean;
@@ -20,6 +21,7 @@ type LiveRuntimeState = {
   disposeBridgeInstalled: boolean;
   escapeBridgeInstalled: boolean;
   submitBridgeInstalled: boolean;
+  liveHydrationBridgeInstalled: boolean;
 };
 
 type PiCodingAgentPeer = {
@@ -84,6 +86,7 @@ export function getLiveRuntimeState(): LiveRuntimeState {
     hostPromptSession: undefined,
     hostSetupKeyHandlers: undefined,
     hostSetupEditorSubmitHandler: undefined,
+    hostRenderCurrentSessionState: undefined,
     activeContext: undefined,
     activeSession: undefined,
     bridgeInstalled: false,
@@ -93,6 +96,7 @@ export function getLiveRuntimeState(): LiveRuntimeState {
     disposeBridgeInstalled: false,
     escapeBridgeInstalled: false,
     submitBridgeInstalled: false,
+    liveHydrationBridgeInstalled: false,
   });
 }
 
@@ -192,6 +196,7 @@ export function installLiveSessionBridge() {
     installSessionDisposeBridge(state, peer);
     installInteractiveEscapeBridge(state, peer);
     installInteractiveSubmitBridge(state, peer);
+    installInteractiveLiveSessionHydrationBridge(state, peer);
   });
 }
 
@@ -568,6 +573,173 @@ function installInteractiveEscapeBridge(
 
       return result;
     };
+}
+
+function installInteractiveLiveSessionHydrationBridge(
+  state: LiveRuntimeState,
+  { InteractiveMode }: Pick<PiCodingAgentPeer, "InteractiveMode">,
+) {
+  if (
+    state.liveHydrationBridgeInstalled ||
+    !InteractiveMode?.prototype?.renderCurrentSessionState
+  )
+    return;
+  state.liveHydrationBridgeInstalled = true;
+  state.hostRenderCurrentSessionState = InteractiveMode.prototype
+    .renderCurrentSessionState as LiveRuntimeState["hostRenderCurrentSessionState"];
+  InteractiveMode.prototype.renderCurrentSessionState =
+    function renderCurrentSessionStateWithLiveHydration(...args) {
+      if (renderVisibleLiveSessionState(this)) return;
+
+      return state.hostRenderCurrentSessionState?.apply(this, args);
+    };
+}
+
+export function renderVisibleLiveSessionState(mode: AnyRecord) {
+  const session = mode?.session;
+  const liveMessages = liveAgentMessages(session);
+
+  if (
+    session?.isStreaming !== true ||
+    liveMessages.length === 0 ||
+    typeof mode.renderSessionContext !== "function"
+  )
+    return false;
+
+  resetVisibleSessionState(mode);
+  const sessionContext = safeSessionContext(session.sessionManager);
+  const persistedMessages = Array.isArray(sessionContext.messages)
+    ? sessionContext.messages
+    : [];
+  const persistedPrefixLength = commonMessagePrefixLength(
+    persistedMessages,
+    liveMessages,
+  );
+  const stableMessages = liveMessages.slice(0, persistedPrefixLength);
+  const liveOnlyMessages = liveMessages.slice(persistedPrefixLength);
+
+  mode.renderSessionContext(
+    { ...sessionContext, messages: stableMessages },
+    { updateFooter: true, populateHistory: true },
+  );
+
+  for (const message of liveOnlyMessages) replayLiveOnlyMessage(mode, message);
+
+  for (const toolCall of unresolvedToolCalls(liveMessages))
+    replayToolExecutionStart(mode, toolCall);
+
+  return true;
+}
+
+function resetVisibleSessionState(mode: AnyRecord) {
+  mode.chatContainer?.clear?.();
+  mode.pendingMessagesContainer?.clear?.();
+  mode.compactionQueuedMessages = [];
+  mode.streamingComponent = undefined;
+  mode.streamingMessage = undefined;
+  mode.pendingTools?.clear?.();
+}
+
+function replayLiveOnlyMessage(mode: AnyRecord, message: AnyRecord) {
+  if (typeof mode.handleEvent !== "function") return;
+
+  if (message?.role === "assistant") {
+    void mode.handleEvent({ type: "message_start", message });
+    void mode.handleEvent({ type: "message_update", message });
+    return;
+  }
+
+  void mode.handleEvent({ type: "message_start", message });
+}
+
+function replayToolExecutionStart(mode: AnyRecord, toolCall: AnyRecord) {
+  if (typeof mode.handleEvent !== "function") return;
+  const pendingTools = mode.pendingTools;
+
+  if (pendingTools instanceof Map && !pendingTools.has(toolCall.id)) return;
+  void mode.handleEvent({
+    type: "tool_execution_start",
+    toolCallId: toolCall.id,
+    toolName: toolCall.name,
+    args: toolCall.arguments ?? {},
+  });
+}
+
+function liveAgentMessages(session: AnyRecord) {
+  const messages = session?.agent?.state?.messages;
+
+  return Array.isArray(messages) ? messages : [];
+}
+
+function safeSessionContext(sessionManager: AnyRecord) {
+  try {
+    const context = sessionManager?.buildSessionContext?.();
+
+    return context && typeof context === "object" ? context : { messages: [] };
+  } catch {
+    return { messages: [] };
+  }
+}
+
+function commonMessagePrefixLength(a: AnyRecord[], b: AnyRecord[]) {
+  const max = Math.min(a.length, b.length);
+
+  for (let index = 0; index < max; index++) {
+    if (messageSignature(a[index]) !== messageSignature(b[index])) return index;
+  }
+
+  return max;
+}
+
+function messageSignature(message: AnyRecord) {
+  if (!message || typeof message !== "object") return "";
+
+  return JSON.stringify({
+    role: message.role,
+    customType: message.customType,
+    toolCallId: message.toolCallId,
+    toolName: message.toolName,
+    text: messageText(message),
+    toolCalls: messageToolCalls(message).map((toolCall) => ({
+      id: toolCall.id,
+      name: toolCall.name,
+    })),
+  });
+}
+
+function messageText(message: AnyRecord) {
+  const content = message?.content;
+
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .filter((part) => part?.type === "text")
+    .map((part) => part.text ?? "")
+    .join("\n");
+}
+
+function messageToolCalls(message: AnyRecord) {
+  const content = message?.content;
+
+  if (!Array.isArray(content)) return [];
+
+  return content.filter((part) => part?.type === "toolCall" && part.id);
+}
+
+function unresolvedToolCalls(messages: AnyRecord[]) {
+  const unresolved = new Map<string, AnyRecord>();
+
+  for (const message of messages) {
+    if (message?.role === "assistant")
+      for (const toolCall of messageToolCalls(message))
+        unresolved.set(toolCall.id, toolCall);
+
+    if (message?.role === "toolResult" && message.toolCallId)
+      unresolved.delete(message.toolCallId);
+  }
+
+  return [...unresolved.values()];
 }
 
 export function livePath(sessionId) {

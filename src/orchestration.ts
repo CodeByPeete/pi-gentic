@@ -208,26 +208,26 @@ export async function deliverToLiveCaller({
   visibleSession,
   queue,
 }) {
-  const liveSession = liveCallerSession(ctx, callerSessionId, visibleSession);
+  const liveTarget = liveCallerSession(ctx, callerSessionId, visibleSession);
 
   try {
-    if (liveSession) {
+    if (liveTarget) {
       if (
-        (invoke || liveSession.isStreaming === true) &&
-        typeof liveSession.sendUserMessage === "function"
+        (invoke || liveTarget.session.isStreaming === true) &&
+        typeof liveTarget.session.sendUserMessage === "function"
       ) {
-        await liveSession.sendUserMessage(
+        await liveTarget.session.sendUserMessage(
           text,
-          liveSession.isStreaming === true
+          liveTarget.session.isStreaming === true
             ? { deliverAs: queue }
-            : sendUserMessageOptions(ctx, queue),
+            : sendUserMessageOptions(liveTarget.ctx, queue),
         );
 
         return { delivered: true, mode: "live" };
       }
 
-      if (typeof liveSession.sendCustomMessage === "function") {
-        await liveSession.sendCustomMessage(returnContextMessage(text), {
+      if (typeof liveTarget.session.sendCustomMessage === "function") {
+        await liveTarget.session.sendCustomMessage(returnContextMessage(text), {
           triggerTurn: false,
         });
 
@@ -251,18 +251,48 @@ function liveCallerSession(
   callerSessionId: string | undefined,
   visibleSession: AnyRecord | undefined,
 ) {
-  const registered = callerSessionId ? getRuntimeSession(callerSessionId)?.session : undefined;
+  const registered = callerSessionId
+    ? getRuntimeSession(callerSessionId)?.session
+    : undefined;
+  const registeredTarget = activeLiveSession(registered, callerSessionId, ctx);
 
-  if (registered) return registered;
+  if (registeredTarget) return registeredTarget;
 
   if (!visibleSession) return undefined;
+  const visibleTarget = activeLiveSession(visibleSession, callerSessionId, ctx);
+
+  if (visibleTarget) return visibleTarget;
   const visibleSessionId = visibleSession.sessionManager?.getSessionId?.();
 
-  return !callerSessionId ||
-    visibleSessionId === callerSessionId ||
-    (!visibleSessionId && contextStillActive(ctx, callerSessionId))
-    ? visibleSession
+  return !visibleSessionId && contextStillActive(ctx, callerSessionId)
+    ? { session: visibleSession, ctx }
     : undefined;
+}
+
+function activeLiveSession(
+  session: AnyRecord | undefined,
+  callerSessionId?: string,
+  fallbackCtx?: PiContext,
+) {
+  if (!session) return undefined;
+
+  try {
+    const sessionId = session.sessionManager?.getSessionId?.();
+
+    if (callerSessionId && sessionId && sessionId !== callerSessionId)
+      return undefined;
+
+    const ctx =
+      typeof session.createReplacedSessionContext === "function"
+        ? session.createReplacedSessionContext()
+        : undefined;
+
+    if (ctx && !contextStillActive(ctx, callerSessionId)) return undefined;
+
+    return { session, ctx: ctx ?? fallbackCtx };
+  } catch {
+    return undefined;
+  }
 }
 
 function returnContextMessage(text: string) {
@@ -326,7 +356,11 @@ function waitForSessionTurnEnd(session: AnyRecord, signal?: AbortSignal) {
 }
 
 export function sendUserMessageOptions(ctx, queue = "followUp") {
-  return ctx.isIdle?.() === false ? { deliverAs: queue } : undefined;
+  try {
+    return ctx?.isIdle?.() === false ? { deliverAs: queue } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function isTargetSlashCommand(message: unknown, session: AnyRecord = {}) {
@@ -482,6 +516,10 @@ export function contextStillActive(ctx, callerSessionId?: string) {
   } catch {
     return false;
   }
+}
+
+export function isStaleExtensionContextError(error: unknown) {
+  return getErrorMessage(error).includes("This extension ctx is stale");
 }
 
 export function createSessionActivityMonitor(baseDetails, publish) {
@@ -1144,19 +1182,24 @@ export class PiGenticOrchestrator {
   }
 
   buildPromptAppend(ctx, event) {
-    const skills = skillContext(ctx, parseSkillEntries(event.systemPrompt));
-    const { config, policy, activeAgent } = this.applyPolicySnapshot(ctx, {
-      skills: skills.names,
-    });
+    try {
+      const skills = skillContext(ctx, parseSkillEntries(event.systemPrompt));
+      const { config, policy, activeAgent } = this.applyPolicySnapshot(ctx, {
+        skills: skills.names,
+      });
 
-    return {
-      systemPrompt: buildResolvedSystemPrompt({
-        baseSystemPrompt: event.systemPrompt,
-        config: { ...config, activeAgent },
-        policy,
-        skillEntries: skills.entries,
-      }),
-    };
+      return {
+        systemPrompt: buildResolvedSystemPrompt({
+          baseSystemPrompt: event.systemPrompt,
+          config: { ...config, activeAgent },
+          policy,
+          skillEntries: skills.entries,
+        }),
+      };
+    } catch (error) {
+      if (isStaleExtensionContextError(error)) return undefined;
+      throw error;
+    }
   }
 
   applyPolicySnapshot(ctx: PiContext, resources: AnyRecord = {}) {

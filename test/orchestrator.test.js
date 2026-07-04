@@ -413,6 +413,68 @@ test("send return invokes stale caller sessions through the background delivery 
   assert.deepEqual(appended, []);
 });
 
+const staleContextError =
+  "This extension ctx is stale after session replacement or reload.";
+
+test("send return skips a stale visible session before starting a caller turn", async () => {
+  const invoked = [];
+  let visibleMessages = 0;
+  const mode = await deliverReturnToCaller({
+    pi: {
+      sendUserMessage: () => {
+        throw new Error("stale pi should not be used");
+      },
+    },
+    ctx: {
+      get cwd() {
+        throw new Error(staleContextError);
+      },
+      sessionManager: { getSessionId: () => "caller" },
+    },
+    callerSessionId: "caller",
+    callerSessionManager: { appendMessage() {} },
+    text: "Returned answer",
+    invoke: true,
+    queue: "steer",
+    visibleSession: {
+      sessionManager: { getSessionId: () => "caller" },
+      createReplacedSessionContext: () => ({
+        get cwd() {
+          throw new Error(staleContextError);
+        },
+        sessionManager: { getSessionId: () => "caller" },
+      }),
+      sendUserMessage: () => {
+        visibleMessages += 1;
+      },
+    },
+    invokeInactiveCaller: async (text) => invoked.push(text),
+  });
+
+  assert.equal(mode, "background");
+  assert.equal(visibleMessages, 0);
+  assert.deepEqual(invoked, ["Returned answer"]);
+});
+
+test("prompt append ignores stale extension contexts during session replacement", () => {
+  const orchestrator = new PiGenticOrchestrator({
+    getAllTools: () => [],
+  });
+
+  assert.equal(
+    orchestrator.buildPromptAppend(
+      {
+        get cwd() {
+          throw new Error(staleContextError);
+        },
+        sessionManager: { getSessionId: () => "caller" },
+      },
+      { systemPrompt: "Base prompt" },
+    ),
+    undefined,
+  );
+});
+
 test("worktree preparation uses cwd as folder and empty worktree as branch from folder", async () => {
   const repo = createGitRepo();
   const worktree = path.join(

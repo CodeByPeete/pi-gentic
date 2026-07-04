@@ -43,8 +43,22 @@ jobs:
             exit 1
           fi
 
+      - name: Check npm publication
+        id: npm-publication
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+
+          if npm view "pi-gentic@${package_version}" version --json >/dev/null 2>&1; then
+            echo "published=true" >> "${GITHUB_OUTPUT}"
+            echo "pi-gentic@${package_version} is already published."
+          else
+            echo "published=false" >> "${GITHUB_OUTPUT}"
+            echo "pi-gentic@${package_version} is not published yet."
+          fi
+
       - name: Test package
         run: npm test
 
       - name: Publish package
+        if: steps.npm-publication.outputs.published == 'false'
         run: npm publish

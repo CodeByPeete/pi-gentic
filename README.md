@@ -505,8 +505,8 @@ Use these values if you configure it on npmjs.com instead:
 Publish flow:
 
 1. Update `package.json` to the new version.
-2. Create and publish a GitHub release tagged as `v<version>`, for example `v0.2.1`.
-3. GitHub Actions installs dependencies, verifies the tag matches the package version, runs tests, and publishes to npm.
+2. Create and publish a GitHub release tagged as `v<version>`, for example `v0.3.0`.
+3. GitHub Actions installs dependencies, verifies the tag matches the package version, runs tests, and publishes to npm when that version is not already published.
 
 Public npm package publishing is free. GitHub Actions is free for public repositories on standard hosted runners.
 

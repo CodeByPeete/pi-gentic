@@ -494,47 +494,134 @@ function installInteractiveSubmitBridge(
       this.defaultEditor.onSubmit = async (text) => {
         const command = String(text ?? "").trim();
 
-        if (shouldRunVisibleExtensionCommandNow(this, command)) {
-          this.editor?.addToHistory?.(command);
-          this.editor?.setText?.("");
-          await this.session.prompt(command);
+        if (shouldPromptVisibleSessionBeforeNative(this, command)) {
+          await promptVisibleSessionNow(this, command, { addHistory: true });
           return;
         }
 
-        return nativeSubmit(text);
+        const fallbackAfterNative = shouldPromptVisibleSessionAfterNative(
+          this,
+          command,
+        );
+        const submittedEditor = this.editor;
+        const submittedText = editorText(submittedEditor);
+        const result = await nativeSubmit(text);
+
+        if (
+          fallbackAfterNative &&
+          shouldPromptVisibleSessionNow(this, command) &&
+          this.editor === submittedEditor &&
+          sameSubmittedText(editorText(submittedEditor), command) &&
+          sameSubmittedText(submittedText, command)
+        ) {
+          await promptVisibleSessionNow(this, command, {
+            addHistory: false,
+            flushPendingBash: false,
+          });
+        }
+
+        return result;
       };
 
       return result;
     };
 }
 
-export function shouldRunVisibleExtensionCommandNow(mode: AnyRecord, text: string) {
-  const session = mode.session as AnyRecord | undefined;
+function shouldPromptVisibleSessionBeforeNative(
+  mode: AnyRecord,
+  text: string,
+) {
+  if (!shouldPromptVisibleSessionNow(mode, text)) return false;
 
-  if (!text.startsWith("/") || session?.isStreaming) return false;
-  const commandName = text.slice(1).split(/\s/, 1)[0];
-  const sessionManager = session?.sessionManager as AnyRecord | undefined;
-  const extensionRunner = session?.extensionRunner as AnyRecord | undefined;
-  const getCommand = extensionRunner?.getCommand;
-  const getSessionId = sessionManager?.getSessionId;
-  const visibleSessionId =
-    typeof getSessionId === "function"
-      ? getSessionId.call(sessionManager)
-      : undefined;
-  const command =
-    typeof getCommand === "function"
-      ? getCommand.call(extensionRunner, commandName)
-      : undefined;
+  return !text.startsWith("/") || isVisibleExtensionCommand(mode, text);
+}
+
+function shouldPromptVisibleSessionAfterNative(mode: AnyRecord, text: string) {
+  return Boolean(
+    text.startsWith("/") &&
+      !isVisibleExtensionCommand(mode, text) &&
+      shouldPromptVisibleSessionNow(mode, text),
+  );
+}
+
+export function shouldPromptVisibleSessionNow(mode: AnyRecord, text: string) {
+  const session = mode?.session as AnyRecord | undefined;
 
   return Boolean(
-    command &&
-      visibleSessionId &&
+    String(text ?? "").trim() &&
+      session &&
+      session.isStreaming !== true &&
+      session.isCompacting !== true &&
+      typeof mode.onInputCallback !== "function" &&
+      hasOtherStreamingRuntime(session),
+  );
+}
+
+export function shouldRunVisibleExtensionCommandNow(mode: AnyRecord, text: string) {
+  return Boolean(
+    shouldPromptVisibleSessionNow(mode, text) &&
+      isVisibleExtensionCommand(mode, text),
+  );
+}
+
+async function promptVisibleSessionNow(
+  mode: AnyRecord,
+  text: string,
+  options: AnyRecord = {},
+) {
+  if (options.flushPendingBash !== false)
+    mode.flushPendingBashComponents?.();
+
+  if (options.addHistory !== false) mode.editor?.addToHistory?.(text);
+  mode.editor?.setText?.("");
+  await mode.session.prompt(text);
+  mode.updatePendingMessagesDisplay?.();
+  mode.ui?.requestRender?.();
+}
+
+function isVisibleExtensionCommand(mode: AnyRecord, text: string) {
+  if (!text.startsWith("/")) return false;
+  if (typeof mode.isExtensionCommand === "function") {
+    try {
+      return mode.isExtensionCommand(text) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  const commandName = text.slice(1).split(/\s/, 1)[0];
+  const extensionRunner = mode.session?.extensionRunner as AnyRecord | undefined;
+  const getCommand = extensionRunner?.getCommand;
+
+  return Boolean(
+    typeof getCommand === "function" &&
+      getCommand.call(extensionRunner, commandName),
+  );
+}
+
+function hasOtherStreamingRuntime(session: AnyRecord) {
+  const visibleSessionId = session.sessionManager?.getSessionId?.();
+
+  return Boolean(
+    visibleSessionId &&
       listRuntimeSessions().some(
         (runtime) =>
           runtime.session?.isStreaming === true &&
           runtime.session.sessionManager?.getSessionId?.() !== visibleSessionId,
       ),
   );
+}
+
+function editorText(editor: AnyRecord) {
+  try {
+    return typeof editor?.getText === "function" ? editor.getText() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sameSubmittedText(value: unknown, submitted: string) {
+  return String(value ?? "").trim() === submitted;
 }
 
 function installInteractiveEscapeBridge(

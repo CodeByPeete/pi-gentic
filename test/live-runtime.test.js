@@ -13,6 +13,7 @@ import {
   parkCurrentLiveRuntimeForSwitch,
   renderVisibleLiveSessionState,
   setRuntimeSession,
+  shouldPromptVisibleSessionNow,
   shouldRunVisibleExtensionCommandNow,
   trackSessionPrompt,
 } from "../dist/pi-host.js";
@@ -91,6 +92,136 @@ test("normal visible prompts are tracked while they are running", async () => {
   );
 
   deleteRuntimeSession("visible-prompt-session");
+});
+
+test("visible prompts bypass a blocked input loop after switching sessions", () => {
+  const runtime = {
+    session: {
+      isStreaming: true,
+      sessionManager: { getSessionId: () => "background-session" },
+    },
+  };
+
+  setRuntimeSession("background-session", runtime);
+
+  try {
+    assert.equal(
+      shouldPromptVisibleSessionNow(
+        {
+          onInputCallback: undefined,
+          session: {
+            isStreaming: false,
+            sessionManager: { getSessionId: () => "visible-session" },
+          },
+        },
+        "message for the visible session",
+      ),
+      true,
+    );
+
+    assert.equal(
+      shouldPromptVisibleSessionNow(
+        {
+          onInputCallback: () => {},
+          session: {
+            isStreaming: false,
+            sessionManager: { getSessionId: () => "visible-session" },
+          },
+        },
+        "normal loop owns this message",
+      ),
+      false,
+    );
+
+    assert.equal(
+      shouldPromptVisibleSessionNow(
+        {
+          onInputCallback: undefined,
+          session: {
+            isStreaming: true,
+            sessionManager: { getSessionId: () => "visible-session" },
+          },
+        },
+        "visible streaming uses native queueing",
+      ),
+      false,
+    );
+  } finally {
+    deleteRuntimeSession("background-session");
+  }
+});
+
+test("submit bridge prompts the visible session when another session blocks input", async () => {
+  const state = getLiveRuntimeState();
+
+  await installBridgeForTest(state, "submitBridgeInstalled");
+  const { InteractiveMode } = await import(
+    pathToFileURL(
+      path.resolve(
+        "node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js",
+      ),
+    ).href
+  );
+  const prompts = [];
+  const history = [];
+  const runtime = {
+    session: {
+      isStreaming: true,
+      sessionManager: { getSessionId: () => "blocked-session" },
+    },
+  };
+  const mode = Object.assign(Object.create(InteractiveMode.prototype), {
+    defaultEditor: {},
+    editor: {
+      text: "message for opened session",
+      addToHistory: (text) => history.push(text),
+      getText() {
+        return this.text;
+      },
+      setText(text) {
+        this.text = text;
+      },
+    },
+    flushPendingBashComponents() {},
+    onInputCallback: undefined,
+    ui: { requestRender() {} },
+    updatePendingMessagesDisplay() {},
+  });
+
+  Object.defineProperty(mode, "session", {
+    value: {
+      isStreaming: false,
+      prompt: async (text) => prompts.push(text),
+      sessionManager: { getSessionId: () => "opened-session" },
+    },
+  });
+
+  setRuntimeSession("blocked-session", runtime);
+
+  try {
+    mode.setupEditorSubmitHandler();
+
+    await mode.defaultEditor.onSubmit("message for opened session");
+
+    assert.deepEqual(prompts, ["message for opened session"]);
+    assert.deepEqual(history, ["message for opened session"]);
+    assert.equal(mode.editor.getText(), "");
+
+    mode.editor.text = "/review opened session";
+    await mode.defaultEditor.onSubmit("/review opened session");
+
+    assert.deepEqual(prompts, [
+      "message for opened session",
+      "/review opened session",
+    ]);
+    assert.deepEqual(history, [
+      "message for opened session",
+      "/review opened session",
+    ]);
+    assert.equal(mode.editor.getText(), "");
+  } finally {
+    deleteRuntimeSession("blocked-session");
+  }
 });
 
 test("visible extension commands run while a background session is streaming", () => {

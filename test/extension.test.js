@@ -12,7 +12,9 @@ test("send flag completion preserves message text before the completed flag", ()
 });
 
 test("send agent completion preserves the message and agent flag", () => {
-  const [completion] = completeSend("please review --agent res");
+  const [completion] = completeSend("please review --agent res", {
+    agents: [{ name: "researcher" }],
+  });
 
   assert.equal(completion.value, "please review --agent researcher");
 

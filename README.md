@@ -483,10 +483,40 @@ pi install git+https://github.com/CodeByPeete/pi-gentic.git#v0.2.0
 
 ---
 
+## Release publishing
+
+GitHub releases publish the package to npm through `.github/workflows/publish-npm.yml`.
+
+Before the first automated release, add the npm trusted publisher:
+
+```bash
+npx --yes npm@latest trust github pi-gentic --repo CodeByPeete/pi-gentic --file publish-npm.yml --allow-publish --yes
+```
+
+Use these values if you configure it on npmjs.com instead:
+
+| Setting | Value |
+| --- | --- |
+| Owner | `CodeByPeete` |
+| Repository | `pi-gentic` |
+| Workflow file | `publish-npm.yml` |
+| Environment | leave empty |
+
+Publish flow:
+
+1. Update `package.json` to the new version.
+2. Create and publish a GitHub release tagged as `v<version>`, for example `v0.2.1`.
+3. GitHub Actions installs dependencies, verifies the tag matches the package version, runs tests, and publishes to npm.
+
+Public npm package publishing is free. GitHub Actions is free for public repositories on standard hosted runners.
+
+---
+
 ## Package layout
 
 ```text
 pi-gentic/
+├─ .github/workflows/   release publishing automation
 ├─ src/                 TypeScript source for the Pi extension
 ├─ test/                Node test suite
 ├─ test-ui/             UI rendering captures

@@ -19,6 +19,7 @@ import {
   sendPendingText,
   shouldDeferSendCompletion,
   slashCommandDeliveryText,
+  promptSessionAndWaitForTurnEnd,
 } from "../dist/orchestration.js";
 import { sessionRunOutcome } from "../dist/orchestration.js";
 import { formatSessionStatus, sessionStatus } from "../dist/orchestration.js";
@@ -381,6 +382,44 @@ test("no-invoke return steers into a running caller without opening a new run", 
   }
 });
 
+test("send return invokes inactive registered caller sessions through the background delivery hook", async () => {
+  const callerSessionId = "inactive-registered-caller";
+  const sent = [];
+  const invoked = [];
+  setRuntimeSession(callerSessionId, {
+    session: {
+      isStreaming: false,
+      sessionManager: { getSessionId: () => callerSessionId },
+      sendUserMessage: (...args) => sent.push(args),
+    },
+  });
+
+  try {
+    const mode = await deliverReturnToCaller({
+      pi: { sendUserMessage() {}, sendMessage() {} },
+      ctx: {
+        cwd: process.cwd(),
+        sessionManager: { getSessionId: () => "visible-child" },
+      },
+      callerSessionId,
+      callerSessionManager: { appendMessage() {} },
+      text: "Returned answer",
+      invoke: true,
+      queue: "steer",
+      visibleSession: {
+        sessionManager: { getSessionId: () => "visible-child" },
+      },
+      invokeInactiveCaller: async (text) => invoked.push(text),
+    });
+
+    assert.equal(mode, "background");
+    assert.deepEqual(sent, []);
+    assert.deepEqual(invoked, ["Returned answer"]);
+  } finally {
+    deleteRuntimeSession(callerSessionId);
+  }
+});
+
 test("send return invokes stale caller sessions through the background delivery hook", async () => {
   const appended = [];
   const invoked = [];
@@ -415,6 +454,23 @@ test("send return invokes stale caller sessions through the background delivery 
 
 const staleContextError =
   "This extension ctx is stale after session replacement or reload.";
+
+test("foreground send completion continues when the opened child emits agent_end before prompt resolves", async () => {
+  let listener;
+  const session = {
+    subscribe: (next) => {
+      listener = next;
+      return () => {};
+    },
+  };
+
+  const completed = promptSessionAndWaitForTurnEnd(session, () => {
+    setTimeout(() => listener?.({ type: "agent_end" }), 0);
+    return new Promise(() => {});
+  });
+
+  await completed;
+});
 
 test("send return skips a stale visible session before starting a caller turn", async () => {
   const invoked = [];

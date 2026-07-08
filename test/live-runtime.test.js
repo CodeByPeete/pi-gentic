@@ -302,6 +302,153 @@ test("live visible session state hydrates unpersisted assistant activity immedia
   assert.equal(events[2].toolName, "agents");
 });
 
+test("live visible session hydration preserves persisted orchestration cards while replaying new assistant text", () => {
+  const user = { role: "user", content: "delegate while active" };
+  const card = {
+    role: "custom",
+    customType: "pi-gentic:card",
+    content: "Sending message to researcher...",
+    display: true,
+    details: { kind: "send", status: "running", sessionId: "child-session" },
+  };
+  const assistant = {
+    role: "assistant",
+    content: [{ type: "text", text: "I am still generating after resume." }],
+  };
+  const events = [];
+  const mode = liveHydrationMode({
+    persistedMessages: [user, card],
+    liveMessages: [user, assistant],
+    events,
+  });
+
+  assert.equal(renderVisibleLiveSessionState(mode), true);
+
+  assert.deepEqual(
+    mode.renderedContexts.map((context) => context.messages),
+    [[user, card]],
+  );
+  assert.deepEqual(events.map((event) => event.type), [
+    "message_start",
+    "message_update",
+  ]);
+  assert.equal(events[0].message, assistant);
+});
+
+test("live visible session hydration skips stale persisted regular messages and keeps current custom UI", () => {
+  const user = { role: "user", content: "continue" };
+  const staleAssistant = {
+    role: "assistant",
+    content: [{ type: "text", text: "old partial text" }],
+  };
+  const card = {
+    role: "custom",
+    customType: "pi-gentic:card",
+    content: "Queued message for builder.",
+    display: true,
+    details: { kind: "send", status: "queued", sessionId: "child" },
+  };
+  const liveAssistant = {
+    role: "assistant",
+    content: [{ type: "text", text: "new live text" }],
+  };
+  const events = [];
+  const mode = liveHydrationMode({
+    persistedMessages: [user, staleAssistant, card],
+    liveMessages: [user, liveAssistant],
+    events,
+  });
+
+  assert.equal(renderVisibleLiveSessionState(mode), true);
+
+  assert.deepEqual(
+    mode.renderedContexts.map((context) => context.messages),
+    [[user, card]],
+  );
+  assert.deepEqual(events.map((event) => event.message), [
+    liveAssistant,
+    liveAssistant,
+  ]);
+});
+
+test("live visible session hydration survives 100 complex persisted and live workflow shapes", () => {
+  for (let seed = 1; seed <= 100; seed++) {
+    const workflow = complexHydrationWorkflow(seed);
+    const events = [];
+    const mode = liveHydrationMode({
+      persistedMessages: workflow.persistedMessages,
+      liveMessages: workflow.liveMessages,
+      events,
+    });
+
+    assert.equal(renderVisibleLiveSessionState(mode), true, `seed ${seed}`);
+
+    const renderedMessages = mode.renderedContexts.at(-1).messages;
+    for (const message of workflow.persistedCustomMessages)
+      assert.ok(
+        renderedMessages.includes(message),
+        `seed ${seed} lost custom message ${message.content}`,
+      );
+
+    for (const message of workflow.staleMessages)
+      assert.ok(
+        !renderedMessages.includes(message),
+        `seed ${seed} rendered stale message`,
+      );
+
+    const replayedMessages = events
+      .filter((event) => event.type === "message_start")
+      .map((event) => event.message);
+
+    assert.deepEqual(
+      replayedMessages,
+      workflow.expectedReplayMessages,
+      `seed ${seed}`,
+    );
+  }
+});
+
+test("live visible session hydration restarts live-only tool calls when message updates are asynchronous", async () => {
+  const user = { role: "user", content: "delegate from active parent" };
+  const assistant = {
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: "agents-race-call",
+        name: "agents",
+        arguments: { action: "send", async: false },
+      },
+    ],
+  };
+  const events = [];
+  const mode = liveHydrationMode({
+    persistedMessages: [user],
+    liveMessages: [user, assistant],
+    events,
+  });
+
+  mode.handleEvent = async (event) => {
+    events.push(event);
+    if (event.type !== "message_update") return;
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const toolCall of event.message.content?.filter(
+      (part) => part.type === "toolCall",
+    ) ?? [])
+      mode.pendingTools.set(toolCall.id, {});
+  };
+
+  assert.equal(renderVisibleLiveSessionState(mode), true);
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["message_start", "message_update", "tool_execution_start"],
+  );
+});
+
 test("live visible session state restarts already-rendered pending tool activity", () => {
   const user = { role: "user", content: "delegate" };
   const assistant = {
@@ -511,6 +658,99 @@ test("switching away from an unregistered visible run parks it instead of dispos
 
   assert.equal(disposed, 1);
 });
+
+function complexHydrationWorkflow(seed) {
+  const user = {
+    role: "user",
+    content: [{ type: "text", text: `workflow ${seed}` }],
+  };
+  const assistant = {
+    role: "assistant",
+    content: [{ type: "text", text: `live answer ${seed}` }],
+  };
+  const toolAssistant = {
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: `tool-${seed}`,
+        name: "agents",
+        arguments: { action: "send", seed },
+      },
+    ],
+  };
+  const toolResult = {
+    role: "toolResult",
+    toolCallId: `tool-${seed}`,
+    toolName: "agents",
+    content: `tool result ${seed}`,
+  };
+  const staleMessages = [];
+  const persistedCustomMessages = Array.from(
+    { length: 1 + (seed % 4) },
+    (_, index) => ({
+      role: "custom",
+      customType: "pi-gentic:card",
+      content: `card ${seed}.${index}`,
+      display: true,
+      details: {
+        kind: "send",
+        status: index % 2 === 0 ? "running" : "queued",
+        sessionId: `child-${seed}-${index}`,
+      },
+    }),
+  );
+  const liveMessages =
+    seed % 3 === 0
+      ? [user, toolAssistant, toolResult, assistant]
+      : seed % 3 === 1
+        ? [user, assistant]
+        : [user, toolAssistant];
+  const persistedMessages = [user];
+
+  if (seed % 5 === 0) {
+    const stale = {
+      role: "assistant",
+      content: [{ type: "text", text: `stale ${seed}` }],
+    };
+
+    persistedMessages.push(stale);
+    staleMessages.push(stale);
+  }
+
+  persistedMessages.push(...persistedCustomMessages.slice(0, seed % 4));
+
+  if (seed % 2 === 0 && liveMessages.includes(toolAssistant))
+    persistedMessages.push(toolAssistant);
+
+  persistedMessages.push(...persistedCustomMessages.slice(seed % 4));
+
+  if (seed % 7 === 0) {
+    const staleTool = {
+      role: "toolResult",
+      toolCallId: `stale-tool-${seed}`,
+      toolName: "agents",
+      content: `stale tool ${seed}`,
+    };
+
+    persistedMessages.push(staleTool);
+    staleMessages.push(staleTool);
+  }
+
+  let matchedLiveCount = 0;
+  for (const message of persistedMessages) {
+    if (message.role === "custom") continue;
+    if (message === liveMessages[matchedLiveCount]) matchedLiveCount += 1;
+  }
+
+  return {
+    expectedReplayMessages: liveMessages.slice(matchedLiveCount),
+    liveMessages,
+    persistedCustomMessages,
+    persistedMessages,
+    staleMessages,
+  };
+}
 
 function liveHydrationMode({
   persistedMessages,

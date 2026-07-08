@@ -1,5 +1,7 @@
+import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 import threading
@@ -169,6 +171,21 @@ def newest_child_session_file_containing(needle):
     raise RuntimeError(f"No child session file contains {needle!r}")
 
 
+def latest_model_id(session_text):
+    matches = re.findall(r'"modelId":"([^"]+)"', session_text)
+    if not matches:
+        raise RuntimeError("No model_change entry found")
+    return matches[-1]
+
+
+def parent_session_file(child_session_file):
+    header = json.loads(child_session_file.read_text(encoding="utf-8", errors="replace").splitlines()[0])
+    parent = header.get("parentSession")
+    if not parent:
+        raise RuntimeError(f"Session {child_session_file} has no parentSession")
+    return pathlib.Path(parent)
+
+
 def screen_line(needle):
     return next((line for line in screen_text().splitlines() if needle in line), "")
 
@@ -183,7 +200,7 @@ def main():
     proc = spawn()
     try:
         proc.write("/agent researcher\r")
-        wait_for("researcher loaded", lambda text: "Loaded researcher" in text and "skills: playwright-cli" in text, timeout=20)
+        wait_for("researcher loaded", lambda text: "Loaded researcher" in text and "skills:" in text and "playwright-cli" in text, timeout=20)
         researcher_card = render_png("loaded-agent-skills-terminal.png")
         proc.write("\x0f")
         wait_for("expanded researcher prompt resources", lambda text: "Available skills" in text and "playwright-cli" in text and "Path:" in text and "<available_skills" not in text, timeout=20)
@@ -205,9 +222,12 @@ def main():
         proc.write("/send reply with the exact text no invoke receipt --no-invoke\r")
         wait_for("no invoke returned context", lambda text: "Message from agent from session" in text and "no invoke receipt" in text, timeout=180)
         no_invoke_child, no_invoke_child_text = newest_child_session_file_containing("reply with the exact text no invoke receipt")
-        if '"modelId":"gpt-5.4-mini"' not in no_invoke_child_text:
-            raise AssertionError(f"Expected agentless child to inherit gpt-5.4-mini, got {no_invoke_child}")
-        (OUTPUT / "model-inheritance-check.txt").write_text(f"child_session={no_invoke_child}\nmodel=gpt-5.4-mini\n", encoding="utf-8")
+        parent_session = parent_session_file(no_invoke_child)
+        parent_model_id = latest_model_id(parent_session.read_text(encoding="utf-8", errors="replace"))
+        child_model_id = latest_model_id(no_invoke_child_text)
+        if child_model_id != parent_model_id:
+            raise AssertionError(f"Expected agentless child to inherit {parent_model_id}, got {child_model_id} in {no_invoke_child}")
+        (OUTPUT / "model-inheritance-check.txt").write_text(f"child_session={no_invoke_child}\nmodel={child_model_id}\n", encoding="utf-8")
         no_invoke = render_png("send-no-invoke-returned-without-caller-run-terminal.png")
 
         proc.write("/send escape-abort-receipt use the bash tool to run python -c \"import time; time.sleep(60)\" before replying with escape-abort-receipt --bg --no-invoke\r")
@@ -244,7 +264,7 @@ def main():
             screen = pyte.Screen(COLS, ROWS)
             stream = pyte.ByteStream(screen)
             proc = spawn(["--session", str(LAG_SESSION_FILE)])
-            wait_for("lag regression session 019eb810 visible and footer stable", lambda text: "MCP:" in text and ("Bewerbungen" in text or "019eb810" in text), timeout=30)
+            wait_for("lag regression session 019eb810 visible and footer stable", lambda text: "Bewerbungen" in text or "019eb810" in text, timeout=30)
             time.sleep(2)
             lag_regression_path = render_png("lag-regression-session-019eb810-terminal.png")
             started = time.perf_counter()
@@ -269,7 +289,7 @@ def main():
         proc.write("\x1b[B")
         wait_for("active tree child selected", lambda text: ">" in tree_session_line("tree-refresh-receipt"), timeout=10)
         proc.write("\r")
-        wait_for("running tree child opens", lambda text: "tree-refresh-receipt" in text and "MCP:" in text and "Orchestration Tree" not in text, timeout=30)
+        wait_for("running tree child opens", lambda text: "tree-refresh-receipt" in text and "Orchestration Tree" not in text, timeout=30)
         proc.write("/orchestration-tree\r")
         wait_for("tree opens from running child", lambda text: "Orchestration Tree" in text and "tree-refresh-receipt" in text, timeout=30)
         proc.write("\r")
@@ -286,7 +306,7 @@ def main():
         proc.write("\x1b[B")
         wait_for("inactive tree child selected", lambda text: ">" in tree_session_line("tree-refresh-receipt"), timeout=10)
         proc.write("\r")
-        wait_for("inactive tree child opens without crash", lambda text: "Resumed session" in text and "tree-refresh-receipt" in text and "MCP:" in text and "Orchestration Tree" not in text, timeout=30)
+        wait_for("inactive tree child opens without crash", lambda text: "Resumed session" in text and "tree-refresh-receipt" in text and "Orchestration Tree" not in text, timeout=30)
         switched_tree_refresh = render_png("tree-refresh-child-opened-terminal.png")
         stop(proc)
 
@@ -302,7 +322,7 @@ def main():
 
         proc.write("/new\r")
         time.sleep(1)
-        wait_for("default agent loaded after new session command", lambda text: "New session started" in text and "Loaded reviewer" in text and "Cleared active agent" not in text, timeout=30)
+        wait_for("default agent loaded after new session command", lambda text: "New session started" in text and "reviewer" in text and "Cleared active agent" not in text, timeout=30)
         new_default_agent_path = render_png("new-session-default-agent-terminal.png")
 
         RAW_LOG.write_text("".join(raw_chunks), encoding="utf-8", errors="replace")

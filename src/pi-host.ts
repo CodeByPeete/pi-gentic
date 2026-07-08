@@ -698,24 +698,56 @@ export function renderVisibleLiveSessionState(mode: AnyRecord) {
   const persistedMessages = Array.isArray(sessionContext.messages)
     ? sessionContext.messages
     : [];
-  const persistedPrefixLength = commonMessagePrefixLength(
+  const hydration = reconcileVisibleSessionMessages(
     persistedMessages,
     liveMessages,
   );
-  const stableMessages = liveMessages.slice(0, persistedPrefixLength);
-  const liveOnlyMessages = liveMessages.slice(persistedPrefixLength);
 
   mode.renderSessionContext(
-    { ...sessionContext, messages: stableMessages },
+    { ...sessionContext, messages: hydration.renderedMessages },
     { updateFooter: true, populateHistory: true },
   );
 
-  for (const message of liveOnlyMessages) replayLiveOnlyMessage(mode, message);
+  for (const message of hydration.liveOnlyMessages)
+    replayLiveOnlyMessage(mode, message);
 
   for (const toolCall of unresolvedToolCalls(liveMessages))
     replayToolExecutionStart(mode, toolCall);
 
   return true;
+}
+
+function reconcileVisibleSessionMessages(
+  persistedMessages: AnyRecord[],
+  liveMessages: AnyRecord[],
+) {
+  const renderedMessages: AnyRecord[] = [];
+  let liveIndex = 0;
+
+  for (const persistedMessage of persistedMessages) {
+    const liveMessage = liveMessages[liveIndex];
+
+    if (
+      liveMessage &&
+      messageSignature(persistedMessage) === messageSignature(liveMessage)
+    ) {
+      renderedMessages.push(persistedMessage);
+      liveIndex += 1;
+      continue;
+    }
+
+    if (isPersistedUiMessage(persistedMessage))
+      renderedMessages.push(persistedMessage);
+  }
+
+  return {
+    renderedMessages,
+    liveOnlyMessages: liveMessages.slice(liveIndex),
+  };
+}
+
+function isPersistedUiMessage(message: AnyRecord) {
+  return message?.role === "custom";
 }
 
 function resetVisibleSessionState(mode: AnyRecord) {
@@ -741,9 +773,6 @@ function replayLiveOnlyMessage(mode: AnyRecord, message: AnyRecord) {
 
 function replayToolExecutionStart(mode: AnyRecord, toolCall: AnyRecord) {
   if (typeof mode.handleEvent !== "function") return;
-  const pendingTools = mode.pendingTools;
-
-  if (pendingTools instanceof Map && !pendingTools.has(toolCall.id)) return;
   void mode.handleEvent({
     type: "tool_execution_start",
     toolCallId: toolCall.id,
@@ -766,16 +795,6 @@ function safeSessionContext(sessionManager: AnyRecord) {
   } catch {
     return { messages: [] };
   }
-}
-
-function commonMessagePrefixLength(a: AnyRecord[], b: AnyRecord[]) {
-  const max = Math.min(a.length, b.length);
-
-  for (let index = 0; index < max; index++) {
-    if (messageSignature(a[index]) !== messageSignature(b[index])) return index;
-  }
-
-  return max;
 }
 
 function messageSignature(message: AnyRecord) {

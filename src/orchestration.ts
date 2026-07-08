@@ -251,22 +251,37 @@ function liveCallerSession(
   callerSessionId: string | undefined,
   visibleSession: AnyRecord | undefined,
 ) {
-  const registered = callerSessionId
+  return (
+    visibleCallerSession(ctx, callerSessionId, visibleSession) ??
+    runningCallerSession(callerSessionId, ctx)
+  );
+}
+
+function visibleCallerSession(
+  ctx: PiContext,
+  callerSessionId: string | undefined,
+  visibleSession: AnyRecord | undefined,
+) {
+  if (!visibleSession) return undefined;
+
+  return activeLiveSession(visibleSession, callerSessionId, ctx);
+}
+
+function runningCallerSession(
+  callerSessionId: string | undefined,
+  fallbackCtx?: PiContext,
+) {
+  const session = callerSessionId
     ? getRuntimeSession(callerSessionId)?.session
     : undefined;
-  const registeredTarget = activeLiveSession(registered, callerSessionId, ctx);
 
-  if (registeredTarget) return registeredTarget;
+  if (session?.isStreaming !== true) return undefined;
 
-  if (!visibleSession) return undefined;
-  const visibleTarget = activeLiveSession(visibleSession, callerSessionId, ctx);
-
-  if (visibleTarget) return visibleTarget;
-  const visibleSessionId = visibleSession.sessionManager?.getSessionId?.();
-
-  return !visibleSessionId && contextStillActive(ctx, callerSessionId)
-    ? { session: visibleSession, ctx }
-    : undefined;
+  try {
+    return { session, ctx: replacedSessionContext(session) ?? fallbackCtx };
+  } catch {
+    return { session, ctx: fallbackCtx };
+  }
 }
 
 function activeLiveSession(
@@ -282,17 +297,20 @@ function activeLiveSession(
     if (callerSessionId && sessionId && sessionId !== callerSessionId)
       return undefined;
 
-    const ctx =
-      typeof session.createReplacedSessionContext === "function"
-        ? session.createReplacedSessionContext()
-        : undefined;
+    const ctx = replacedSessionContext(session) ?? fallbackCtx;
 
     if (ctx && !contextStillActive(ctx, callerSessionId)) return undefined;
 
-    return { session, ctx: ctx ?? fallbackCtx };
+    return { session, ctx };
   } catch {
     return undefined;
   }
+}
+
+function replacedSessionContext(session: AnyRecord) {
+  return typeof session.createReplacedSessionContext === "function"
+    ? session.createReplacedSessionContext()
+    : undefined;
 }
 
 function returnContextMessage(text: string) {
@@ -352,6 +370,43 @@ function waitForSessionTurnEnd(session: AnyRecord, signal?: AbortSignal) {
     unsubscribe = session.subscribe?.((event) => {
       if (event?.type === "agent_end") finish();
     });
+  });
+}
+
+export function promptSessionAndWaitForTurnEnd(
+  session: AnyRecord,
+  prompt: () => Promise<unknown>,
+  signal?: AbortSignal,
+) {
+  if (typeof session.subscribe !== "function") return prompt();
+
+  return new Promise<void>((resolve, reject) => {
+    let done = false;
+    let promptStarted = false;
+    let unsubscribe: (() => void) | undefined;
+    const abort = () => finish(new Error("Agent call aborted."));
+    const finish = (error?: Error) => {
+      if (done) return;
+      done = true;
+      unsubscribe?.();
+      signal?.removeEventListener?.("abort", abort);
+      if (error) reject(error);
+      else resolve();
+    };
+
+    signal?.addEventListener?.("abort", abort, { once: true });
+    unsubscribe = session.subscribe((event) => {
+      if (promptStarted && event?.type === "agent_end")
+        setTimeout(() => finish(), 0);
+    });
+
+    Promise.resolve()
+      .then(() => {
+        promptStarted = true;
+        return prompt();
+      })
+      .then(() => finish())
+      .catch((error) => finish(error));
   });
 }
 
@@ -1440,11 +1495,16 @@ export class PiGenticOrchestrator {
           input.message,
           receipt,
         );
-        await target.session.prompt(
-          targetPrompt.text,
-          target.session.isStreaming
-            ? { streamingBehavior: "steer" }
-            : undefined,
+        await promptSessionAndWaitForTurnEnd(
+          target.session,
+          () =>
+            target.session.prompt(
+              targetPrompt.text,
+              target.session.isStreaming
+                ? { streamingBehavior: "steer" }
+                : undefined,
+            ),
+          callbacks.signal,
         );
         if (targetPrompt.command && !startsAgentTurn(targetPrompt.command)) {
           const completed = monitor.finish({
@@ -1924,12 +1984,12 @@ export class PiGenticOrchestrator {
     const existing = findRuntimeSession(
       (runtime) => runtime.session.sessionManager.getSessionId() === sessionId,
     );
-    const runtime =
-      existing ??
-      (await this.createRuntimeForSessionManager(
-        callerSessionManager,
-        callerCwd,
-      ));
+    const runtime = await this.runtimeForCallerInvocation({
+      existing,
+      callerSessionManager,
+      callerCwd,
+    });
+
     await this.applyPolicyToAgentSession(runtime.session, config);
     runtime.lastMessage = text;
     runtime.lastActivityAt = new Date().toISOString();
@@ -1948,6 +2008,16 @@ export class PiGenticOrchestrator {
         );
         persistSessionImmediately(runtime.session.sessionManager);
       });
+  }
+
+  async runtimeForCallerInvocation({
+    existing,
+    callerSessionManager,
+    callerCwd,
+  }) {
+    return existing?.session?.isStreaming === true
+      ? existing
+      : this.createRuntimeForSessionManager(callerSessionManager, callerCwd);
   }
 
   async createRuntimeForSessionManager(

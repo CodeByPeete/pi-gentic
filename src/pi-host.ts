@@ -505,6 +505,12 @@ function installInteractiveSubmitBridge(
         );
         const submittedEditor = this.editor;
         const submittedText = editorText(submittedEditor);
+        const pendingInputs = Array.isArray(this.pendingUserInputs)
+          ? this.pendingUserInputs
+          : undefined;
+        const pendingInputCount = pendingInputs?.length ?? 0;
+        const addedPendingInputs = fallbackAfterNative && !pendingInputs;
+        if (addedPendingInputs) this.pendingUserInputs = [];
         const result = await nativeSubmit(text);
 
         if (
@@ -514,11 +520,15 @@ function installInteractiveSubmitBridge(
           sameSubmittedText(editorText(submittedEditor), command) &&
           sameSubmittedText(submittedText, command)
         ) {
+          removeSubmittedPendingInput(this, command, pendingInputCount);
           await promptVisibleSessionNow(this, command, {
             addHistory: false,
             flushPendingBash: false,
           });
         }
+
+        if (addedPendingInputs && this.pendingUserInputs?.length === 0)
+          delete this.pendingUserInputs;
 
         return result;
       };
@@ -612,6 +622,17 @@ function hasOtherStreamingRuntime(session: AnyRecord) {
   );
 }
 
+function removeSubmittedPendingInput(
+  mode: AnyRecord,
+  submitted: string,
+  originalLength: number,
+) {
+  if (!Array.isArray(mode.pendingUserInputs)) return;
+  const appended = mode.pendingUserInputs.slice(originalLength);
+  if (appended.length === 1 && sameSubmittedText(appended[0], submitted))
+    mode.pendingUserInputs.splice(originalLength, 1);
+}
+
 function editorText(editor: AnyRecord) {
   try {
     return typeof editor?.getText === "function" ? editor.getText() : undefined;
@@ -678,7 +699,10 @@ function installInteractiveLiveSessionHydrationBridge(
     function renderCurrentSessionStateWithLiveHydration(...args) {
       if (renderVisibleLiveSessionState(this)) return;
 
-      return state.hostRenderCurrentSessionState?.apply(this, args);
+      const result = state.hostRenderCurrentSessionState?.apply(this, args);
+      replayCurrentStreamingMessage(this);
+
+      return result;
     };
 }
 
@@ -763,12 +787,32 @@ function replayLiveOnlyMessage(mode: AnyRecord, message: AnyRecord) {
   if (typeof mode.handleEvent !== "function") return;
 
   if (message?.role === "assistant") {
-    void mode.handleEvent({ type: "message_start", message });
-    void mode.handleEvent({ type: "message_update", message });
+    replayStreamingMessage(mode, message);
     return;
   }
 
   void mode.handleEvent({ type: "message_start", message });
+}
+
+function replayCurrentStreamingMessage(mode: AnyRecord) {
+  const session = mode?.session;
+  const agentState = session?.state ?? session?.agent?.state;
+  const streamingMessage = agentState?.streamingMessage;
+
+  if (
+    session?.isStreaming !== true ||
+    streamingMessage?.role !== "assistant" ||
+    typeof mode.handleEvent !== "function"
+  )
+    return false;
+
+  replayStreamingMessage(mode, streamingMessage);
+  return true;
+}
+
+function replayStreamingMessage(mode: AnyRecord, message: AnyRecord) {
+  void mode.handleEvent({ type: "message_start", message });
+  void mode.handleEvent({ type: "message_update", message });
 }
 
 function replayToolExecutionStart(mode: AnyRecord, toolCall: AnyRecord) {
@@ -782,9 +826,15 @@ function replayToolExecutionStart(mode: AnyRecord, toolCall: AnyRecord) {
 }
 
 function liveAgentMessages(session: AnyRecord) {
-  const messages = session?.agent?.state?.messages;
+  const agentState = session?.state ?? session?.agent?.state;
+  const messages = Array.isArray(agentState?.messages)
+    ? agentState.messages
+    : [];
+  const streamingMessage = agentState?.streamingMessage;
 
-  return Array.isArray(messages) ? messages : [];
+  return streamingMessage && !messages.includes(streamingMessage)
+    ? [...messages, streamingMessage]
+    : messages;
 }
 
 function safeSessionContext(sessionManager: AnyRecord) {

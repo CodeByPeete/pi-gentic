@@ -1,4 +1,6 @@
+import json
 import pathlib
+import re
 import shutil
 import threading
 import time
@@ -16,13 +18,12 @@ PI_BIN = shutil.which("pi")
 PI = [PI_BIN] if PI_BIN else [shutil.which("node") or "node", r"C:\Users\petro\AppData\Local\pi-managed\node_modules\@earendil-works\pi-coding-agent\dist\cli.js"]
 COLS = 150
 ROWS = 46
-MODEL = "gpt-5.4-mini"
-MODEL_FULL = "openai-codex/gpt-5.4-mini"
 
 screen = pyte.Screen(COLS, ROWS)
 stream = pyte.ByteStream(screen)
 raw_chunks = []
 stop_reader = False
+screen_lock = threading.RLock()
 
 
 def reset_output():
@@ -37,7 +38,11 @@ def reset_output():
         encoding="utf-8",
     )
     (agent_dir / "agents" / "worker.md").write_text(
-        "---\nname: worker\ndescription: Performs validation tasks.\ntools: read,write,edit,bash\nmodel: openai-codex/gpt-5.4-mini\nthinking: high\n---\nFollow the requested task directly.",
+        "---\nname: worker\ndescription: Performs validation tasks.\ntools: read,write,edit,bash\nthinking: high\n---\nFollow the requested task directly.",
+        encoding="utf-8",
+    )
+    (agent_dir / "agents" / "streamer.md").write_text(
+        "---\nname: streamer\ndescription: Produces deterministic streaming validation output.\ntools: []\nthinking: off\n---\nFollow the requested output format directly.",
         encoding="utf-8",
     )
 
@@ -52,11 +57,13 @@ def reader(proc):
             time.sleep(0.02)
             continue
         raw_chunks.append(data)
-        stream.feed(data.encode("utf-8", errors="replace"))
+        with screen_lock:
+            stream.feed(data.encode("utf-8", errors="replace"))
 
 
 def text():
-    return "\n".join(screen.display)
+    with screen_lock:
+        return "\n".join(screen.display)
 
 
 def wait_for(label, predicate, timeout=120):
@@ -92,12 +99,14 @@ def render_png(name):
     margin = 8
     image = Image.new("RGB", (COLS * cell_w + margin * 2, ROWS * cell_h + margin * 2), (9, 9, 11))
     draw = ImageDraw.Draw(image)
-    for y, line in enumerate(list(screen.buffer.values())):
-        for x, ch in list(line.items()):
-            draw.text((margin + x * cell_w, margin + y * cell_h), ch.data or " ", font=font, fill=color(ch.fg))
+    with screen_lock:
+        for y, line in enumerate(list(screen.buffer.values())):
+            for x, ch in list(line.items()):
+                draw.text((margin + x * cell_w, margin + y * cell_h), ch.data or " ", font=font, fill=color(ch.fg))
+        screen_text = "\n".join(screen.display)
     path = OUTPUT / name
     image.save(path)
-    (OUTPUT / f"{pathlib.Path(name).stem}.txt").write_text(text(), encoding="utf-8")
+    (OUTPUT / f"{pathlib.Path(name).stem}.txt").write_text(screen_text, encoding="utf-8")
     return path
 
 
@@ -117,19 +126,24 @@ def run_command(proc, command):
     proc.write(command + "\r")
 
 
-def ensure_model(proc):
-    if MODEL in text():
-        return
-    run_command(proc, f"/model {MODEL_FULL}")
-    wait_for("gpt-5.4-mini model", lambda value: MODEL in value, 60)
+def select_child_tree_row(proc, agent="worker", screenshot="04-child-row-selected.png"):
+    for _ in range(20):
+        if any(">" in line and f"[{agent}]" in line for line in text().splitlines()):
+            render_png(screenshot)
+            proc.write("\r")
+            time.sleep(1)
+            return
+        proc.write("\x1b[B")
+        time.sleep(0.1)
+    raise AssertionError(f"Could not select the {agent} session")
 
 
-def select_child_tree_row(proc):
-    proc.write("\x1b[B")
-    wait_for("child selected", lambda value: any(">" in line and "worker" in line for line in value.splitlines()), 15)
-    render_png("04-child-row-selected.png")
-    proc.write("\r")
-    time.sleep(1)
+def max_visible_numbered_line():
+    numbers = [
+        int(value)
+        for value in re.findall(r"^\s*(\d{1,3})[\.)]\s", text(), re.MULTILINE)
+    ]
+    return max(numbers, default=0)
 
 
 def select_parent_tree_row(proc):
@@ -159,7 +173,6 @@ def main():
     reset_output()
     proc = spawn()
     try:
-        ensure_model(proc)
         render_png("01-started.png")
         prompt = "run bash command sleep 120, then write abort-should-not-finish to .agentfiles/abort-child/result.txt; use only files under this working directory"
         run_command(proc, f"/send {prompt} --agent worker --no-invoke")
@@ -182,7 +195,77 @@ def main():
         render_png("08-parent-continued-after-child-abort.png")
         if "Final answer from this session" in text():
             raise AssertionError("Opened session displayed a duplicate final-answer component")
-        (OUTPUT / "summary.txt").write_text("\n".join(path.name for path in sorted(OUTPUT.glob("*.png"))), encoding="utf-8")
+
+        streaming_prompt = (
+            "Begin with the result of joining LIVE, STREAM, and READY without separators. "
+            "Then produce 300 numbered lines, each containing its number and a unique short sentence. "
+            "Use no tools."
+        )
+        run_command(proc, f"/send {streaming_prompt} --agent streamer --no-invoke")
+        wait_for(
+            "streaming child produces live text in parent card",
+            lambda value: "LIVESTREAMREADY" in value,
+            120,
+        )
+        run_command(proc, "/orchestration-tree")
+        wait_for(
+            "tree with actively streaming child",
+            lambda value: "Orchestration Tree" in value and "[streamer]" in value,
+            60,
+        )
+        select_child_tree_row(
+            proc,
+            "streamer",
+            "09-streaming-child-row-selected.png",
+        )
+        wait_for(
+            "opened child hydrates generated text",
+            lambda value: "LIVESTREAMREADY" in value
+            and "Orchestration Tree" not in value
+            and max_visible_numbered_line() > 0,
+            30,
+        )
+        initial_line = max_visible_numbered_line()
+        render_png("10-opened-during-llm-stream.png")
+        update_started_at = time.perf_counter()
+        wait_for(
+            "opened child continues rendering new LLM output",
+            lambda _value: max_visible_numbered_line() > initial_line,
+            5,
+        )
+        update_delay = time.perf_counter() - update_started_at
+        next_line = max_visible_numbered_line()
+        render_png("11-next-live-stream-update.png")
+        wait_for(
+            "opened child renders sustained LLM progress",
+            lambda _value: max_visible_numbered_line() >= next_line + 20,
+            30,
+        )
+        final_line = max_visible_numbered_line()
+        render_png("12-sustained-live-stream-progress.png")
+        (OUTPUT / "streaming-continuity.json").write_text(
+            json.dumps(
+                {
+                    "initialVisibleLine": initial_line,
+                    "nextVisibleLine": next_line,
+                    "nextUpdateDelaySeconds": round(update_delay, 3),
+                    "sustainedVisibleLine": final_line,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        proc.write("\x1b")
+        wait_for(
+            "streaming validation child aborts",
+            lambda value: "aborted" in value.lower()
+            or "interrupt" in value.lower(),
+            60,
+        )
+        (OUTPUT / "summary.txt").write_text(
+            "\n".join(path.name for path in sorted(OUTPUT.glob("*.png"))),
+            encoding="utf-8",
+        )
     finally:
         stop(proc)
 

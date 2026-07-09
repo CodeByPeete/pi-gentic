@@ -302,6 +302,97 @@ test("live visible session state hydrates unpersisted assistant activity immedia
   assert.equal(events[2].toolName, "agents");
 });
 
+test("live visible session hydration attaches the current streaming message before later updates", () => {
+  const user = { role: "user", content: "stream continuously" };
+  const initialStreamingMessage = {
+    role: "assistant",
+    content: [{ type: "text", text: "line 1" }],
+  };
+  const events = [];
+  const mode = liveHydrationMode({
+    persistedMessages: [user],
+    liveMessages: [user],
+    streamingMessage: initialStreamingMessage,
+    events,
+  });
+
+  assert.equal(renderVisibleLiveSessionState(mode), true);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["message_start", "message_update"],
+  );
+  assert.equal(events[0].message, initialStreamingMessage);
+
+  for (let line = 2; line <= 100; line++) {
+    mode.handleEvent({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: `line ${line}` }],
+      },
+    });
+  }
+
+  mode.handleEvent({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "line 100" }],
+      stopReason: "stop",
+    },
+  });
+
+  assert.equal(events.length, 102);
+  assert.equal(events.at(-2).message.content[0].text, "line 100");
+  assert.equal(events.at(-1).type, "message_end");
+});
+
+test("current InteractiveMode hydrates an active streaming message after its native session render", async () => {
+  const state = getLiveRuntimeState();
+
+  await installBridgeForTest(state, "liveHydrationBridgeInstalled");
+  const { InteractiveMode } = await import(
+    pathToFileURL(
+      path.resolve(
+        "node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js",
+      ),
+    ).href
+  );
+  const streamingMessage = {
+    role: "assistant",
+    content: [{ type: "text", text: "already streaming" }],
+  };
+  const events = [];
+  let nativeRenders = 0;
+  const mode = Object.assign(Object.create(InteractiveMode.prototype), {
+    loadedResourcesContainer: { clear() {} },
+    chatContainer: { clear() {} },
+    pendingMessagesContainer: { clear() {} },
+    pendingTools: new Map(),
+    runtimeHost: {
+      session: {
+        isStreaming: true,
+        state: { messages: [], streamingMessage },
+      },
+    },
+    renderInitialMessages() {
+      nativeRenders += 1;
+    },
+    handleEvent(event) {
+      events.push(event);
+    },
+  });
+
+  mode.renderCurrentSessionState();
+
+  assert.equal(nativeRenders, 1);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["message_start", "message_update"],
+  );
+  assert.equal(events[0].message, streamingMessage);
+});
+
 test("live visible session hydration preserves persisted orchestration cards while replaying new assistant text", () => {
   const user = { role: "user", content: "delegate while active" };
   const card = {
@@ -553,6 +644,7 @@ test("/new parks the active visible run instead of disposing it", async () => {
       getHeader: () => ({}),
       getSessionDir: () => sessionDir,
       getSessionId: () => "new-running-session",
+      isPersisted: () => true,
     },
   };
   const runtimeHost = new AgentSessionRuntime(
@@ -755,9 +847,15 @@ function complexHydrationWorkflow(seed) {
 function liveHydrationMode({
   persistedMessages,
   liveMessages,
+  streamingMessage,
   events = [],
   streaming = true,
 }) {
+  const agentState = {
+    messages: liveMessages,
+    ...(streamingMessage ? { streamingMessage } : {}),
+  };
+
   return {
     renderedContexts: [],
     chatContainer: { clear() {} },
@@ -773,7 +871,8 @@ function liveHydrationMode({
     ),
     session: {
       isStreaming: streaming,
-      agent: { state: { messages: liveMessages } },
+      state: agentState,
+      agent: { state: agentState },
       sessionManager: {
         buildSessionContext: () => ({ messages: persistedMessages }),
       },

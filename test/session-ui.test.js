@@ -77,16 +77,18 @@ test("live refresh is event-driven and uses an invisible below-editor widget", a
   ]);
 });
 
-test("live refresh stop clears the widget even before the first pulse", () => {
+test("live refresh stays idle without events and stop clears its widget", async () => {
   const calls = [];
   const stop = startLiveRefresh(
     { mode: "tui", ui: { setWidget: (...args) => calls.push(args) } },
     "quick",
-    { ttlMs: 10_000, intervalMs: 1000 },
+    { ttlMs: 10_000, intervalMs: 0 },
   );
 
-  stop.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(calls.length, 0);
 
+  stop.refresh();
   stop();
 
   assert.deepEqual(calls, [

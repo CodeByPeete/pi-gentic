@@ -236,6 +236,78 @@ test("restored agents cards do not show inactive timers when no live run exists"
   assert.doesNotMatch(output, /Inactive:/);
 });
 
+test("persisted orchestration snapshots keep their captured inactivity", () => {
+  const originalNow = Date.now;
+
+  try {
+    Date.now = () => 1_000_000;
+    const component = renderAgentsResult(
+      {
+        content: [{ type: "text", text: "session snapshot" }],
+        details: {
+          kind: "discoverSessions",
+          status: "done",
+          sessions: [
+            {
+              sessionId: "running-session",
+              lastMessage: "Historical running session",
+              running: true,
+              inactiveMs: 19_000,
+              lastActivityAt: 900_000,
+            },
+          ],
+        },
+      },
+      { expanded: false, isPartial: false },
+      theme,
+      { args: {}, isError: false },
+    );
+    const before = text(component.render(120));
+
+    Date.now = () => 2_000_000;
+    const after = text(component.render(120));
+
+    assert.equal(after, before);
+    assert.match(after, /Inactive: 19s/);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("active send cards keep live inactivity timers", () => {
+  const originalNow = Date.now;
+  const cardId = "active-send-card";
+
+  try {
+    Date.now = () => 1_000_000;
+    setLiveCardDetails({
+      cardId,
+      kind: "send",
+      status: "running",
+      updatedAt: 940_000,
+    });
+    const component = renderAgentsResult(
+      {
+        content: [{ type: "text", text: "active send" }],
+        details: { cardId, kind: "send", status: "running" },
+      },
+      { expanded: false, isPartial: true },
+      theme,
+      { args: {}, isError: false },
+    );
+    const before = text(component.render(120));
+
+    Date.now = () => 1_001_000;
+    const after = text(component.render(120));
+
+    assert.match(before, /Inactive: 1m:00s/);
+    assert.match(after, /Inactive: 1m:01s/);
+  } finally {
+    clearLiveCardDetails({ cardId });
+    Date.now = originalNow;
+  }
+});
+
 test("restored running send cards render stable historical duration", () => {
   const originalNow = Date.now;
 

@@ -399,24 +399,17 @@ export function startLiveRefresh(
   let pending = false;
   let lastRefreshAt = 0;
   let refreshTimer: NodeJS.Timeout | undefined;
-  let pulseTimer: NodeJS.Timeout | undefined;
   let timeout: NodeJS.Timeout | undefined;
   const clearRefreshTimer = () => {
     if (!refreshTimer) return;
     clearTimeout(refreshTimer);
     refreshTimer = undefined;
   };
-  const clearPulseTimer = () => {
-    if (!pulseTimer) return;
-    clearInterval(pulseTimer);
-    pulseTimer = undefined;
-  };
   const stop = () => {
     if (stopped) return;
     stopped = true;
     liveCardRefreshers.delete(stop.refresh);
     clearRefreshTimer();
-    clearPulseTimer();
 
     if (timeout) clearTimeout(timeout);
 
@@ -450,14 +443,6 @@ export function startLiveRefresh(
 
   if (options.trackLiveCards !== false) liveCardRefreshers.add(stop.refresh);
 
-  if (options.autoPulse !== false) {
-    pulseTimer = setInterval(
-      renderPulse,
-      Math.max(250, Number(options.pulseIntervalMs ?? 1000)),
-    );
-    pulseTimer.unref?.();
-  }
-
   timeout = setTimeout(
     () => stop(),
     Math.max(1000, Number(options.ttlMs ?? 10 * 60_000)),
@@ -478,7 +463,6 @@ export function startSessionLiveCardRefresh(ctx: PiContext) {
     return stop;
   }
   const stop = startLiveRefresh(ctx, "session-live-cards", {
-    pulseIntervalMs: 1000,
     ttlMs: RUNNING_CARD_TTL_MS,
   });
 
@@ -1143,7 +1127,7 @@ class AgentsCard {
     const id = this.dim(`(${visibleSessionId(session, this.data.sessions ?? [])})`);
     const left = `${this.dim(connector)}${indicator} ${agent}`;
     const inactive = session.running
-      ? ` ${this.dim("Inactive:")} ${this.timer(formatDuration(sessionInactiveMs(session)))}`
+      ? ` ${this.dim("Inactive:")} ${this.timer(formatDuration(Number(session.inactiveMs ?? 0)))}`
       : "";
     const right = `${id}${inactive}`;
 

@@ -148,16 +148,33 @@ export function shortSessionId(sessionId) {
   return String(sessionId ?? "").slice(0, 8);
 }
 
+export function shortestUniqueSessionId(sessionId, sessionIds = []) {
+  const full = String(sessionId ?? "");
+  let length = Math.min(8, full.length);
+
+  while (
+    length < full.length &&
+    sessionIds.some((candidate) => {
+      const other = String(candidate ?? "");
+
+      return other && other !== full && other.slice(0, length) === full.slice(0, length);
+    })
+  )
+    length = Math.min(full.length, length + (full[length] === "-" ? 5 : 4));
+
+  return full.slice(0, length);
+}
+
 export function buildReceiptText(callerAgent, callerSessionId, message) {
   const agentText = callerAgent ? `[${callerAgent}] agent` : "agent";
 
-  return `Message from ${agentText} from session ${shortSessionId(callerSessionId)}:\n${message}\nOnly your final answer will be returned.`;
+  return `Message from ${agentText} from session ${String(callerSessionId ?? "")}:\n${message}\nOnly your final answer will be returned.`;
 }
 
 export function buildReturnText(agent, sessionId, finalAnswer) {
   const agentText = agent ? `[${agent}] agent` : "agent";
 
-  return `Message from ${agentText} from session ${shortSessionId(sessionId)}:\n${finalAnswer}`;
+  return `Message from ${agentText} from session ${String(sessionId ?? "")}:\n${finalAnswer}`;
 }
 
 

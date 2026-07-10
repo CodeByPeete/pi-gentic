@@ -615,6 +615,8 @@ test("send confirmation tells callers not to wait or duplicate delegated work", 
     "check that",
   );
 
+  assert.match(text, /session 019ecdce-4317-701b-9c51-1b05272f0db0/);
+
   assert.match(text, /Do not wait for it to return/);
 
   assert.match(text, /do not duplicate the delegated work yourself/);

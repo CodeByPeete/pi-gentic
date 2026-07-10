@@ -1,4 +1,9 @@
-import { formatDuration, isRecord, shortSessionId } from "./catalog.js";
+import {
+  formatDuration,
+  isRecord,
+  shortestUniqueSessionId,
+  shortSessionId,
+} from "./catalog.js";
 
 const RUNNING_CARD_TTL_MS = 10 * 60_000;
 
@@ -844,23 +849,10 @@ export class SessionTreeCard {
 }
 
 function visibleSessionId(session: AnyRecord, sessions: AnyRecord[]) {
-  const full = String(session.sessionId ?? session.id ?? "");
-
-  if (!full) return shortSessionId(full);
-  let length = 8;
-
-  while (
-    length < full.length &&
-    sessions.some((item) => {
-      const other = String(item.sessionId ?? item.id ?? "");
-
-      return other && other !== full && other.slice(0, length) === full.slice(0, length);
-    })
-  ) {
-    length = Math.min(full.length, length + 4);
-  }
-
-  return full.slice(0, length);
+  return shortestUniqueSessionId(
+    session.sessionId ?? session.id,
+    sessions.map((item) => item.sessionId ?? item.id),
+  );
 }
 
 export function sessionInactiveMs(session: AnyRecord) {

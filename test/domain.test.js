@@ -242,13 +242,16 @@ test("short session id takes first eight characters", () => {
   assert.equal(shortSessionId("123456789"), "12345678");
 });
 
-test("receipt text includes caller and final-answer instruction", () => {
-  assert.match(
-    buildReceiptText("researcher", "abcdefghi", "hello"),
-    /Only your final answer/,
-  );
+test("receipt text includes the exact caller session and final-answer instruction", () => {
+  const receipt = buildReceiptText("researcher", "abcdefghi", "hello");
+
+  assert.match(receipt, /session abcdefghi/);
+  assert.match(receipt, /Only your final answer/);
 });
 
-test("return text includes agent and answer", () => {
-  assert.match(buildReturnText("builder", "abcdefghi", "done"), /done/);
+test("return text includes the exact agent session and answer", () => {
+  const returned = buildReturnText("builder", "abcdefghi", "done");
+
+  assert.match(returned, /session abcdefghi/);
+  assert.match(returned, /done/);
 });

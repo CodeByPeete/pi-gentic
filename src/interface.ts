@@ -1,4 +1,9 @@
-import { loadAvailableSkills, loadConfiguration, isRecord, shortSessionId } from "./catalog.js";
+import {
+  loadAvailableSkills,
+  loadConfiguration,
+  isRecord,
+  shortestUniqueSessionId,
+} from "./catalog.js";
 
 const SEND_VALUE_FLAGS = new Set([
   "agent",
@@ -583,10 +588,11 @@ function completeSessions(
   currentSessionId?: string,
 ) {
   const query = token.trim().toLowerCase();
+  const sessionIds = sessions.map(sessionIdentifier).filter(Boolean);
 
   return sessions
     .filter((session) => sessionIdentifier(session) !== currentSessionId)
-    .map((session) => sessionCompletion(session))
+    .map((session) => sessionCompletion(session, sessionIds))
     .filter(
       (session) =>
         !query ||
@@ -598,9 +604,9 @@ function completeSessions(
     );
 }
 
-function sessionCompletion(session: AnyRecord) {
+function sessionCompletion(session: AnyRecord, sessionIds: string[]) {
   const id = sessionIdentifier(session);
-  const visibleId = shortSessionId(id);
+  const visibleId = shortestUniqueSessionId(id, sessionIds);
   const agentName = stringValue(session.agentName);
   const agent = agentName ? `[${agentName}] ` : "";
   const message =
@@ -610,7 +616,7 @@ function sessionCompletion(session: AnyRecord) {
     "Untitled session";
 
   return {
-    value: visibleId,
+    value: id,
     label: visibleId,
     description: `${agent}${message}`.trim(),
   };

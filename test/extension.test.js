@@ -26,9 +26,32 @@ test("send session completion starts immediately after the session flag", () => 
     sessions: [{ sessionId: "019eabcd-0000", lastMessage: "Review patch" }],
   });
 
-  assert.equal(completion.value, "continue --session 019eabcd");
+  assert.equal(completion.value, "continue --session 019eabcd-0000");
 
   assert.equal(completion.label, "019eabcd");
+});
+
+test("send session completion disambiguates sessions created in the same UUIDv7 time window", () => {
+  const completions = completeSend("continue --session ", {
+    sessions: [
+      { sessionId: "019f4905-1bc8-7745-9be2-bfd327496429", agentName: "builder" },
+      { sessionId: "019f4905-42d7-7c5e-ad3f-93d7fffc745f", agentName: "researcher" },
+    ],
+  });
+
+  assert.deepEqual(
+    completions.map(({ value, label }) => ({ value, label })),
+    [
+      {
+        value: "continue --session 019f4905-1bc8-7745-9be2-bfd327496429",
+        label: "019f4905-1bc8",
+      },
+      {
+        value: "continue --session 019f4905-42d7-7c5e-ad3f-93d7fffc745f",
+        label: "019f4905-42d7",
+      },
+    ],
+  );
 });
 
 test("send session completion recognizes Pi argument prefixes", () => {
@@ -174,7 +197,7 @@ test("send session completion shows visible ids and session context", () => {
     currentSessionId: "skip",
   });
 
-  assert.equal(completion.value, "continue --session 019eabcd");
+  assert.equal(completion.value, "continue --session 019eabcd-0000");
 
   assert.equal(completion.label, "019eabcd");
 

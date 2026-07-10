@@ -106,7 +106,7 @@ export function sendConfirmationText(
     ? "The agent is already working and will read this message when ready."
     : "The agent will return with a full answer once he's done.";
 
-  return `${action} ${target} in session ${shortSessionId(sessionId)}.\nMessage: ${message}\n${timing} Do not wait for it to return, and do not duplicate the delegated work yourself.`;
+  return `${action} ${target} in session ${String(sessionId ?? "")}.\nMessage: ${message}\n${timing} Do not wait for it to return, and do not duplicate the delegated work yourself.`;
 }
 
 export function sendStatusText(details: AnyRecord = {}) {

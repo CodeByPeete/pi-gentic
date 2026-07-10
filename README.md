@@ -302,6 +302,7 @@ flowchart TD
     Orchestration --> Catalog[src/catalog.ts]
     Orchestration --> Sessions[src/sessions.ts]
     Orchestration --> Host[src/pi-host.ts]
+    Orchestration --> Worktrees[src/worktrees.ts]
 
     Interface --> Orchestration
     Sessions --> UI
@@ -315,7 +316,7 @@ flowchart TD
     class Pi,Extension edge;
     class Orchestration core;
     class UI ui;
-    class Interface,Catalog,Sessions,Host data;
+    class Interface,Catalog,Sessions,Host,Worktrees data;
 ```
 
 In plain English:
@@ -326,6 +327,7 @@ In plain English:
 - `catalog.ts` loads configuration, skills, prompts, policies, and worktrees.
 - `sessions.ts` finds and organizes related sessions.
 - `pi-host.ts` bridges Pi runtime behavior.
+- `worktrees.ts` creates isolated Git worktrees.
 - `ui.ts` renders cards and trees.
 
 ---

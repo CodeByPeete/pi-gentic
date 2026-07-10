@@ -114,7 +114,7 @@ function readFlagValue(tokens, index, inlineValue) {
 export function parseAgentCommand(input) {
   const tokens = tokenizeCommandLine(input.trim());
   let sessionId;
-  const words = [];
+  const words: string[] = [];
 
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index];
@@ -348,7 +348,7 @@ export function completeSend(prefix: string, options: CompletionOptions = {}) {
 
   if (sessionValue) {
     return completeSessions(sessionValue.token, sessions, currentSessionId).map(
-      (session) => ({ ...session, value: sessionValue.replace(session.value) }),
+      (session) => ({ ...session, value: sessionValue.replace(session.value ?? "") }),
     );
   }
 
@@ -588,7 +588,9 @@ function completeSessions(
   currentSessionId?: string,
 ) {
   const query = token.trim().toLowerCase();
-  const sessionIds = sessions.map(sessionIdentifier).filter(Boolean);
+  const sessionIds = sessions
+    .map(sessionIdentifier)
+    .filter((id): id is string => Boolean(id));
 
   return sessions
     .filter((session) => sessionIdentifier(session) !== currentSessionId)
@@ -605,7 +607,7 @@ function completeSessions(
 }
 
 function sessionCompletion(session: AnyRecord, sessionIds: string[]) {
-  const id = sessionIdentifier(session);
+  const id = sessionIdentifier(session) ?? "";
   const visibleId = shortestUniqueSessionId(id, sessionIds);
   const agentName = stringValue(session.agentName);
   const agent = agentName ? `[${agentName}] ` : "";

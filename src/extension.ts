@@ -1,4 +1,7 @@
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+  SessionManager,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import {
   AGENT_CYCLE_SHORTCUT,
   enabledModelPatterns,
@@ -8,6 +11,7 @@ import {
   loadConfiguration,
   loadPiSettings,
   shortSessionId,
+  systemPromptSkillEntries,
 } from "./catalog.js";
 import {
   buildManualSkillMessage,
@@ -20,7 +24,11 @@ import {
   parseSendCommand,
   parseSkillCommand,
 } from "./interface.js";
-import { installLiveSessionBridge, persistSessionImmediately } from "./pi-host.js";
+import {
+  hostCompatibilityDiagnostics,
+  installLiveSessionBridge,
+  persistSessionImmediately,
+} from "./pi-host.js";
 import { PiGenticOrchestrator, persistSynchronousToolCard } from "./orchestration.js";
 import {
   buildSessionTree,
@@ -88,12 +96,12 @@ function showErrorCard(pi, orchestrator, error, kind = "error") {
   );
 }
 
-export default function piGentic(pi) {
-  installLiveSessionBridge();
+export default async function piGentic(pi: ExtensionAPI) {
+  await installLiveSessionBridge();
   const orchestrator = new PiGenticOrchestrator(pi);
   const completionContext = createCompletionContext(pi);
 
-  pi.registerMessageRenderer("pi-gentic:card", (message, options, theme) => {
+  pi.registerMessageRenderer<AnyRecord>("pi-gentic:card", (message, options, theme) => {
     const component = renderAgentsResult(
       {
         content: [
@@ -119,6 +127,7 @@ export default function piGentic(pi) {
     restorePersistedCardDetails(ctx.sessionManager);
     stopSessionLiveCardRefresh = startSessionLiveCardRefresh(ctx);
     completionContext.capture(ctx);
+    reportDiagnostics(pi, ctx);
     try {
       const defaultResult = await orchestrator.loadDefaultAgent(ctx, event);
 
@@ -234,7 +243,7 @@ export default function piGentic(pi) {
 
         const refreshSessions = async () =>
           (await orchestrator.discoverSessions(ctx, { all: true })).sessions;
-        const selected = await ctx.ui.custom((tui, theme, _keybindings, done) =>
+        const selected = await ctx.ui.custom<AnyRecord | undefined>((tui, theme, _keybindings, done) =>
           createSessionTreePicker(
             result.sessions,
             theme,
@@ -440,6 +449,7 @@ function createCompletionContext(
       if (!ctx) return snapshot;
       const cwd = typeof ctx.cwd === "string" ? ctx.cwd : snapshot.cwd;
       const config = loadConfiguration({ cwd });
+      const nativeSkills = systemPromptSkillEntries(ctx);
       snapshot = {
         cwd,
         sessionDir: ctx.sessionManager?.getSessionDir?.() ?? snapshot.sessionDir,
@@ -450,7 +460,8 @@ function createCompletionContext(
         agents: config.agents,
         models: scopedModelSuggestions(ctx),
         tools: safeToolNames(pi),
-        skills: loadAvailableSkills({ cwd }).map((skill) => skill.name),
+        skills: (nativeSkills.length > 0 ? nativeSkills : loadAvailableSkills({ cwd }))
+          .map((skill) => skill.name),
         commands: safeCommands(pi),
         themes: themeSuggestions(config),
         systemPromptFiles: systemPromptFileSuggestions(config),
@@ -514,7 +525,7 @@ function warmCompletionSessions({ cwd, sessionDir }) {
 async function listCompletionSessionSources(cwd, sessionDir) {
   const fast = listSessionSummariesFast(sessionDir);
 
-  return fast.length > 0 ? fast : (SessionManager as any).list(cwd, sessionDir);
+  return fast.length > 0 ? fast : SessionManager.list(cwd, sessionDir);
 }
 
 function completionSessionCacheKey({ cwd, sessionDir }) {
@@ -522,7 +533,7 @@ function completionSessionCacheKey({ cwd, sessionDir }) {
 }
 
 function scopedModelSuggestions(ctx: PiContext | undefined) {
-  const patterns = enabledModelPatterns();
+  const patterns = enabledModelPatterns() ?? [];
   const registry = ctx?.modelRegistry;
   const available = safeAvailableModels(registry);
 
@@ -694,6 +705,24 @@ async function executeAction(orchestrator, ctx, input, onUpdate, signal) {
   }
 
   throw new Error(`Unknown action "${input.action}".`);
+}
+
+function reportDiagnostics(pi: ExtensionAPI, ctx: PiContext) {
+  const diagnostics = [...loadConfiguration({ cwd: ctx.cwd }).diagnostics];
+
+  loadAvailableSkills({ cwd: ctx.cwd, diagnostics });
+  for (const message of hostCompatibilityDiagnostics())
+    diagnostics.push({ severity: "error", message });
+
+  for (const diagnostic of diagnostics) {
+    const location = diagnostic.path ? ` (${diagnostic.path})` : "";
+
+    pi.events.emit("pi-gentic:diagnostic", diagnostic);
+    ctx.ui.notify(
+      `pi-gentic: ${diagnostic.message}${location}`,
+      diagnostic.severity === "error" ? "error" : "warning",
+    );
+  }
 }
 
 function firstText(content) {

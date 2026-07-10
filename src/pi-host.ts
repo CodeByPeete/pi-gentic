@@ -5,6 +5,10 @@ import { defaultAgentDir, getActiveState } from "./catalog.js";
 
 type LiveRuntimeState = {
   liveRuntimes: Map<string, AnyRecord>;
+  runtimeSessions: Map<string, PiRuntimeSession>;
+  activeCalls: Map<string, AgentCall>;
+  nextCallId: number;
+  compatibilityDiagnostics: string[];
   hostSwitchSession?: (this: unknown, sessionPath: string, options?: AnyRecord) => Promise<unknown>;
   hostNewSession?: (this: unknown, options?: AnyRecord) => Promise<unknown>;
   hostAbortSession?: (this: unknown, ...args: unknown[]) => Promise<unknown>;
@@ -42,10 +46,9 @@ type PiCodingAgentPeer = {
 let peerModule: Promise<PiCodingAgentPeer> | undefined;
 
 async function piCodingAgent(): Promise<PiCodingAgentPeer> {
+  const localAppData = process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local");
   const managedCli = path.join(
-    homedir(),
-    "AppData",
-    "Local",
+    localAppData,
     "pi-managed",
     "node_modules",
     "@earendil-works",
@@ -66,19 +69,23 @@ async function piCodingAgent(): Promise<PiCodingAgentPeer> {
 }
 
 async function importFirst(specifiers: string[]): Promise<PiCodingAgentPeer> {
-  for (const specifier of specifiers) {
+  const errors: unknown[] = [];
+
+  for (const specifier of [...new Set(specifiers)]) {
     try {
       return (await import(specifier)) as unknown as PiCodingAgentPeer;
-    } catch {}
+    } catch (error) {
+      errors.push(error);
+    }
   }
 
-  return (await import("@earendil-works/pi-coding-agent")) as unknown as PiCodingAgentPeer;
+  throw new AggregateError(errors, "Could not load a compatible Pi coding-agent runtime.");
 }
 
 const LIVE_RUNTIME_STATE_KEY = Symbol.for("pi-gentic.live-runtime-state");
 
 export function getLiveRuntimeState(): LiveRuntimeState {
-  return (globalThis[LIVE_RUNTIME_STATE_KEY] ??= {
+  const state = (globalThis[LIVE_RUNTIME_STATE_KEY] ??= {
     liveRuntimes: new Map(),
     hostSwitchSession: undefined,
     hostNewSession: undefined,
@@ -97,7 +104,14 @@ export function getLiveRuntimeState(): LiveRuntimeState {
     escapeBridgeInstalled: false,
     submitBridgeInstalled: false,
     liveHydrationBridgeInstalled: false,
-  });
+  }) as LiveRuntimeState;
+
+  state.runtimeSessions ??= new Map();
+  state.activeCalls ??= new Map();
+  state.nextCallId ??= 0;
+  state.compatibilityDiagnostics ??= [];
+
+  return state;
 }
 
 type AgentCall = {
@@ -114,18 +128,15 @@ type AbortState = {
   calls: Set<unknown>;
 };
 
-const activeCalls = new Map<string, AgentCall>();
-
-let nextCallId = 0;
-
 export function registerAgentCall(call: Omit<AgentCall, "id" | "startedAt"> & { id?: string }) {
-  const id = call.id ?? `agent-call:${++nextCallId}`;
+  const state = getLiveRuntimeState();
+  const id = call.id ?? `agent-call:${++state.nextCallId}`;
 
-  activeCalls.set(id, { ...call, id, startedAt: Date.now() });
+  state.activeCalls.set(id, { ...call, id, startedAt: Date.now() });
 
   return {
     id,
-    unregister: () => activeCalls.delete(id),
+    unregister: () => state.activeCalls.delete(id),
   };
 }
 
@@ -140,7 +151,9 @@ function hasCancellableAgentCallsForSession(sessionId) {
 }
 
 export async function abortAgentCall(callId, options = {}) {
-  return abortCalls([activeCalls.get(callId)].filter(Boolean), options);
+  const call = getLiveRuntimeState().activeCalls.get(callId);
+
+  return abortCalls(call ? [call] : [], options);
 }
 
 export async function abortAgentCallsForSession(sessionId, options = {}) {
@@ -148,7 +161,7 @@ export async function abortAgentCallsForSession(sessionId, options = {}) {
 }
 
 function activeCallsForSession(sessionId) {
-  return [...activeCalls.values()].filter(
+  return [...getLiveRuntimeState().activeCalls.values()].filter(
     (call) =>
       call.callerSessionId === sessionId || call.targetSessionId === sessionId,
   );
@@ -192,10 +205,13 @@ function isAbortState(value: unknown): value is AbortState {
 
 export const LIVE_SESSION_PREFIX = "pi-gentic-live:";
 
-export function installLiveSessionBridge() {
+export async function installLiveSessionBridge() {
   const state = getLiveRuntimeState();
 
-  void piCodingAgent().then((peer) => {
+  try {
+    const peer = await piCodingAgent();
+
+    assertCompatibleHost(peer);
     installRuntimeSwitchBridge(state, peer);
     installRuntimeNewSessionBridge(state, peer);
     installSessionAbortBridge(state, peer);
@@ -204,7 +220,35 @@ export function installLiveSessionBridge() {
     installInteractiveEscapeBridge(state, peer);
     installInteractiveSubmitBridge(state, peer);
     installInteractiveLiveSessionHydrationBridge(state, peer);
-  });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (!state.compatibilityDiagnostics.includes(message))
+      state.compatibilityDiagnostics.push(message);
+  }
+}
+
+export function hostCompatibilityDiagnostics() {
+  return [...getLiveRuntimeState().compatibilityDiagnostics];
+}
+
+function assertCompatibleHost(peer: PiCodingAgentPeer) {
+  const required: Array<[AnyRecord | undefined, string, string]> = [
+    [peer.AgentSessionRuntime?.prototype, "switchSession", "AgentSessionRuntime"],
+    [peer.AgentSessionRuntime?.prototype, "newSession", "AgentSessionRuntime"],
+    [peer.AgentSession?.prototype, "abort", "AgentSession"],
+    [peer.AgentSession?.prototype, "prompt", "AgentSession"],
+    [peer.AgentSession?.prototype, "dispose", "AgentSession"],
+    [peer.InteractiveMode?.prototype, "setupEditorSubmitHandler", "InteractiveMode"],
+    [peer.InteractiveMode?.prototype, "setupKeyHandlers", "InteractiveMode"],
+    [peer.InteractiveMode?.prototype, "renderCurrentSessionState", "InteractiveMode"],
+  ];
+  const missing = required
+    .filter(([prototype, method]) => typeof prototype?.[method] !== "function")
+    .map(([, method, owner]) => `${owner}.${method}`);
+
+  if (missing.length > 0)
+    throw new Error(`Pi runtime compatibility check failed: ${missing.join(", ")}.`);
 }
 
 function installRuntimeSwitchBridge(
@@ -293,7 +337,7 @@ function installRuntimeNewSessionBridge(
 
 function withVisibleContextTracking(
   state: LiveRuntimeState,
-  runtimeHost: PiAgentRuntimeHost,
+  runtimeHost: AnyRecord,
   options: AnyRecord = {},
 ) {
   const originalWithSession = options.withSession;
@@ -320,7 +364,7 @@ export function activeVisibleSession() {
 
 export function parkCurrentLiveRuntimeForSwitch(
   state: LiveRuntimeState,
-  runtimeHost: PiAgentRuntimeHost | undefined,
+  runtimeHost: AnyRecord | undefined,
 ) {
   const session = runtimeHost?.session;
   const sessionId = session?.sessionManager?.getSessionId?.();
@@ -364,8 +408,8 @@ export function parkCurrentLiveRuntimeForSwitch(
 }
 
 function snapshotRuntimeHost(
-  runtimeHost: PiAgentRuntimeHost | undefined,
-  session: PiAgentSession,
+  runtimeHost: AnyRecord | undefined,
+  session: AnyRecord,
 ) {
   if (!runtimeHost) return undefined;
 
@@ -445,7 +489,7 @@ function installSessionDisposeBridge(
 }
 
 export async function trackSessionPrompt<T>(
-  session: PiAgentSession,
+  session: AnyRecord,
   run: () => Promise<T> | T,
   prompt?: unknown,
 ) {
@@ -983,17 +1027,16 @@ export function listLiveRuntimes() {
   }));
 }
 
-const runtimeSessions = new Map<string, PiRuntimeSession>();
-
 export function getRuntimeSession(sessionId: string) {
-  return runtimeSessions.get(sessionId);
+  return getLiveRuntimeState().runtimeSessions.get(sessionId);
 }
 
 export function findRuntimeSession(predicate: (runtime: PiRuntimeSession) => boolean) {
-  return [...runtimeSessions.values()].find(predicate);
+  return [...getLiveRuntimeState().runtimeSessions.values()].find(predicate);
 }
 
 export function setRuntimeSession(sessionId: string, runtime: PiRuntimeSession) {
+  const runtimeSessions = getLiveRuntimeState().runtimeSessions;
   const existing = runtimeSessions.get(sessionId);
   const next = existing ?? runtime;
 
@@ -1005,7 +1048,7 @@ export function setRuntimeSession(sessionId: string, runtime: PiRuntimeSession) 
 }
 
 export function updateRuntimeSession(sessionId: string, patch: Partial<PiRuntimeSession>) {
-  const existing = runtimeSessions.get(sessionId);
+  const existing = getLiveRuntimeState().runtimeSessions.get(sessionId);
 
   if (!existing) return undefined;
 
@@ -1013,11 +1056,11 @@ export function updateRuntimeSession(sessionId: string, patch: Partial<PiRuntime
 }
 
 export function listRuntimeSessions() {
-  return [...runtimeSessions.values()];
+  return [...getLiveRuntimeState().runtimeSessions.values()];
 }
 
 export function deleteRuntimeSession(sessionId: string) {
-  runtimeSessions.delete(sessionId);
+  getLiveRuntimeState().runtimeSessions.delete(sessionId);
 }
 
 export function pruneRuntimeSessions({
@@ -1025,6 +1068,7 @@ export function pruneRuntimeSessions({
   maxIdleMs = 12 * 60 * 60_000,
 } = {}) {
   const now = Date.now();
+  const runtimeSessions = getLiveRuntimeState().runtimeSessions;
 
   for (const [sessionId, runtime] of runtimeSessions) {
     const running = runtime.session?.isStreaming === true;

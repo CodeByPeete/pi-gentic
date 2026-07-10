@@ -23,6 +23,26 @@ test("live runtime state is shared across duplicate module instances", async () 
   const second = await import(`../dist/pi-host.js?instance=${Date.now()}-b`);
 
   assert.equal(first.getLiveRuntimeState(), second.getLiveRuntimeState());
+
+  const runtime = { session: { isStreaming: false } };
+  first.setRuntimeSession("duplicate-runtime", runtime);
+  assert.equal(second.getRuntimeSession("duplicate-runtime"), runtime);
+  second.deleteRuntimeSession("duplicate-runtime");
+
+  let aborted = false;
+  const call = first.registerAgentCall({
+    callerSessionId: "duplicate-caller",
+    abort: () => {
+      aborted = true;
+    },
+  });
+  try {
+    assert.equal(second.hasAgentCallsForSession("duplicate-caller"), true);
+    await second.abortAgentCallsForSession("duplicate-caller");
+    assert.equal(aborted, true);
+  } finally {
+    call.unregister();
+  }
 });
 
 test("runtime registry preserves object identity for live activity updates", () => {
@@ -903,12 +923,7 @@ async function installBridgeForTest(state, flag) {
   process.env.PI_CLI = path.resolve(
     "node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
   );
-  installLiveSessionBridge();
-
-  for (let attempt = 0; attempt < 20; attempt++) {
-    if (state[flag]) return;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+  await installLiveSessionBridge();
 
   assert.equal(state[flag], true);
 }

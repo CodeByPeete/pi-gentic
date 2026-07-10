@@ -37,6 +37,26 @@ test("markdown parser extracts frontmatter and body", () => {
   assert.equal(parsed.body.trim(), "Body");
 });
 
+test("markdown parser preserves native YAML capabilities", () => {
+  const parsed = parseMarkdownDefinition(
+    [
+      "---",
+      "name: reviewer",
+      "description: >",
+      "  Reviews code",
+      "  deeply",
+      "agentsTool:",
+      "  invokeMeLater:",
+      "    async: false",
+      "---",
+      "Body",
+    ].join("\n"),
+  );
+
+  assert.equal(parsed.frontmatter.description, "Reviews code deeply\n");
+  assert.equal(parsed.frontmatter.agentsTool.invokeMeLater.async, false);
+});
+
 test("agent normalization accepts models alias", () => {
   const agent = normalizeAgentDefinition({
     name: "a",
@@ -194,6 +214,37 @@ test("available skills resolve from discovered skill files", () => {
     );
     assert.equal(skills[0].description, "Browser automation");
     assert.match(skills[0].location, /SKILL\.md$/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("skill discovery reflects files added after the first read", () => {
+  const { dir, cleanup } = tempRoot();
+
+  try {
+    const root = path.join(dir, "skills");
+    mkdirSync(path.join(root, "first"), { recursive: true });
+    writeFileSync(
+      path.join(root, "first", "SKILL.md"),
+      "---\nname: first\ndescription: First\n---\nFirst.",
+    );
+
+    assert.deepEqual(
+      loadAvailableSkills({ skillRoots: [root] }).map((skill) => skill.name),
+      ["first"],
+    );
+
+    mkdirSync(path.join(root, "second"));
+    writeFileSync(
+      path.join(root, "second", "SKILL.md"),
+      "---\nname: second\ndescription: Second\n---\nSecond.",
+    );
+
+    assert.deepEqual(
+      loadAvailableSkills({ skillRoots: [root] }).map((skill) => skill.name),
+      ["first", "second"],
+    );
   } finally {
     cleanup();
   }

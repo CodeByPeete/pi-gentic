@@ -2,16 +2,30 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
+import {
+  loadSkills,
+  parseFrontmatter,
+  type AgentSession,
+  type AgentSessionRuntime,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type ExtensionContext,
+  type SessionManager,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
 
 declare global {
   type AnyRecord = Record<string, any>;
-  type PiApi = AnyRecord;
-  type PiContext = AnyRecord;
+  type PiApi = ExtensionAPI;
   type PiSessionManager = AnyRecord;
+  type PiContext = Omit<ExtensionContext, "sessionManager"> &
+    Partial<Omit<ExtensionCommandContext, keyof ExtensionContext>> & {
+      sessionManager: PiSessionManager;
+    } & AnyRecord;
   type PiRuntimeSession = AnyRecord;
-  type PiAgentRuntimeHost = AnyRecord;
-  type PiAgentSession = AnyRecord;
-  type PiTheme = AnyRecord;
+  type PiAgentRuntimeHost = AgentSessionRuntime & AnyRecord;
+  type PiAgentSession = AgentSession & AnyRecord;
+  type PiTheme = Theme;
 }
 
 
@@ -148,7 +162,7 @@ export function shortSessionId(sessionId) {
   return String(sessionId ?? "").slice(0, 8);
 }
 
-export function shortestUniqueSessionId(sessionId, sessionIds = []) {
+export function shortestUniqueSessionId(sessionId, sessionIds: unknown[] = []) {
   const full = String(sessionId ?? "");
   let length = Math.min(8, full.length);
 
@@ -498,115 +512,9 @@ export function parseMarkdownDefinition(content: string): {
   frontmatter: AnyRecord;
   body: string;
 } {
-  if (!content.startsWith("---")) return { frontmatter: {}, body: content };
-  const end = content.indexOf("\n---", 3);
+  const { frontmatter, body } = parseFrontmatter(content);
 
-  if (end === -1) return { frontmatter: {}, body: content };
-  const yaml = content.slice(3, end).trim();
-  const body = content.slice(end + 4).replace(/^\r?\n/, "");
-
-  return { frontmatter: parseSimpleYaml(yaml), body };
-}
-
-function parseSimpleYaml(yaml: string) {
-  const root: AnyRecord = {};
-  const lines = yaml.split(/\r?\n/);
-  let currentKey: string | undefined;
-  let currentNestedKey: string | undefined;
-
-  for (const line of lines) {
-    if (!line.trim() || line.trim().startsWith("#")) continue;
-    const listMatch = line.match(/^\s*-\s*(.*)$/);
-
-    if (listMatch && currentKey) {
-      if (currentNestedKey) {
-        const target = ensureArraySlot(
-          ensureRecordSlot(root, currentKey),
-          currentNestedKey,
-        );
-        target.push(parseScalar(listMatch[1]));
-      } else {
-        ensureArraySlot(root, currentKey).push(parseScalar(listMatch[1]));
-      }
-      continue;
-    }
-
-    const nestedMatch = line.match(/^\s{2,}([A-Za-z][\w.-]*):\s*(.*)$/);
-
-    if (nestedMatch && currentKey && isRecord(root[currentKey])) {
-      currentNestedKey = nestedMatch[1];
-      const current = ensureRecordSlot(root, currentKey);
-      current[currentNestedKey] = nestedMatch[2]
-        ? parseScalar(nestedMatch[2])
-        : [];
-      continue;
-    }
-
-    const keyMatch = line.match(/^([A-Za-z][\w.-]*):\s*(.*)$/);
-
-    if (!keyMatch) continue;
-    currentKey = keyMatch[1];
-    currentNestedKey = undefined;
-    root[currentKey] = keyMatch[2] ? parseScalar(keyMatch[2]) : [];
-
-    if (currentKey.includes(".")) {
-      assignDotted(root, currentKey, root[currentKey]);
-      delete root[currentKey];
-      currentKey = currentKey.split(".")[0];
-    }
-  }
-
-  return root;
-}
-
-function ensureRecordSlot(root: AnyRecord, key: string): AnyRecord {
-  if (!isRecord(root[key])) root[key] = {};
-
-  return root[key] as AnyRecord;
-}
-
-function ensureArraySlot(root: AnyRecord, key: string): unknown[] {
-  if (!Array.isArray(root[key])) root[key] = [];
-
-  return root[key] as unknown[];
-}
-
-function assignDotted(root: AnyRecord, key: string, value: unknown) {
-  const parts = key.split(".");
-  let current = root;
-
-  for (const part of parts.slice(0, -1)) {
-    current = ensureRecordSlot(current, part);
-  }
-
-  current[parts[parts.length - 1]] = value;
-}
-
-function parseScalar(value) {
-  const trimmed = value.trim();
-
-  if (trimmed === "true") return true;
-
-  if (trimmed === "false") return false;
-
-  if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed);
-
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1);
-  }
-
-  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-    return trimmed
-      .slice(1, -1)
-      .split(",")
-      .map((item) => parseScalar(item))
-      .filter((item) => item !== "");
-  }
-
-  return trimmed;
+  return { frontmatter: isRecord(frontmatter) ? frontmatter : {}, body };
 }
 
 function mergePiSettings(target: AnyRecord, source: AnyRecord) {
@@ -630,7 +538,6 @@ function dedupePaths(paths: string[]) {
 
 
 const SKILL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const skillCache = new Map<string, AnyRecord[]>();
 
 export function loadAvailableSkills(options: AnyRecord = {}) {
   const cwd = path.resolve(text(options.cwd) ?? process.cwd());
@@ -642,24 +549,40 @@ export function loadAvailableSkills(options: AnyRecord = {}) {
     ? options.settings
     : loadPiSettings(agentDir, cwd, diagnostics);
   const configuredRoots = strings(options.skillRoots)?.map((root) => path.resolve(root));
-  const cacheKey = cacheKeyFor(cwd, agentDir, options, configuredRoots);
-
-  if (cacheKey && skillCache.has(cacheKey)) return skillCache.get(cacheKey) ?? [];
-
   const roots = options.noSkills
     ? []
     : configuredRoots ?? skillRoots(cwd, agentDir, settings, diagnostics);
-  const files = [
-    ...roots.flatMap((root) => collectSkillFiles(root, diagnostics)),
-    ...explicitSkillFiles([...refs(settings.skills), ...refs(options.skills)], cwd, agentDir, diagnostics),
-  ];
-  const skills = dedupeSkills(
-    files.flatMap((filePath) => loadSkillEntry(filePath, diagnostics)),
+  const skillPaths = uniquePaths([
+    ...roots,
+    ...explicitSkillPaths(
+      [...refs(settings.skills), ...refs(options.skills)],
+      cwd,
+      agentDir,
+      diagnostics,
+    ),
+  ]).filter(existsSync);
+  const loaded = loadSkills({ cwd, agentDir, skillPaths, includeDefaults: false });
+
+  const loadedPaths = new Set(loaded.skills.map((skill) => skill.filePath));
+  const omittedPaths = new Set<string>();
+
+  for (const diagnostic of loaded.diagnostics) {
+    if (diagnostic.type !== "collision") {
+      if (!diagnostic.path || loadedPaths.has(diagnostic.path) || omittedPaths.has(diagnostic.path))
+        continue;
+      omittedPaths.add(diagnostic.path);
+    }
+    diagnostics.push({
+      severity: diagnostic.type === "error" ? "error" : "warning",
+      path: diagnostic.path,
+      message: diagnostic.message,
+    });
+  }
+
+  return dedupeSkills(
+    loaded.skills.flatMap((skill) => loadSkillEntry(skill.filePath, diagnostics)),
     diagnostics,
   );
-
-  if (cacheKey) skillCache.set(cacheKey, skills);
-  return skills;
 }
 
 export function findAvailableSkill(name: unknown, options: AnyRecord = {}) {
@@ -670,15 +593,17 @@ export function findAvailableSkill(name: unknown, options: AnyRecord = {}) {
   );
 }
 
-function cacheKeyFor(
-  cwd: string,
-  agentDir: string,
-  options: AnyRecord,
-  configuredRoots?: string[],
-) {
-  return configuredRoots || options.noSkills || options.skills || options.settings || options.diagnostics
-    ? undefined
-    : `${cwd}::${agentDir}`;
+export function systemPromptSkillEntries(ctx: PiContext) {
+  const skills = ctx.getSystemPromptOptions?.()?.skills;
+
+  return Array.isArray(skills)
+    ? skills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        location: skill.filePath,
+        disableModelInvocation: skill.disableModelInvocation,
+      }))
+    : [];
 }
 
 function skillRoots(
@@ -696,26 +621,7 @@ function skillRoots(
   ]);
 }
 
-function collectSkillFiles(root: string, diagnostics: AnyRecord[]): string[] {
-  if (!existsSync(root)) return [];
-  if (root.endsWith(".md")) return [root];
-
-  try {
-    return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
-      const fullPath = path.join(root, entry.name);
-      const skillPath = path.join(fullPath, "SKILL.md");
-
-      if (entry.name.startsWith(".")) return [];
-      if (entry.isFile() && entry.name.endsWith(".md")) return [fullPath];
-      return entry.isDirectory() && existsSync(skillPath) ? [skillPath] : [];
-    });
-  } catch (error) {
-    diagnostics.push(diag("warning", root, "Could not read skills directory", error));
-    return [];
-  }
-}
-
-function explicitSkillFiles(
+function explicitSkillPaths(
   entries: unknown[],
   cwd: string,
   agentDir: string,
@@ -730,7 +636,7 @@ function explicitSkillFiles(
         ]).find(existsSync)
       : undefined;
 
-    if (resolved) return skillFilesFromPath(resolved, diagnostics);
+    if (resolved) return [resolved];
     if (ref)
       diagnostics.push({
         severity: "warning",
@@ -739,13 +645,6 @@ function explicitSkillFiles(
       });
     return [];
   });
-}
-
-function skillFilesFromPath(resolved: string, diagnostics: AnyRecord[]) {
-  if (resolved.endsWith(".md")) return [resolved];
-  const skillFile = path.join(resolved, "SKILL.md");
-
-  return existsSync(skillFile) ? [skillFile] : collectSkillFiles(resolved, diagnostics);
 }
 
 function packageSkillRoots(
@@ -776,21 +675,19 @@ function packageSkillRootsFromManifest(root: string, diagnostics: AnyRecord[]) {
   return skillRoots.filter((item): item is string => Boolean(item && existsSync(item)));
 }
 
-function resolvePackageRoot(entry: unknown, cwd: string, diagnostics: AnyRecord[]) {
+function resolvePackageRoot(entry: unknown, cwd: string, _diagnostics: AnyRecord[]) {
   const ref = refPath(entry);
   if (!ref) return undefined;
 
   const candidate = path.isAbsolute(ref) ? ref : path.resolve(cwd, ref);
   if (existsSync(path.join(candidate, "package.json"))) return candidate;
+  const packageName = ref.startsWith("npm:") ? ref.slice(4) : ref;
 
   try {
-    return path.dirname(createRequire(path.join(cwd, "package.json")).resolve(`${ref}/package.json`));
+    return path.dirname(
+      createRequire(path.join(cwd, "package.json")).resolve(`${packageName}/package.json`),
+    );
   } catch {
-    diagnostics.push({
-      severity: "warning",
-      path: ref,
-      message: `Could not resolve configured Pi package "${ref}".`,
-    });
     return undefined;
   }
 }

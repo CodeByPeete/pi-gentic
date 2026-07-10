@@ -68,7 +68,7 @@ export function sessionTreeRoot(
   return current;
 }
 
-export function resolveSessionReference(sessions, reference) {
+export function resolveSessionReference(sessions: AnyRecord[], reference) {
   if (!reference) throw new Error("sessionId is required.");
   const query = String(reference).toLowerCase();
   const matches = sessions.filter((session) =>
@@ -94,13 +94,13 @@ export function resolveSessionReference(sessions, reference) {
 const persistedSummaryCache = new Map();
 const persistedSessionListCache = new Map();
 
-export function listSessionSummariesFast(sessionDir: string | undefined) {
+export function listSessionSummariesFast(sessionDir: string | undefined): AnyRecord[] {
   if (!sessionDir || !existsSync(sessionDir)) return [];
 
   return readdirSync(sessionDir)
     .filter((name) => name.endsWith(".jsonl"))
     .map((name) => fastSessionSummary(path.join(sessionDir, name)))
-    .filter(Boolean)
+    .filter((summary): summary is AnyRecord => Boolean(summary))
     .sort((a, b) => modifiedTime(b) - modifiedTime(a));
 }
 
@@ -245,7 +245,7 @@ export function enrichSessionSummaries(sessions: AnyRecord[], limit = sessions.l
 export function orderSessionTree(sessions) {
   const byKey = sessionKeyMap(sessions);
   const children = new Map();
-  const roots = [];
+  const roots: AnyRecord[] = [];
 
   for (const session of sessions) {
     const parent = parentSession(session, byKey);
@@ -257,7 +257,7 @@ export function orderSessionTree(sessions) {
     }
   }
 
-  const ordered = [];
+  const ordered: AnyRecord[] = [];
   const subtreeModified = (session) =>
     Math.max(
       modifiedTime(session),
@@ -720,7 +720,7 @@ function modifiedTime(session) {
 
 function uniqueBy(items, keyFn) {
   const seen = new Set();
-  const result = [];
+  const result: AnyRecord[] = [];
 
   for (const item of items) {
     const key = keyFn(item);

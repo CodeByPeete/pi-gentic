@@ -190,7 +190,7 @@ export function wrap(text, width) {
   const clean = String(text ?? "");
 
   if (!clean) return [];
-  const lines = [];
+  const lines: string[] = [];
 
   for (const rawLine of clean.split(/\r?\n/)) {
     if (!rawLine) {
@@ -569,7 +569,9 @@ export function sessionHasVisibleLiveCard(ctx: PiContext) {
 
   return entries.some((entry) => {
     const details =
-      entry?.customType === CARD_MESSAGE_TYPE && entry.display !== false
+      entry?.type === "custom_message" &&
+      entry.customType === CARD_MESSAGE_TYPE &&
+      entry.display !== false
         ? entry.details
         : entry?.type === "message" &&
             entry.message?.role === "toolResult" &&

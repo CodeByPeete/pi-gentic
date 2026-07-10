@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   abortAgentCall,
   abortAgentCallsForSession,
+  handleInteractiveEscape,
   hasAgentCallsForSession,
   registerAgentCall,
 } from "../dist/pi-host.js";
@@ -77,5 +78,73 @@ test("aborting one tool call leaves sibling calls running", async () => {
   } finally {
     first.unregister();
     second.unregister();
+  }
+});
+
+test("escape aborts running delegated work before returning control to Pi", async () => {
+  let cancellable = true;
+  let aborts = 0;
+  let nativeEscapes = 0;
+  const call = registerAgentCall({
+    callerSessionId: "root",
+    targetSessionId: "child",
+    isCancellable: () => cancellable,
+    abort: () => {
+      aborts += 1;
+      cancellable = false;
+    },
+  });
+  const escape = () =>
+    handleInteractiveEscape({
+      sessionId: "root",
+      isStreaming: false,
+      nativeEscape: () => {
+        nativeEscapes += 1;
+      },
+    });
+
+  try {
+    escape();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(aborts, 1);
+    assert.equal(nativeEscapes, 0);
+
+    escape();
+    escape();
+    assert.equal(aborts, 1);
+    assert.equal(nativeEscapes, 2);
+  } finally {
+    call.unregister();
+  }
+});
+
+test("stopped delegated calls preserve Pi double-escape handling", async () => {
+  let aborts = 0;
+  let nativeEscapes = 0;
+  const call = registerAgentCall({
+    callerSessionId: "root",
+    targetSessionId: "child",
+    isCancellable: () => false,
+    abort: () => {
+      aborts += 1;
+    },
+  });
+  const escape = () =>
+    handleInteractiveEscape({
+      sessionId: "root",
+      isStreaming: false,
+      nativeEscape: () => {
+        nativeEscapes += 1;
+      },
+    });
+
+  try {
+    escape();
+    escape();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(aborts, 0);
+    assert.equal(nativeEscapes, 2);
+  } finally {
+    call.unregister();
   }
 });

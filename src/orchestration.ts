@@ -1454,6 +1454,7 @@ export class PiGenticOrchestrator {
     const activeCall = registerAgentCall({
       callerSessionId,
       targetSessionId,
+      isCancellable: () => target.session.isStreaming === true,
       abort: async (options: AnyRecord = {}) => {
         target.lastAbort = {
           actor: options.actor ?? abortActor(ctx),

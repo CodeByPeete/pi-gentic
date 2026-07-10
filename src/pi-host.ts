@@ -105,6 +105,7 @@ type AgentCall = {
   callerSessionId?: string;
   targetSessionId?: string;
   abort?: (options?: AnyRecord) => Promise<void> | void;
+  isCancellable?: () => boolean;
   startedAt?: number;
 };
 
@@ -130,6 +131,12 @@ export function registerAgentCall(call: Omit<AgentCall, "id" | "startedAt"> & { 
 
 export function hasAgentCallsForSession(sessionId) {
   return activeCallsForSession(sessionId).length > 0;
+}
+
+function hasCancellableAgentCallsForSession(sessionId) {
+  return activeCallsForSession(sessionId).some(
+    (call) => call.isCancellable?.() !== false,
+  );
 }
 
 export async function abortAgentCall(callId, options = {}) {
@@ -645,6 +652,23 @@ function sameSubmittedText(value: unknown, submitted: string) {
   return String(value ?? "").trim() === submitted;
 }
 
+export function handleInteractiveEscape({
+  sessionId,
+  isStreaming,
+  nativeEscape,
+}: {
+  sessionId?: string;
+  isStreaming?: boolean;
+  nativeEscape: () => unknown;
+}) {
+  if (sessionId && !isStreaming && hasCancellableAgentCallsForSession(sessionId)) {
+    void abortAgentCallsForSession(sessionId, { actor: "caller session" });
+    return;
+  }
+
+  return nativeEscape();
+}
+
 function installInteractiveEscapeBridge(
   state: LiveRuntimeState,
   { InteractiveMode }: Pick<PiCodingAgentPeer, "InteractiveMode">,
@@ -662,22 +686,12 @@ function installInteractiveEscapeBridge(
       const nativeEscape = this.defaultEditor?.onEscape;
 
       if (typeof nativeEscape !== "function") return result;
-      this.defaultEditor.onEscape = () => {
-        const sessionId = this.session?.sessionManager?.getSessionId?.();
-
-        if (
-          sessionId &&
-          !this.session?.isStreaming &&
-          hasAgentCallsForSession(sessionId)
-        ) {
-          void abortAgentCallsForSession(sessionId, {
-            actor: "caller session",
-          });
-          return;
-        }
-
-        return nativeEscape();
-      };
+      this.defaultEditor.onEscape = () =>
+        handleInteractiveEscape({
+          sessionId: this.session?.sessionManager?.getSessionId?.(),
+          isStreaming: this.session?.isStreaming,
+          nativeEscape,
+        });
 
       return result;
     };

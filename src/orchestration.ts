@@ -58,7 +58,13 @@ import {
   sessionDiscoveryScope,
   withRuntimeState,
 } from "./sessions.js";
-import { setAgentLabel, setLiveCardDetails } from "./ui.js";
+import {
+  CARD_STATE_ENTRY_TYPE,
+  isTerminalCard,
+  setAgentLabel,
+  setLiveCardDetails,
+  setPersistedCardDetails,
+} from "./ui.js";
 
 
 export function abortActor(ctx) {
@@ -543,6 +549,27 @@ function customMessageOptions(ctx, queue = "followUp") {
   };
 }
 
+export function persistAgentCardState(
+  sessionManager: PiSessionManager,
+  details: AnyRecord,
+  persist?: (sessionManager: PiSessionManager) => void,
+) {
+  if (!details?.cardId || !isTerminalCard(details)) return false;
+  if (typeof sessionManager.appendCustomEntry !== "function") return false;
+  const snapshot = {
+    ...details,
+    activities: Array.isArray(details.activities)
+      ? [...details.activities]
+      : details.activities,
+  };
+
+  sessionManager.appendCustomEntry(CARD_STATE_ENTRY_TYPE, snapshot);
+  setPersistedCardDetails(snapshot);
+  persist?.(sessionManager);
+
+  return true;
+}
+
 export function persistSynchronousToolCard(
   ctx: PiContext,
   input: AnyRecord,
@@ -631,6 +658,17 @@ export function createSessionActivityMonitor(baseDetails, publish) {
       });
     },
   };
+}
+
+function recordRunResult(runtime, details) {
+  runtime.lastActivities = details.activities ?? runtime.lastActivities ?? [];
+  runtime.runStartedAt = undefined;
+
+  return details;
+}
+
+function completeSessionActivities(monitor, session) {
+  return mergeActivities(monitor.activities, collectSessionActivities(session));
 }
 
 export function collectSessionActivities(session) {
@@ -1140,6 +1178,22 @@ type CallerMessageDelivery = {
   queue?: string;
 };
 
+function registerRuntimeHost(runtimeHost, metadata: AnyRecord = {}) {
+  const session = runtimeHost.session;
+  const sessionManager = session.sessionManager;
+  const runtime: PiRuntimeSession = {
+    runtimeHost,
+    session,
+    agentName: getActiveState(sessionManager).agentName,
+    parentSessionPath: sessionManager.getHeader?.()?.parentSession,
+    ...metadata,
+  };
+
+  setRuntimeSession(sessionManager.getSessionId(), runtime);
+
+  return runtime;
+}
+
 export class PiGenticOrchestrator {
   pi: PiApi;
   currentAgentName?: string;
@@ -1429,8 +1483,19 @@ export class PiGenticOrchestrator {
         activities: [],
       },
     );
+    let terminalStatePersisted = false;
     const publish = (nextDetails: AnyRecord, options: AnyRecord = {}) => {
       const liveDetails = setLiveCardDetails(nextDetails) ?? nextDetails;
+
+      if (
+        !terminalStatePersisted &&
+        returnDelivery.kind === "callerMessage"
+      )
+        terminalStatePersisted = persistAgentCardState(
+          callerSessionManager,
+          liveDetails,
+          persistSessionImmediately,
+        );
 
       if (options.refresh !== false) callbacks.onRefresh?.(liveDetails);
 
@@ -1508,15 +1573,12 @@ export class PiGenticOrchestrator {
           callbacks.signal,
         );
         if (targetPrompt.command && !startsAgentTurn(targetPrompt.command)) {
-          const completed = monitor.finish({
-            activities: mergeActivities(
-              monitor.activities,
-              collectSessionActivities(target.session),
-            ),
-          });
-          target.lastActivities =
-            completed.activities ?? target.lastActivities ?? [];
-          target.runStartedAt = undefined;
+          const completed = recordRunResult(
+            target,
+            monitor.finish({
+              activities: completeSessionActivities(monitor, target.session),
+            }),
+          );
 
           return {
             answer: slashCommandDeliveryText(
@@ -1528,24 +1590,17 @@ export class PiGenticOrchestrator {
         }
         if (targetBusy) await waitForSessionTurnEnd(target.session, callbacks.signal);
         const outcome = sessionRunOutcome(target, { request: input.message });
-        const completed =
+        const completed = recordRunResult(
+          target,
           outcome.status === "done"
             ? monitor.finish({
-                activities: mergeActivities(
-                  monitor.activities,
-                  collectSessionActivities(target.session),
-                ),
+                activities: completeSessionActivities(monitor, target.session),
               })
             : monitor.stop(outcome.status, {
                 error: outcome.text,
-                activities: mergeActivities(
-                  monitor.activities,
-                  collectSessionActivities(target.session),
-                ),
-              });
-        target.lastActivities =
-          completed.activities ?? target.lastActivities ?? [];
-        target.runStartedAt = undefined;
+                activities: completeSessionActivities(monitor, target.session),
+              }),
+        );
         const returnText =
           outcome.status === "done"
             ? buildReturnText(target.agentName, targetSessionId, outcome.text)
@@ -1570,16 +1625,13 @@ export class PiGenticOrchestrator {
           request: input.message,
           error,
         });
-        const failed = monitor.stop(outcome.status, {
-          error: outcome.text,
-          activities: mergeActivities(
-            monitor.activities,
-            collectSessionActivities(target.session),
-          ),
-        });
-        target.lastActivities =
-          failed.activities ?? target.lastActivities ?? [];
-        target.runStartedAt = undefined;
+        const failed = recordRunResult(
+          target,
+          monitor.stop(outcome.status, {
+            error: outcome.text,
+            activities: completeSessionActivities(monitor, target.session),
+          }),
+        );
         if (returnDelivery.kind === "callerMessage")
           await this.deliverCallerMessage(ctx, {
             callerSessionId,
@@ -1651,6 +1703,23 @@ export class PiGenticOrchestrator {
     return prepareWorktree({ ...input, repoCwd: ctx.cwd });
   }
 
+  async applyRequestedTargetPolicy(
+    session: PiAgentSession,
+    input: AnyRecord,
+    config: AnyRecord,
+  ) {
+    if (input.agent)
+      return this.loadAgentIntoSession(
+        session,
+        input.agent,
+        input.overrides,
+        config,
+      );
+
+    if (input.overrides)
+      return this.applySessionOverrides(session, input.overrides, config);
+  }
+
   async resolveTargetSession(
     ctx: PiContext,
     input: AnyRecord,
@@ -1669,31 +1738,16 @@ export class PiGenticOrchestrator {
       );
       await this.assertCanMessageSession(ctx, session, config);
 
-      if (input.agent)
-        await this.loadAgentIntoSession(
-          session.session,
-          input.agent,
-          input.overrides,
-          config,
-        );
-      else if (input.overrides)
-        await this.applySessionOverrides(session.session, input.overrides, config);
+      await this.applyRequestedTargetPolicy(session.session, input, config);
 
       return session;
     }
 
     const session = await this.createChildSession(ctx, input, config);
 
-    if (input.agent)
-      await this.loadAgentIntoSession(
-        session.session,
-        input.agent,
-        input.overrides,
-        config,
-      );
-    else if (input.overrides)
-      await this.applySessionOverrides(session.session, input.overrides, config);
-    else
+    await this.applyRequestedTargetPolicy(session.session, input, config);
+
+    if (!input.agent && !input.overrides)
       await this.applyAgentlessPolicyToNewSession(
         session.session,
         config,
@@ -1825,19 +1879,8 @@ export class PiGenticOrchestrator {
       cwd: cwd ?? sessionManager.getCwd(),
       sessionManager,
     });
-    const state = getActiveState(sessionManager);
-    const runtime: PiRuntimeSession = {
-      runtimeHost,
-      session: runtimeHost.session,
-      agentName: state.agentName,
-      parentSessionPath: sessionManager.getHeader?.()?.parentSession,
-    };
-    setRuntimeSession(
-      runtimeHost.session.sessionManager.getSessionId(),
-      runtime,
-    );
 
-    return runtime;
+    return registerRuntimeHost(runtimeHost);
   }
 
   async loadAgentIntoSession(
@@ -2030,20 +2073,10 @@ export class PiGenticOrchestrator {
       cwd: cwd ?? sessionManager.getCwd(),
       sessionManager,
     });
-    const state = getActiveState(sessionManager);
-    const runtime: PiRuntimeSession = {
-      runtimeHost,
-      session: runtimeHost.session,
-      agentName: state.agentName,
-      parentSessionPath: sessionManager.getHeader?.()?.parentSession,
-      createdAt: new Date().toISOString(),
-    };
-    setRuntimeSession(
-      runtimeHost.session.sessionManager.getSessionId(),
-      runtime,
-    );
 
-    return runtime;
+    return registerRuntimeHost(runtimeHost, {
+      createdAt: new Date().toISOString(),
+    });
   }
 
   async discoverSessions(ctx, input) {

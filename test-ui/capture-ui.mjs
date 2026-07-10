@@ -3,9 +3,11 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
+  clearLiveCardDetails,
   createSessionTreePicker,
   renderAgentsResult,
   renderSessionTree,
+  setLiveCardDetails,
 } from "../dist/ui.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -102,6 +104,25 @@ const cases = [
     },
   },
   {
+    name: "completed-collapsed-activities",
+    details: {
+      kind: "send",
+      status: "done",
+      async: true,
+      agentName: "researcher",
+      sessionId: "2f91a8c4-demo",
+      message:
+        "Determine the cleanest dependency-management approach for this Pi workspace after the Pi update.\nPreserve deterministic installs and compatibility while eliminating unnecessary lockfile churn.\nThis third prompt line should stay hidden while the card is collapsed.",
+      startedAt: Date.now() - 450_000,
+      completedAt: Date.now(),
+      activities: Array.from({ length: 10 }, (_, index) => ({
+        type: "tool",
+        name: index % 2 === 0 ? "read" : "bash",
+        summary: `validated activity ${index + 1}`,
+      })),
+    },
+  },
+  {
     name: "load-agent",
     details: {
       kind: "load",
@@ -183,6 +204,10 @@ const cases = [
 ];
 
 for (const item of cases) {
+  if (item.details.status === "running") {
+    item.details.cardId ??= `capture:${item.name}`;
+    setLiveCardDetails(item.details);
+  }
   const component = item.sessionTreePicker
     ? createSessionTreePicker(
         item.details.sessions,
@@ -212,6 +237,8 @@ for (const item of cases) {
 
   for (const input of item.inputs ?? []) component.handleInput?.(input);
   const lines = component.render(width);
+
+  if (item.details.status === "running") clearLiveCardDetails(item.details);
   const ansiPath = path.join(outputDir, `${item.name}.ansi`);
   const svgPath = path.join(outputDir, `${item.name}.svg`);
   const pngPath = path.join(outputDir, `${item.name}.png`);

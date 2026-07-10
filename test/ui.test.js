@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CARD_STATE_ENTRY_TYPE,
+  clearLiveCardDetails,
   createSessionTreePicker,
   renderAgentsCall,
   renderAgentsResult,
   renderSessionTree,
+  restorePersistedCardDetails,
+  setLiveCardDetails,
 } from "../dist/ui.js";
-import { clearLiveCardDetails, setLiveCardDetails } from "../dist/ui.js";
 
 const theme = {
   bold: (text) => `\x1b[1m${text}\x1b[22m`,
@@ -339,6 +342,109 @@ test("restored running send cards render stable historical duration", () => {
   } finally {
     Date.now = originalNow;
   }
+});
+
+test("terminal card state restores duration and activities after restart", () => {
+  const originalNow = Date.now;
+  const cardId = "persisted-completion";
+  const startedAt = 1_000_000;
+  const completedAt = 1_450_000;
+  const initialDetails = {
+    cardId,
+    kind: "send",
+    status: "running",
+    agentName: "researcher",
+    sessionId: "child-session",
+    message: "research dependencies",
+    startedAt,
+    updatedAt: startedAt,
+    activities: [],
+  };
+
+  try {
+    restorePersistedCardDetails({
+      getBranch: () => [
+        {
+          type: "custom",
+          customType: CARD_STATE_ENTRY_TYPE,
+          data: {
+            ...initialDetails,
+            status: "done",
+            completedAt,
+            updatedAt: completedAt - 1_000,
+            activities: [
+              { type: "tool", name: "write", summary: "research.json" },
+            ],
+          },
+        },
+      ],
+    });
+    restorePersistedCardDetails({
+      getBranch: () => [
+        {
+          type: "custom",
+          customType: CARD_STATE_ENTRY_TYPE,
+          data: {
+            cardId: "another-session-card",
+            kind: "send",
+            status: "done",
+          },
+        },
+      ],
+    });
+    Date.now = () => 2_000_000;
+    const output = text(
+      renderAgentsResult(
+        {
+          content: [{ type: "text", text: "Sent a message" }],
+          details: initialDetails,
+        },
+        { expanded: false, isPartial: false },
+        theme,
+        { args: {}, isError: false },
+      ).render(120),
+    );
+
+    assert.match(output, /Agent answered\./);
+    assert.match(output, /\[write\] research\.json/);
+    assert.match(output, /7m:30s/);
+    assert.doesNotMatch(output, /Inactive:/);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("collapsed send cards reserve two prompt lines for the latest activities", () => {
+  const activities = Array.from({ length: 10 }, (_, index) => ({
+    type: "tool",
+    name: "read",
+    summary: `activity ${index + 1}`,
+  }));
+  const output = text(
+    renderAgentsResult(
+      {
+        content: [{ type: "text", text: "done" }],
+        details: {
+          kind: "send",
+          status: "done",
+          message: "Prompt line one\nPrompt line two\nPrompt line three",
+          activities,
+          startedAt: 1_000,
+          completedAt: 2_000,
+        },
+      },
+      { expanded: false, isPartial: false },
+      theme,
+      { args: {}, isError: false },
+    ).render(120),
+  );
+
+  assert.match(output, /Prompt line one/);
+  assert.match(output, /Prompt line two/);
+  assert.doesNotMatch(output, /Prompt line three/);
+  assert.doesNotMatch(output, /activity 1(?:\D|$)/);
+  assert.match(output, /activity 10/);
+  assert.equal([...output.matchAll(/\[read\] activity/g)].length, 8);
 });
 
 test("stopped send cards use a specific title instead of a generic failure", () => {

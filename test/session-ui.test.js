@@ -48,12 +48,12 @@ test("clearing the agent removes the below-editor label", () => {
   ]);
 });
 
-test("live refresh is event-driven and uses an invisible below-editor widget", async () => {
+test("live refresh events use an invisible below-editor widget", async () => {
   const calls = [];
   const stop = startLiveRefresh(
     { mode: "tui", ui: { setWidget: (...args) => calls.push(args) } },
     "test",
-    { ttlMs: 10_000, intervalMs: 0 },
+    { ttlMs: 10_000, intervalMs: 0, autoPulse: false },
   );
 
   assert.equal(calls.length, 0);
@@ -77,26 +77,27 @@ test("live refresh is event-driven and uses an invisible below-editor widget", a
   ]);
 });
 
-test("live refresh stays idle without events and stop clears its widget", async () => {
+test("live refresh repaints timers without terminal input and stops cleanly", async () => {
   const calls = [];
   const stop = startLiveRefresh(
     { mode: "tui", ui: { setWidget: (...args) => calls.push(args) } },
-    "quick",
-    { ttlMs: 10_000, intervalMs: 0 },
+    "timer",
+    { ttlMs: 10_000, intervalMs: 0, pulseIntervalMs: 250 },
   );
 
   await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.equal(calls.length, 0);
+  assert.ok(calls.length > 0);
+  assert.equal(calls[0][0], `${LIVE_REFRESH_WIDGET_KEY}:timer`);
 
-  stop.refresh();
+  const rendered = calls.length;
   stop();
+  await new Promise((resolve) => setTimeout(resolve, 300));
 
-  assert.deepEqual(calls, [
-    [
-      `${LIVE_REFRESH_WIDGET_KEY}:quick`,
-      undefined,
-      { placement: "belowEditor" },
-    ],
+  assert.equal(calls.length, rendered + 1);
+  assert.deepEqual(calls.at(-1), [
+    `${LIVE_REFRESH_WIDGET_KEY}:timer`,
+    undefined,
+    { placement: "belowEditor" },
   ]);
 });
 
@@ -109,9 +110,12 @@ test("resumed sessions with visible live cards refresh from live updates", async
     sessionManager: {
       getEntries: () => [
         {
-          customType: "pi-gentic:card",
-          display: true,
-          details: { cardId, kind: "send", status: "running" },
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolName: "agents",
+            details: { cardId, kind: "send", status: "running" },
+          },
         },
       ],
     },
@@ -132,6 +136,29 @@ test("resumed sessions with visible live cards refresh from live updates", async
   assert.ok(rendered > 0);
 
   assert.ok(calls.length > rendered);
+});
+
+test("persisted running cards do not start a stale repaint timer", async () => {
+  const calls = [];
+  const ctx = {
+    mode: "tui",
+    ui: { setWidget: (...args) => calls.push(args) },
+    sessionManager: {
+      getEntries: () => [
+        {
+          customType: "pi-gentic:card",
+          display: true,
+          details: { cardId: "stale-card", kind: "send", status: "running" },
+        },
+      ],
+    },
+  };
+
+  const stop = startSessionLiveCardRefresh(ctx);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  stop();
+
+  assert.deepEqual(calls, []);
 });
 
 test("agent load cards are sent immediately to the visible session", () => {

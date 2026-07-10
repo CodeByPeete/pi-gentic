@@ -9,8 +9,24 @@ const RUNNING_CARD_TTL_MS = 10 * 60_000;
 
 const COMPLETED_CARD_TTL_MS = 60_000;
 
+const ACTIVE_CARD_STATUSES = new Set(["queued", "running"]);
+const TERMINAL_CARD_STATUSES = new Set([
+  "done",
+  "error",
+  "aborted",
+  "stopped",
+]);
 const liveCards = new Map();
+const persistedCards = new Map();
 const liveCardRefreshers = new Set<() => void>();
+
+export function isActiveCard(details) {
+  return ACTIVE_CARD_STATUSES.has(details?.status);
+}
+
+export function isTerminalCard(details) {
+  return TERMINAL_CARD_STATUSES.has(details?.status);
+}
 
 export function liveCardKey(details) {
   if (!details || typeof details !== "object") return undefined;
@@ -46,6 +62,48 @@ export function getLiveCardDetails(details) {
   return key ? liveCards.get(key)?.details : undefined;
 }
 
+export function setPersistedCardDetails(details) {
+  const key = liveCardKey(details);
+
+  if (!key) return undefined;
+  const nextDetails = { ...(persistedCards.get(key) ?? {}), ...details };
+
+  persistedCards.set(key, nextDetails);
+  notifyLiveCardRefreshers();
+
+  return nextDetails;
+}
+
+export function restorePersistedCardDetails(sessionManager) {
+  const entries =
+    sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
+
+  for (const entry of entries) {
+    if (entry?.customType !== CARD_STATE_ENTRY_TYPE) continue;
+    if (!entry.data || typeof entry.data !== "object") continue;
+
+    setPersistedCardDetails(entry.data);
+  }
+}
+
+function getPersistedCardDetails(details) {
+  const key = liveCardKey(details);
+
+  return key ? persistedCards.get(key) : undefined;
+}
+
+function resolveCardDetails(details) {
+  const persistedDetails = getPersistedCardDetails(details);
+  const liveDetails = getLiveCardDetails(details);
+
+  return {
+    details: { ...details, ...(persistedDetails ?? {}), ...(liveDetails ?? {}) },
+    persistedDetails,
+    liveDetails,
+    live: isActiveCard(liveDetails),
+  };
+}
+
 export function clearLiveCardDetails(details) {
   const key = liveCardKey(details);
   const entry = key ? liveCards.get(key) : undefined;
@@ -62,8 +120,7 @@ function notifyLiveCardRefreshers() {
 }
 
 function defaultTtl(details) {
-  return details.completedAt ||
-    ["done", "error", "aborted", "stopped"].includes(details.status)
+  return details.completedAt || isTerminalCard(details)
     ? COMPLETED_CARD_TTL_MS
     : RUNNING_CARD_TTL_MS;
 }
@@ -84,6 +141,22 @@ export function center(text, width) {
   const padding = Math.max(0, Math.floor((width - visibleLength(text)) / 2));
 
   return fit(`${" ".repeat(padding)}${text}`, width);
+}
+
+function renderBordered(
+  width: number,
+  colorBorder: (text: string) => string,
+  content: (innerWidth: number) => string[],
+) {
+  const innerWidth = Math.max(10, width - 4);
+
+  return [
+    colorBorder(`╭${"─".repeat(Math.max(0, width - 2))}╮`),
+    ...content(innerWidth).map(
+      (line) => colorBorder("│ ") + fit(line, innerWidth) + colorBorder(" │"),
+    ),
+    colorBorder(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
+  ];
 }
 
 export function joinWithRight(left, right, width) {
@@ -367,6 +440,8 @@ export const AGENT_WIDGET_KEY = "pi-gentic-agent";
 
 export const CARD_MESSAGE_TYPE = "pi-gentic:card";
 
+export const CARD_STATE_ENTRY_TYPE = "pi-gentic:card-state";
+
 export const LIVE_REFRESH_WIDGET_KEY = "pi-gentic-live-refresh";
 
 const AGENT_COLORS = [36, 92, 95, 93, 91, 94, 96, 33];
@@ -404,6 +479,7 @@ export function startLiveRefresh(
   let pending = false;
   let lastRefreshAt = 0;
   let refreshTimer: NodeJS.Timeout | undefined;
+  let pulseTimer: NodeJS.Timeout | undefined;
   let timeout: NodeJS.Timeout | undefined;
   const clearRefreshTimer = () => {
     if (!refreshTimer) return;
@@ -416,6 +492,7 @@ export function startLiveRefresh(
     liveCardRefreshers.delete(stop.refresh);
     clearRefreshTimer();
 
+    if (pulseTimer) clearInterval(pulseTimer);
     if (timeout) clearTimeout(timeout);
 
     try {
@@ -447,6 +524,14 @@ export function startLiveRefresh(
   };
 
   if (options.trackLiveCards !== false) liveCardRefreshers.add(stop.refresh);
+
+  if (options.autoPulse !== false) {
+    pulseTimer = setInterval(
+      renderPulse,
+      Math.max(250, Number(options.pulseIntervalMs ?? 1000)),
+    );
+    pulseTimer.unref?.();
+  }
 
   timeout = setTimeout(
     () => stop(),
@@ -483,10 +568,15 @@ export function sessionHasVisibleLiveCard(ctx: PiContext) {
   ];
 
   return entries.some((entry) => {
-    if (entry?.customType !== CARD_MESSAGE_TYPE || entry.display === false) return false;
-    const details = getLiveCardDetails(entry.details) ?? entry.details;
-
-    return ["queued", "running"].includes(details?.status);
+    const details =
+      entry?.customType === CARD_MESSAGE_TYPE && entry.display !== false
+        ? entry.details
+        : entry?.type === "message" &&
+            entry.message?.role === "toolResult" &&
+            entry.message?.toolName === "agents"
+          ? entry.message.details
+          : undefined;
+    return isActiveCard(getLiveCardDetails(details));
   });
 }
 
@@ -709,19 +799,11 @@ export class SessionTreeCard {
   }
 
   render(width: number) {
-    const innerWidth = Math.max(10, width - 4);
-    const lines = this.lines(innerWidth);
-
-    return [
-      this.colorBorder(`╭${"─".repeat(Math.max(0, width - 2))}╮`),
-      ...lines.map(
-        (line) =>
-          this.colorBorder("│ ") +
-          fit(line, innerWidth) +
-          this.colorBorder(" │"),
-      ),
-      this.colorBorder(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
-    ];
+    return renderBordered(
+      width,
+      (text) => this.colorBorder(text),
+      (innerWidth) => this.lines(innerWidth),
+    );
   }
 
   lines(width: number) {
@@ -781,22 +863,12 @@ export class SessionTreeCard {
   }
 
   sessionLine(session: AnyRecord, index: number, width: number) {
-    const depth = Math.max(0, Number(session.depth ?? 0));
-    const isLast = session.isLast === true;
-    const connector =
-      depth === 0
-        ? ""
-        : `${"│  ".repeat(Math.max(0, depth - 1))}${isLast ? "└─" : "├─"} `;
+    const connector = sessionTreeConnector(session);
     const indicator = session.running ? this.green("●") : this.dim("○");
     const agent = session.agentName
       ? `${this.agentName(session.agentName)} `
       : "";
-    const message = normalizeInline(
-      session.lastMessage ??
-        session.firstMessage ??
-        session.name ??
-        "Untitled session",
-    );
+    const message = sessionMessage(session);
     const id = this.dim(`(${visibleSessionId(session, this.sessions)})`);
     const isSelected = this.onSelect && index === this.clampedSelectedIndex();
     const selectMarker = this.onSelect
@@ -848,6 +920,23 @@ export class SessionTreeCard {
   }
 }
 
+function sessionTreeConnector(session: AnyRecord) {
+  const depth = Math.max(0, Number(session.depth ?? 0));
+
+  return depth === 0
+    ? ""
+    : `${"│  ".repeat(Math.max(0, depth - 1))}${session.isLast === true ? "└─" : "├─"} `;
+}
+
+function sessionMessage(session: AnyRecord) {
+  return normalizeInline(
+    session.lastMessage ??
+      session.firstMessage ??
+      session.name ??
+      "Untitled session",
+  );
+}
+
 function visibleSessionId(session: AnyRecord, sessions: AnyRecord[]) {
   return shortestUniqueSessionId(
     session.sessionId ?? session.id,
@@ -894,8 +983,7 @@ export function renderAgentsResult(
   const card = previousCard ?? new AgentsCard(theme);
   const originalDetails =
     result.details && typeof result.details === "object" ? result.details : {};
-  const liveDetails = getLiveCardDetails(originalDetails);
-  const details = { ...originalDetails, ...(liveDetails ?? {}) };
+  const { details, liveDetails, live } = resolveCardDetails(originalDetails);
   const restoredRunning =
     details.status === "running" && !options.isPartial && !liveDetails;
 
@@ -903,6 +991,7 @@ export function renderAgentsResult(
     {
       cardId: details.cardId,
       kind: details.kind ?? context.args.action ?? "agents",
+      live,
       restored: restoredRunning,
       status: restoredRunning
         ? "restored"
@@ -969,34 +1058,36 @@ class AgentsCard {
   invalidate() {}
 
   render(width: number) {
-    const liveDetails = getLiveCardDetails(this.data);
+    const { details, liveDetails, persistedDetails, live } =
+      resolveCardDetails(this.data);
+    const staleRunning = details.status === "running" && !live;
     this.data = {
-      ...this.data,
-      ...(liveDetails ?? {}),
-      restored: liveDetails ? false : this.data.restored,
+      ...details,
+      live,
+      restored: staleRunning
+        ? true
+        : liveDetails || persistedDetails
+          ? false
+          : details.restored,
+      status: staleRunning ? "restored" : details.status,
+      completedAt: staleRunning
+        ? (details.completedAt ?? details.updatedAt ?? details.startedAt)
+        : details.completedAt,
     };
-    const innerWidth = Math.max(10, width - 4);
-    const lines = this.buildLines(innerWidth);
-
-    return [
-      this.colorBorder(`╭${"─".repeat(Math.max(0, width - 2))}╮`),
-      ...lines.map(
-        (line) =>
-          this.colorBorder("│ ") +
-          fit(line, innerWidth) +
-          this.colorBorder(" │"),
-      ),
-      this.colorBorder(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
-    ];
+    return renderBordered(
+      width,
+      (text) => this.colorBorder(text),
+      (innerWidth) => this.buildLines(innerWidth),
+    );
   }
 
   buildLines(width: number) {
     const header = this.header(width);
+    const maxBodyLines = 11;
     const body = this.expanded
       ? this.body(width).flatMap((line) => wrap(line, width))
-      : this.body(width);
+      : this.collapsedBody(width, maxBodyLines);
     const footer = this.footer(width);
-    const maxBodyLines = Math.max(1, 13 - 2);
     const visibleBody =
       !this.expanded && body.length > maxBodyLines
         ? [
@@ -1020,7 +1111,7 @@ class AgentsCard {
       ? ` ${this.dim(`(${shortSessionId(this.data.sessionId)})`)}`
       : "";
     const inactive =
-      this.data.status === "running" && this.data.updatedAt
+      this.data.live && this.data.status === "running" && this.data.updatedAt
         ? `${this.dim("Inactive:")} ${this.timer(formatDuration(Date.now() - this.data.updatedAt))}`
         : "";
 
@@ -1071,6 +1162,17 @@ class AgentsCard {
     return [...message, ...activityLines];
   }
 
+  collapsedBody(width: number, maxLines: number) {
+    if (this.data.kind !== "send" || this.data.error) return this.body(width);
+    const message = wrap(this.data.message || "", width).slice(0, 2);
+    const activities = this.activityLines(
+      width,
+      Math.max(0, maxLines - message.length),
+    );
+
+    return [...message, ...activities];
+  }
+
   sessionTreeLines(width: number) {
     const sessions = Array.isArray(this.data.sessions)
       ? this.data.sessions
@@ -1099,23 +1201,18 @@ class AgentsCard {
       "",
       ...sessions
         .slice(0, end)
-        .map((session, index) => this.sessionTreeLine(session, index, width)),
+        .map((session) => this.sessionTreeLine(session, width)),
       ...scroll,
     ];
   }
 
-  sessionTreeLine(session: AnyRecord, index: number, width: number) {
-    const depth = Math.max(0, Number(session.depth ?? 0));
-    const isLast = session.isLast === true;
-    const connector =
-      depth === 0
-        ? ""
-        : `${"│  ".repeat(Math.max(0, depth - 1))}${isLast ? "└─" : "├─"} `;
+  sessionTreeLine(session: AnyRecord, width: number) {
+    const connector = sessionTreeConnector(session);
     const indicator = session.running ? this.green("●") : this.dim("○");
     const agent = session.agentName
       ? `${this.agentName(session.agentName)} `
       : "";
-    const message = this.sessionMessage(session);
+    const message = sessionMessage(session);
     const id = this.dim(`(${visibleSessionId(session, this.data.sessions ?? [])})`);
     const left = `${this.dim(connector)}${indicator} ${agent}`;
     const inactive = session.running
@@ -1124,16 +1221,6 @@ class AgentsCard {
     const right = `${id}${inactive}`;
 
     return joinWithMiddle(left, message, right, width);
-  }
-
-  sessionMessage(session: AnyRecord) {
-    const text =
-      session.lastMessage ??
-      session.firstMessage ??
-      session.name ??
-      "Untitled session";
-
-    return normalizeInline(text);
   }
 
   configurationLines(width: number) {
@@ -1153,15 +1240,18 @@ class AgentsCard {
     return lines.length ? lines : [this.muted("No configuration changes.")];
   }
 
-  activityLines(width: number) {
+  activityLines(width: number, maxLines = this.expanded ? 14 : 4) {
     const activities = Array.isArray(this.data.activities)
       ? this.data.activities
       : [];
 
-    if (activities.length === 0) return [];
-    const visible = this.expanded
-      ? activities.slice(-13)
-      : activities.slice(-3);
+    if (activities.length === 0 || maxLines <= 0) return [];
+    const activityLimit = Math.max(
+      0,
+      maxLines - (activities.length > maxLines ? 1 : 0),
+    );
+    const visible =
+      activityLimit > 0 ? activities.slice(-activityLimit) : [];
     const hidden = activities.length - visible.length;
     const lines = hidden > 0 ? [this.muted(`├─ [+${hidden} activities]`)] : [];
 
@@ -1183,7 +1273,7 @@ class AgentsCard {
     if (this.data.kind !== "send" || !this.data.startedAt) return "";
     const endAt =
       this.data.completedAt ??
-      (this.data.status === "running"
+      (this.data.live && isActiveCard(this.data)
         ? Date.now()
         : (this.data.updatedAt ?? this.data.startedAt));
 

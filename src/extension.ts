@@ -36,6 +36,7 @@ import {
   createSessionTreePicker,
   renderAgentsCall,
   renderAgentsResult,
+  restorePersistedCardDetails,
   showCard,
   startLiveRefresh,
   startSessionLiveCardRefresh,
@@ -77,6 +78,16 @@ const AgentsToolParameters = {
   required: ["action"],
 };
 
+function showErrorCard(pi, orchestrator, error, kind = "error") {
+  const message = getErrorMessage(error);
+
+  showCard(
+    pi,
+    message,
+    orchestrator.cardDetails(kind, "error", { error: message }),
+  );
+}
+
 export default function piGentic(pi) {
   installLiveSessionBridge();
   const orchestrator = new PiGenticOrchestrator(pi);
@@ -105,6 +116,7 @@ export default function piGentic(pi) {
 
   pi.on("session_start", async (event, ctx) => {
     stopSessionLiveCardRefresh?.();
+    restorePersistedCardDetails(ctx.sessionManager);
     stopSessionLiveCardRefresh = startSessionLiveCardRefresh(ctx);
     completionContext.capture(ctx);
     try {
@@ -131,13 +143,7 @@ export default function piGentic(pi) {
         const result = await orchestrator.cycleAgent(ctx);
         showCard(pi, result.text, result.details);
       } catch (error) {
-        showCard(
-          pi,
-          getErrorMessage(error),
-          orchestrator.cardDetails("error", "error", {
-            error: getErrorMessage(error),
-          }),
-        );
+        showErrorCard(pi, orchestrator, error);
       }
     },
   });
@@ -209,13 +215,7 @@ export default function piGentic(pi) {
         const result = await orchestrator.loadAgent(ctx, parsed.agent);
         showCard(pi, result.text, result.details);
       } catch (error) {
-        showCard(
-          pi,
-          getErrorMessage(error),
-          orchestrator.cardDetails("error", "error", {
-            error: getErrorMessage(error),
-          }),
-        );
+        showErrorCard(pi, orchestrator, error);
       }
     },
   });
@@ -336,13 +336,7 @@ export default function piGentic(pi) {
         if (!showedProgress) showCard(pi, result.text, result.details);
       } catch (error) {
         stopRefresh();
-        showCard(
-          pi,
-          getErrorMessage(error),
-          orchestrator.cardDetails("send", "error", {
-            error: getErrorMessage(error),
-          }),
-        );
+        showErrorCard(pi, orchestrator, error, "send");
       }
     },
   });

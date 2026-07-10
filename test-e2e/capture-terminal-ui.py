@@ -247,12 +247,20 @@ def main():
         time.sleep(0.4)
 
         parent_session = newest_session_file_containing("pi-gentic:card")
+        parent_entries = [json.loads(line) for line in parent_session.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+        card_states = [entry["data"] for entry in parent_entries if entry.get("type") == "custom" and entry.get("customType") == "pi-gentic:card-state"]
+        if not any(state.get("status") == "done" and state.get("completedAt", 0) > state.get("startedAt", 0) for state in card_states):
+            raise AssertionError(f"No completed persisted card state with a positive duration in {parent_session}")
+        persisted_card_state = OUTPUT / "persisted-card-state-check.txt"
+        persisted_card_state.write_text(json.dumps(card_states, indent=2), encoding="utf-8")
         stop(proc)
 
         screen = pyte.Screen(COLS, ROWS)
         stream = pyte.ByteStream(screen)
         proc = spawn(["--session", str(parent_session)])
-        wait_for("restored session card without inactive timer", lambda text: "reply with the exact text no invoke receipt" in text or "ask one short random question" in text, timeout=30)
+        restored_text = wait_for("restored completed session card", lambda text: "Agent answered." in text and "ask one short random question" in text, timeout=30)
+        if "Inactive:" in restored_text:
+            raise AssertionError("Restored completed agents card still shows an inactivity timer")
         restored_card = render_png("restart-restored-agents-card-no-inactive-terminal.png")
 
         proc.write("/orchestration-tree\r")
@@ -281,8 +289,24 @@ def main():
         screen = pyte.Screen(COLS, ROWS)
         stream = pyte.ByteStream(screen)
         proc = spawn()
-        proc.write("/send tree-refresh-receipt use the bash tool to run python -c \"import time; time.sleep(10)\" before replying with the exact text tree-refresh-receipt --bg --no-invoke\r")
-        time.sleep(1.0)
+        proc.write("/send tree-refresh-receipt This deliberately long prompt should keep only its first two wrapped lines visible while recent activities fill the remaining collapsed card rows. Use the bash tool to run python -c \"import time; time.sleep(10)\" before replying with the exact text tree-refresh-receipt --bg --no-invoke\r")
+        wait_for("agents card timer starts", lambda text: "tree-refresh-receipt" in text and "Sent a message to" in text and "Inactive:" in text, timeout=45)
+        timer_before = screen_line("Inactive:")
+        total_before = screen_line("Ctrl+O to expand")
+        time.sleep(2.2)
+        timer_after = screen_line("Inactive:")
+        total_after = screen_line("Ctrl+O to expand")
+        if total_before == total_after:
+            raise AssertionError(
+                f"Agents card total timer did not repaint without input: {total_before!r} -> {total_after!r}"
+            )
+        timer_check = OUTPUT / "autonomous-timer-check.txt"
+        timer_check.write_text(
+            f"inactive_before={timer_before}\ninactive_after={timer_after}\ntotal_before={total_before}\ntotal_after={total_after}\n",
+            encoding="utf-8",
+        )
+        wait_for("collapsed agents card shows recent activity", lambda text: "tree-refresh-receipt" in text and "[bash]" in text and "Inactive:" in text, timeout=45)
+        autonomous_timer_card = render_png("agents-card-autonomous-timer-terminal.png")
         proc.write("/orchestration-tree\r")
         wait_for("tree refresh child is initially active", lambda text: "Orchestration Tree" in text and "●" in tree_session_line("tree-refresh-receipt") and "Inactive:" in tree_session_line("tree-refresh-receipt"), timeout=45)
         active_tree_refresh = render_png("tree-refresh-child-active-terminal.png")
@@ -326,7 +350,7 @@ def main():
         new_default_agent_path = render_png("new-session-default-agent-terminal.png")
 
         RAW_LOG.write_text("".join(raw_chunks), encoding="utf-8", errors="replace")
-        paths = [researcher_card, researcher_prompt, clear_prompt, invalid_agent_error, no_invoke, OUTPUT / "model-inheritance-check.txt", reviewer_card, tree_message, restored_card, restart_tree, lag_regression_path, lag_tree_path, LAG_TIMING, active_tree_refresh, running_child_returned, inactive_tree_refresh, switched_tree_refresh, startup_default_agent_path, cycle_clear_path, new_default_agent_path, RAW_LOG]
+        paths = [researcher_card, researcher_prompt, clear_prompt, invalid_agent_error, no_invoke, OUTPUT / "model-inheritance-check.txt", reviewer_card, tree_message, persisted_card_state, restored_card, restart_tree, lag_regression_path, lag_tree_path, LAG_TIMING, timer_check, autonomous_timer_card, active_tree_refresh, running_child_returned, inactive_tree_refresh, switched_tree_refresh, startup_default_agent_path, cycle_clear_path, new_default_agent_path, RAW_LOG]
         for path in filter(None, paths):
             print(path)
     finally:

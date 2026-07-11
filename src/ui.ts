@@ -474,6 +474,7 @@ export function startLiveRefresh(
   if (ctx.mode !== "tui" || typeof ctx.ui?.setWidget !== "function")
     return noop;
   const widgetKey = `${LIVE_REFRESH_WIDGET_KEY}:${key}`;
+  const resolveContext = () => options.resolveContext?.() ?? ctx;
   const minIntervalMs = Math.max(16, Number(options.intervalMs ?? 100));
   let stopped = false;
   let pending = false;
@@ -496,7 +497,9 @@ export function startLiveRefresh(
     if (timeout) clearTimeout(timeout);
 
     try {
-      ctx.ui.setWidget(widgetKey, undefined, { placement: "belowEditor" });
+      resolveContext().ui?.setWidget?.(widgetKey, undefined, {
+        placement: "belowEditor",
+      });
     } catch {
     }
   };
@@ -507,11 +510,11 @@ export function startLiveRefresh(
 
     try {
       lastRefreshAt = Date.now();
-      ctx.ui.setWidget(widgetKey, () => invisibleComponent(), {
+      resolveContext().ui?.setWidget?.(widgetKey, () => invisibleComponent(), {
         placement: "belowEditor",
       });
     } catch {
-      stop();
+      if (resolveContext() === ctx) stop();
     }
   };
 

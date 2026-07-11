@@ -77,6 +77,38 @@ test("live refresh events use an invisible below-editor widget", async () => {
   ]);
 });
 
+test("live refresh follows the active TUI context after the tool context becomes stale", async () => {
+  const staleCalls = [];
+  const activeCalls = [];
+  const staleContext = {
+    mode: "tui",
+    ui: {
+      setWidget: (...args) => {
+        staleCalls.push(args);
+        throw new Error("This extension ctx is stale");
+      },
+    },
+  };
+  const activeContext = {
+    mode: "tui",
+    ui: { setWidget: (...args) => activeCalls.push(args) },
+  };
+  const stop = startLiveRefresh(staleContext, "context-switch", {
+    ttlMs: 10_000,
+    intervalMs: 0,
+    autoPulse: false,
+    resolveContext: () => activeContext,
+  });
+
+  stop.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  stop();
+
+  assert.equal(staleCalls.length, 0);
+  assert.equal(activeCalls[0][0], `${LIVE_REFRESH_WIDGET_KEY}:context-switch`);
+  assert.equal(typeof activeCalls[0][1], "function");
+});
+
 test("live refresh repaints timers without terminal input and stops cleanly", async () => {
   const calls = [];
   const stop = startLiveRefresh(

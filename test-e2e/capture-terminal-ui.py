@@ -230,6 +230,12 @@ def main():
         (OUTPUT / "model-inheritance-check.txt").write_text(f"child_session={no_invoke_child}\nmodel={child_model_id}\n", encoding="utf-8")
         no_invoke = render_png("send-no-invoke-returned-without-caller-run-terminal.png")
 
+        existing_session_id = json.loads(no_invoke_child_text.splitlines()[0])["id"]
+        proc.write(f"/send existing-session-live-activity use the bash tool to run python -c \"import time; time.sleep(10)\" before replying with existing-session-live-activity --session {existing_session_id} --bg --no-invoke\r")
+        wait_for("existing session card shows live tool activity", lambda text: "existing-session-live-activity" in text and "[bash]" in text and "Inactive:" in text, timeout=90)
+        existing_session_activity = render_png("existing-session-live-activity-terminal.png")
+        wait_for("existing session activity completes", lambda text: "Agent answered." in text and "existing-session-live-activity" in text, timeout=180)
+
         proc.write("/send escape-abort-receipt use the bash tool to run python -c \"import time; time.sleep(60)\" before replying with escape-abort-receipt --bg --no-invoke\r")
         wait_for("escape abort send running", lambda text: "escape-abort-receipt" in text and "Sent a message" in text, timeout=45)
         proc.write("\x1b")
@@ -241,7 +247,7 @@ def main():
         reviewer_card = render_png("send-reviewer-completed-terminal.png")
 
         proc.write("/orchestration-tree\r")
-        wait_for("tree has message title", lambda text: "Orchestration Tree" in text and "reply with the exact text no invoke receipt" in text, timeout=30)
+        wait_for("tree has message title", lambda text: "Orchestration Tree" in text and "existing-session-live-activity" in text, timeout=30)
         tree_message = render_png("tree-child-last-message-terminal.png")
         proc.write("\x1b")
         time.sleep(0.4)
@@ -264,7 +270,7 @@ def main():
         restored_card = render_png("restart-restored-agents-card-no-inactive-terminal.png")
 
         proc.write("/orchestration-tree\r")
-        wait_for("restart tree keeps agent names", lambda text: "Orchestration Tree" in text and "[reviewer]" in text and "reply with the exact text no invoke receipt" in text, timeout=40)
+        wait_for("restart tree keeps agent names", lambda text: "Orchestration Tree" in text and "[reviewer]" in text and "existing-session-live-activity" in text, timeout=40)
         restart_tree = render_png("restart-tree-persists-agent-names-terminal.png")
         stop(proc)
 
@@ -350,7 +356,7 @@ def main():
         new_default_agent_path = render_png("new-session-default-agent-terminal.png")
 
         RAW_LOG.write_text("".join(raw_chunks), encoding="utf-8", errors="replace")
-        paths = [researcher_card, researcher_prompt, clear_prompt, invalid_agent_error, no_invoke, OUTPUT / "model-inheritance-check.txt", reviewer_card, tree_message, persisted_card_state, restored_card, restart_tree, lag_regression_path, lag_tree_path, LAG_TIMING, timer_check, autonomous_timer_card, active_tree_refresh, running_child_returned, inactive_tree_refresh, switched_tree_refresh, startup_default_agent_path, cycle_clear_path, new_default_agent_path, RAW_LOG]
+        paths = [researcher_card, researcher_prompt, clear_prompt, invalid_agent_error, no_invoke, existing_session_activity, OUTPUT / "model-inheritance-check.txt", reviewer_card, tree_message, persisted_card_state, restored_card, restart_tree, lag_regression_path, lag_tree_path, LAG_TIMING, timer_check, autonomous_timer_card, active_tree_refresh, running_child_returned, inactive_tree_refresh, switched_tree_refresh, startup_default_agent_path, cycle_clear_path, new_default_agent_path, RAW_LOG]
         for path in filter(None, paths):
             print(path)
     finally:

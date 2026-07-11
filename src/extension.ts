@@ -25,6 +25,7 @@ import {
   parseSkillCommand,
 } from "./interface.js";
 import {
+  activeVisibleContext,
   hostCompatibilityDiagnostics,
   installLiveSessionBridge,
   persistSessionImmediately,
@@ -323,7 +324,9 @@ export default async function piGentic(pi: ExtensionAPI) {
 
       try {
         let showedProgress = false;
-        stopRefresh = startLiveRefresh(ctx, "send-command");
+        stopRefresh = startLiveRefresh(ctx, "send-command", {
+          resolveContext: activeVisibleContext,
+        });
         const result = await orchestrator.send(ctx, parsed, {
           awaitCompletion: false,
           onSettled: () => stopRefresh(),
@@ -663,7 +666,9 @@ async function executeAction(orchestrator, ctx, input, onUpdate, signal) {
   if (input.action === "send") {
     if (typeof input.message !== "string" || !input.message.trim())
       throw new Error('Field "message" is required for send.');
-    const stopRefresh = startLiveRefresh(ctx, "agents-tool");
+    const stopRefresh = startLiveRefresh(ctx, "agents-tool", {
+      resolveContext: activeVisibleContext,
+    });
     try {
       const result = await orchestrator.send(ctx, input, {
         onUpdate,

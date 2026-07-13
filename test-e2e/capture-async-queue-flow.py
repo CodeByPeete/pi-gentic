@@ -94,8 +94,8 @@ def main():
         proc.write(f"/send append queued-follow-up-marker after the running edit task finishes --session {child} --no-invoke\r")
         wait_for("queued card", lambda t:"Message queued" in t or "Queued message for" in t,90)
         render_png("04-queued-card.png")
-        proc.write("/orchestration-tree\r")
-        wait_for("queued tree", lambda t:"Orchestration Tree" in t and "worker" in t,60)
+        proc.write("/resume\r")
+        wait_for("queued tree", lambda t:"Resume Session" in t and "worker" in t,60)
         render_png("05-queued-tree.png")
         (OUTPUT/"summary.txt").write_text("\n".join(p.name for p in sorted(OUTPUT.glob('*.png'))), encoding="utf-8")
     finally:

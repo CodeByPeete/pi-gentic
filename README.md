@@ -212,17 +212,11 @@ A background send returns immediately and keeps the delegated task visible.
 
 <img src="./docs/assets/send-background.png" alt="Background send card" width="900">
 
-### `/orchestration-tree`
+### `/resume`
 
-Use this command to see the session family tree.
+Pi-gentic decorates Pi's native session selector with agent labels, running state, inactivity, short session ids, and parent-child relationships. Pi's standard search, sort, scope, rename, path, delete, and session switching behavior remains native.
 
-```text
-/orchestration-tree
-```
-
-The tree shows parent sessions, child sessions, agent names, recent messages, running state, and short session ids.
-
-<img src="./docs/assets/orchestration-tree.png" alt="Orchestration tree" width="900">
+<img src="./docs/assets/resume.png" alt="Native resume selector with pi-gentic session details" width="900">
 
 ---
 

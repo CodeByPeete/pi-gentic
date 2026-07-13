@@ -31,6 +31,7 @@ import {
   persistSessionImmediately,
 } from "./pi-host.js";
 import { PiGenticOrchestrator, persistSynchronousToolCard } from "./orchestration.js";
+import { installResumeBridge } from "./resume.js";
 import {
   buildSessionTree,
   cachedPersistedSessions,
@@ -38,11 +39,9 @@ import {
   findSessionSummary,
   listSessionSummariesFast,
   sessionCompletionScope,
-  treeSwitchPath,
   warmPersistedSessions,
 } from "./sessions.js";
 import {
-  createSessionTreePicker,
   renderAgentsCall,
   renderAgentsResult,
   restorePersistedCardDetails,
@@ -99,6 +98,7 @@ function showErrorCard(pi, orchestrator, error, kind = "error") {
 
 export default async function piGentic(pi: ExtensionAPI) {
   await installLiveSessionBridge();
+  await installResumeBridge();
   const orchestrator = new PiGenticOrchestrator(pi);
   const completionContext = createCompletionContext(pi);
 
@@ -226,52 +226,6 @@ export default async function piGentic(pi: ExtensionAPI) {
         showCard(pi, result.text, result.details);
       } catch (error) {
         showErrorCard(pi, orchestrator, error);
-      }
-    },
-  });
-
-  pi.registerCommand("orchestration-tree", {
-    description: "Open the pi-gentic orchestration tree",
-    handler: async (_args, ctx) => {
-      completionContext.capture(ctx);
-      try {
-        const result = await orchestrator.discoverSessions(ctx, { all: true });
-
-        if (result.sessions.length === 0) {
-          ctx.ui.notify("No sessions found.", "info");
-          return;
-        }
-
-        const refreshSessions = async () =>
-          (await orchestrator.discoverSessions(ctx, { all: true })).sessions;
-        const selected = await ctx.ui.custom<AnyRecord | undefined>((tui, theme, _keybindings, done) =>
-          createSessionTreePicker(
-            result.sessions,
-            theme,
-            done,
-            () => tui.requestRender(),
-            { refreshSessions },
-          ),
-        );
-        const currentSelection = selected;
-        const sessionPath = currentSelection
-          ? treeSwitchPath(currentSelection)
-          : undefined;
-
-        if (!sessionPath) return;
-
-        try {
-          await ctx.switchSession(sessionPath);
-        } catch (error) {
-          if (currentSelection?.path && sessionPath !== currentSelection.path)
-            await ctx.switchSession(currentSelection.path);
-          else throw error;
-        }
-      } catch (error) {
-        ctx.ui.notify(
-          `pi-gentic orchestration tree failed: ${getErrorMessage(error)}`,
-          "error",
-        );
       }
     },
   });

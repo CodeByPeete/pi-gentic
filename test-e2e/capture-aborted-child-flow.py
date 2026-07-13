@@ -178,11 +178,11 @@ def main():
         run_command(proc, f"/send {prompt} --agent worker --no-invoke")
         wait_for("running send card", lambda value: "Sent a message" in value and "worker" in value, 60)
         render_png("02-running-child-card.png")
-        run_command(proc, "/orchestration-tree")
-        wait_for("tree", lambda value: "Orchestration Tree" in value and "worker" in value, 60)
+        run_command(proc, "/resume")
+        wait_for("tree", lambda value: "Resume Session" in value and "worker" in value, 60)
         render_png("03-tree-with-running-child.png")
         select_child_tree_row(proc)
-        wait_for("opened child", lambda value: "sleep 120" in value and "Orchestration Tree" not in value, 60)
+        wait_for("opened child", lambda value: "sleep 120" in value and "Resume Session" not in value, 60)
         render_png("05-opened-running-child.png")
         proc.write("\x1b")
         wait_for("child abort visible", lambda value: "aborted" in value.lower() or "interrupt" in value.lower(), 60)
@@ -194,8 +194,8 @@ def main():
         render_png("07-double-escape-tree-after-child-abort.png")
         proc.write("\x1b")
         time.sleep(0.5)
-        run_command(proc, "/orchestration-tree")
-        wait_for("orchestration tree after native tree", lambda value: "Orchestration Tree" in value, 60)
+        run_command(proc, "/resume")
+        wait_for("orchestration tree after native tree", lambda value: "Resume Session" in value, 60)
         select_parent_tree_row(proc)
         wait_for("parent abort result", lambda value: "Agent got aborted" in value or "was aborted while handling your request" in value, 120)
         render_png("08-parent-continued-after-child-abort.png")
@@ -213,10 +213,10 @@ def main():
             lambda value: "LIVESTREAMREADY" in value,
             120,
         )
-        run_command(proc, "/orchestration-tree")
+        run_command(proc, "/resume")
         wait_for(
             "tree with actively streaming child",
-            lambda value: "Orchestration Tree" in value and "[streamer]" in value,
+            lambda value: "Resume Session" in value and "[streamer]" in value,
             60,
         )
         select_child_tree_row(
@@ -227,7 +227,7 @@ def main():
         wait_for(
             "opened child hydrates generated text",
             lambda value: "LIVESTREAMREADY" in value
-            and "Orchestration Tree" not in value
+            and "Resume Session" not in value
             and max_visible_numbered_line() > 0,
             30,
         )

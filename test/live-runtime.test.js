@@ -260,11 +260,11 @@ test("visible extension commands run while a background session is streaming", (
         {
           session: {
             isStreaming: false,
-            extensionRunner: { getCommand: (name) => name === "orchestration-tree" },
+            extensionRunner: { getCommand: (name) => name === "agent" },
             sessionManager: { getSessionId: () => "visible-session" },
           },
         },
-        "/orchestration-tree",
+        "/agent",
       ),
       true,
     );

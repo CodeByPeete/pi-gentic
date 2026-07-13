@@ -4,9 +4,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   clearLiveCardDetails,
-  createSessionTreePicker,
   renderAgentsResult,
-  renderSessionTree,
   setLiveCardDetails,
 } from "../dist/ui.js";
 
@@ -20,39 +18,6 @@ const theme = {
 
   fg: (name, text) => `\x1b[${color(name)}m${text}\x1b[39m`,
 };
-
-function demoSessions(count) {
-  const agents = [
-    "orchestrator",
-    "reviewer",
-    "scout",
-    "builder",
-    "researcher",
-    "tester",
-    "writer",
-    "navigator",
-  ];
-  const messages = [
-    "Main planning session for subagent architecture",
-    "Review auth refactor and edge cases",
-    "Scan codebase for session manager hooks and events",
-    "Prototype extension-driven session tree renderer",
-    "Investigate skills config name resolution",
-    "Verify package-manager filters for skills",
-    "Draft simpler explanation for SDK vs extension scope",
-    "TUI tree navigation and selector compatibility",
-  ];
-
-  return Array.from({ length: count }, (_, index) => ({
-    sessionId: `${String(index + 1).padStart(2, "0")}f91a8c4-demo`,
-    agentName: agents[index % agents.length],
-    lastMessage: messages[index % messages.length],
-    depth: index % 6 === 0 ? 0 : index % 3 === 0 ? 2 : 1,
-    isLast: index % 3 === 2,
-    running: index % 7 === 0,
-    inactiveMs: 3_000 + index * 53_000,
-  }));
-}
 
 const cases = [
   {
@@ -142,17 +107,6 @@ const cases = [
     },
   },
   {
-    name: "session-tree",
-    sessionTree: true,
-    details: { sessions: demoSessions(22) },
-  },
-  {
-    name: "session-tree-navigable",
-    sessionTreePicker: true,
-    inputs: ["\x1b[6~"],
-    details: { sessions: demoSessions(22) },
-  },
-  {
     name: "queued-card",
     details: {
       kind: "send",
@@ -208,16 +162,7 @@ for (const item of cases) {
     item.details.cardId ??= `capture:${item.name}`;
     setLiveCardDetails(item.details);
   }
-  const component = item.sessionTreePicker
-    ? createSessionTreePicker(
-        item.details.sessions,
-        theme,
-        () => {},
-        () => {},
-      )
-    : item.sessionTree
-      ? renderSessionTree(item.details, theme)
-      : renderAgentsResult(
+  const component = renderAgentsResult(
           {
             content: [
               {

@@ -31,7 +31,7 @@
     "extensions": [
       "./dist/extension.js"
     ],
-    "image": "https://raw.githubusercontent.com/CodeByPeete/pi-gentic/main/docs/assets/orchestration-tree.png"
+    "image": "https://raw.githubusercontent.com/CodeByPeete/pi-gentic/main/docs/assets/resume.png"
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",

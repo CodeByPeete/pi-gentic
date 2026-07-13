@@ -3,10 +3,8 @@ import test from "node:test";
 import {
   CARD_STATE_ENTRY_TYPE,
   clearLiveCardDetails,
-  createSessionTreePicker,
   renderAgentsCall,
   renderAgentsResult,
-  renderSessionTree,
   restorePersistedCardDetails,
   setLiveCardDetails,
 } from "../dist/ui.js";
@@ -77,114 +75,6 @@ test("agents tool call shell stays invisible so only the result card is shown", 
   }).render(120);
 
   assert.deepEqual(output, []);
-});
-
-test("session tree renders only twelve session rows by default", () => {
-  const output = text(
-    renderSessionTree({ sessions: sessions(22) }, theme).render(100),
-  );
-
-  assert.equal([...output.matchAll(/Inactive:/g)].length, 12);
-
-  assert.match(output, /Showing 1-12 of 22/);
-});
-
-test("session tree picker scrolls the selected item into a twelve-row viewport", () => {
-  const picker = createSessionTreePicker(
-    sessions(22),
-    theme,
-    () => {},
-    () => {},
-  );
-
-  picker.handleInput("\x1b[6~");
-
-  const output = text(picker.render(100));
-
-  assert.equal([...output.matchAll(/Inactive:/g)].length, 12);
-
-  assert.match(output, /Session 7/);
-
-  assert.match(output, /> .*Session 13/);
-
-  assert.match(output, /\(13\/22\)/);
-
-  assert.doesNotMatch(output, /Session 1 .*Inactive:/);
-});
-
-test("session tree picker refreshes running sessions and keeps the selection", async () => {
-  let requested = 0;
-  const picker = createSessionTreePicker(
-    [
-      { sessionId: "parent", lastMessage: "Parent", running: false },
-      {
-        sessionId: "child",
-        lastMessage: "Child",
-        running: true,
-        inactiveMs: 1000,
-      },
-    ],
-    theme,
-    () => {},
-    () => requested++,
-    {
-      refreshSessions: async () => [
-        { sessionId: "parent", lastMessage: "Parent", running: false },
-        {
-          sessionId: "child",
-          lastMessage: "Child done",
-          running: false,
-          inactiveMs: 0,
-        },
-      ],
-    },
-  );
-
-  picker.handleInput("\x1b[B");
-
-  await picker.refresh();
-  const output = text(picker.render(100));
-
-  picker.dispose();
-
-  assert.equal(requested, 2);
-
-  assert.match(output, /> .*Child done/);
-
-  assert.doesNotMatch(output, /Child done.*Inactive:/);
-});
-
-test("session tree always keeps session ids visible and only running sessions show inactive timers", () => {
-  const output = text(
-    renderSessionTree(
-      {
-        sessions: [
-          {
-            sessionId: "running-session-id",
-            lastMessage: "Running ".repeat(30),
-            running: true,
-            modified: new Date(Date.now() - 1_000).toISOString(),
-            inactiveMs: 1_000,
-          },
-          {
-            sessionId: "idle-session-id",
-            lastMessage: "Idle ".repeat(30),
-            running: false,
-            inactiveMs: 2_000,
-          },
-        ],
-      },
-      theme,
-    ).render(100),
-  );
-
-  assert.equal([...output.matchAll(/Inactive:/g)].length, 1);
-
-  assert.match(output, /running-.*Inactive:/);
-
-  assert.match(output, /idle-ses/);
-
-  assert.doesNotMatch(output, /idle-ses.*Inactive:/);
 });
 
 test("expanded cards render all body lines without truncation", () => {
@@ -586,73 +476,6 @@ test("send card activity renders multiline answers without breaking the box", ()
     assert.doesNotMatch(line, /^File:|^Session summary:|^- /);
 
   assert.match(output, /Done\. File:/);
-});
-
-test("session tree picker truncates wide selected rows within terminal width", () => {
-  const picker = createSessionTreePicker(
-    [
-      {
-        sessionId: "019eb810-b1fe-7c14-b1f6-f78fbbfaed52",
-        lastMessage:
-          "## Outlook draft is ready ✅ The NETWAYS email has been prepared **inside Outlook Web** and **not sent**. ### Draft details | Feld | Wert | |---|---| | Empfänger | `jobs@netways.de` | | Betreff | `Bewerbung als Developer / Software Entwickler (w/m/d)` |",
-        running: false,
-      },
-    ],
-    theme,
-    () => {},
-  );
-  const lines = picker.render(240);
-
-  for (const line of lines)
-    assert.ok(
-      visibleWidth(line) <= 240,
-      `overflow: ${visibleWidth(line)} > 240\n${line}`,
-    );
-});
-
-test("session tree picker keeps emoji clusters and flags within terminal width", () => {
-  const picker = createSessionTreePicker(
-    [
-      {
-        sessionId: "emoji-cluster-session",
-        lastMessage: "Family 👨‍👩‍👧‍👦 flag 🇩🇪 accents é keycap 1️⃣ repeated ".repeat(
-          10,
-        ),
-        running: false,
-      },
-    ],
-    theme,
-    () => {},
-  );
-  const lines = picker.render(120);
-
-  for (const line of lines)
-    assert.ok(
-      visibleWidth(line) <= 120,
-      `overflow: ${visibleWidth(line)} > 120\n${line}`,
-    );
-});
-
-test("session tree keeps the right-side short session id intact when the row fits exactly", () => {
-  const picker = createSessionTreePicker(
-    [
-      {
-        sessionId: "019eb810-b1fe-7c14-b1f6-f78fbbfaed52",
-        lastMessage:
-          "## Outlook draft is ready ✅ The NETWAYS email has been prepared **inside Outlook Web** and **not sent**. ### Draft details | Feld | Wert | |---|---| | Empfänger | `jobs@netways.de` | | Betreff | `Bewerbung als Developer / Software Entwickler (w/m/d)` |",
-        running: false,
-      },
-    ],
-    theme,
-    () => {},
-  );
-  const output = text(picker.render(140));
-
-  assert.match(output, /\(019eb810\)/);
-
-  assert.doesNotMatch(output, /\(019eb810…/);
-
-  assert.doesNotMatch(output, /────────────────.*…/);
 });
 
 test("error footer keeps its duration text without a trailing ellipsis", () => {

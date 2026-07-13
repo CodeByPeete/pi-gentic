@@ -125,7 +125,9 @@ def spawn(extra_args=None, cwd=INTERACTIVE_WORK_DIR):
         "COLORTERM": "truecolor",
         "PI_TUI_WRITE_LOG": str(OUTPUT / "pi-tui-write.log"),
     })
-    args = [NODE, PI_CLI, "--session-dir", str(SESSION_DIR), *(extra_args or [])]
+    extension = os.environ.get("PI_E2E_EXTENSION")
+    extension_args = ["--no-extensions", "--extension", extension] if extension else []
+    args = [NODE, PI_CLI, "--session-dir", str(SESSION_DIR), *extension_args, *(extra_args or [])]
     proc = winpty.PtyProcess.spawn(args, cwd=str(cwd), env=env, dimensions=(ROWS, COLS))
     thread = threading.Thread(target=reader, args=(proc,), daemon=True)
     thread.start()
@@ -194,8 +196,114 @@ def tree_session_line(needle):
     return next((line for line in reversed(screen_text().splitlines()) if needle in line and ("└─" in line or "├─" in line)), "")
 
 
+def tree_session_selected(needle):
+    return tree_session_line(needle).lstrip().startswith((">", "›"))
+
+
+def write_resume_session(session_id, message, agent_name, timestamp, parent=None):
+    session_file = SESSION_DIR / f"{timestamp.replace(':', '-')}_{session_id}.jsonl"
+    entries = [
+        {
+            "type": "session",
+            "version": 3,
+            "id": session_id,
+            "timestamp": timestamp,
+            "cwd": str(INTERACTIVE_WORK_DIR),
+            **({"parentSession": str(parent)} if parent else {}),
+        },
+        {
+            "type": "message",
+            "id": f"message-{session_id}",
+            "parentId": None,
+            "timestamp": timestamp,
+            "message": {"role": "user", "content": message, "timestamp": int(time.time() * 1000)},
+        },
+        {
+            "type": "custom",
+            "id": f"agent-{session_id}",
+            "parentId": f"message-{session_id}",
+            "timestamp": timestamp,
+            "customType": "pi-gentic:state",
+            "data": {"agentName": agent_name},
+        },
+    ]
+    session_file.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
+    return session_file
+
+
+def capture_unified_resume():
+    reset_output()
+    parent = write_resume_session(
+        "019f1111-aaaa-7000-8000-000000000001",
+        "Plan unified session navigation",
+        "orchestrator",
+        "2026-07-13T20:00:00.000Z",
+    )
+    write_resume_session(
+        "019f2222-bbbb-7000-8000-000000000002",
+        "Implement native resume integration",
+        "builder",
+        "2026-07-13T20:02:00.000Z",
+        parent,
+    )
+    write_resume_session(
+        "019f3333-cccc-7000-8000-000000000003",
+        "Verify original resume controls",
+        "reviewer",
+        "2026-07-13T20:03:00.000Z",
+        parent,
+    )
+    proc = spawn(["--no-extensions"])
+    try:
+        proc.write("/resume\r")
+        wait_for("unified resume", lambda text: "Resume Session" in text and "[builder]" in text and "[reviewer]" in text, timeout=30)
+        screenshot = render_png("unified-resume-terminal.png")
+        print(screenshot)
+
+        proc.write("builder")
+        wait_for("agent search", lambda text: "[builder]" in text and "[reviewer]" not in text, timeout=20)
+        search_screenshot = render_png("unified-resume-search-terminal.png")
+        print(search_screenshot)
+
+        proc.write("\x1b")
+        time.sleep(0.5)
+        proc.write("/resume\r")
+        wait_for("resume reopened", lambda text: "Resume Session (Current Folder)" in text, timeout=20)
+        proc.write("\t")
+        wait_for("all scope", lambda text: "Resume Session (All)" in text and "[builder]" in text, timeout=30)
+        all_screenshot = render_png("unified-resume-all-terminal.png")
+        print(all_screenshot)
+
+        proc.write("\x1b")
+        time.sleep(0.8)
+        proc.write('/send resume-live-session use the bash tool to run python -c "import time; time.sleep(20)" before replying resume-live-session --agent researcher --bg --no-invoke\r')
+        wait_for("live child started", lambda text: "resume-live-session" in text and "Sent a message" in text, timeout=45)
+        proc.write("/resume\r")
+        wait_for(
+            "live unified resume",
+            lambda text: "Resume Session" in text and "[researcher]" in text and "Inactive:" in tree_session_line("resume-live-session"),
+            timeout=60,
+        )
+        live_screenshot = render_png("unified-resume-live-terminal.png")
+        print(live_screenshot)
+
+        proc.write("\x1b[B\r")
+        wait_for(
+            "opened live child",
+            lambda text: "resume-live-session" in text and "Resume Session" not in text,
+            timeout=30,
+        )
+        opened_screenshot = render_png("unified-resume-opened-live-terminal.png")
+        print(opened_screenshot)
+    finally:
+        stop(proc)
+
+
 def main():
     global stop_reader, screen, stream
+    if os.environ.get("PI_E2E_RESUME_ONLY") == "1":
+        capture_unified_resume()
+        return
     reset_output()
     proc = spawn()
     try:
@@ -246,8 +354,8 @@ def main():
         wait_for("reviewer async answer", lambda text: "Agent answered" in text and "reviewer" in text, timeout=180)
         reviewer_card = render_png("send-reviewer-completed-terminal.png")
 
-        proc.write("/orchestration-tree\r")
-        wait_for("tree has message title", lambda text: "Orchestration Tree" in text and "existing-session-live-activity" in text, timeout=30)
+        proc.write("/resume\r")
+        wait_for("tree has message title", lambda text: "Resume Session" in text and "existing-session-live-activity" in text, timeout=30)
         tree_message = render_png("tree-child-last-message-terminal.png")
         proc.write("\x1b")
         time.sleep(0.4)
@@ -269,8 +377,8 @@ def main():
             raise AssertionError("Restored completed agents card still shows an inactivity timer")
         restored_card = render_png("restart-restored-agents-card-no-inactive-terminal.png")
 
-        proc.write("/orchestration-tree\r")
-        wait_for("restart tree keeps agent names", lambda text: "Orchestration Tree" in text and "[reviewer]" in text and "existing-session-live-activity" in text, timeout=40)
+        proc.write("/resume\r")
+        wait_for("restart tree keeps agent names", lambda text: "Resume Session" in text and "[reviewer]" in text and "existing-session-live-activity" in text, timeout=40)
         restart_tree = render_png("restart-tree-persists-agent-names-terminal.png")
         stop(proc)
 
@@ -282,8 +390,8 @@ def main():
             time.sleep(2)
             lag_regression_path = render_png("lag-regression-session-019eb810-terminal.png")
             started = time.perf_counter()
-            proc.write("/orchestration-tree\r")
-            wait_for("lag regression orchestration tree stays within width", lambda text: "Orchestration Tree" in text and "019eb810" in text, timeout=30)
+            proc.write("/resume\r")
+            wait_for("lag regression orchestration tree stays within width", lambda text: "Resume Session" in text and "019eb810" in text, timeout=30)
             lag_tree_seconds = time.perf_counter() - started
             LAG_TIMING.write_text(f"tree_open_seconds={lag_tree_seconds:.3f}\n", encoding="utf-8")
             lag_tree_path = render_png("lag-regression-tree-019eb810-terminal.png")
@@ -313,15 +421,15 @@ def main():
         )
         wait_for("collapsed agents card shows recent activity", lambda text: "tree-refresh-receipt" in text and "[bash]" in text and "Inactive:" in text, timeout=45)
         autonomous_timer_card = render_png("agents-card-autonomous-timer-terminal.png")
-        proc.write("/orchestration-tree\r")
-        wait_for("tree refresh child is initially active", lambda text: "Orchestration Tree" in text and "●" in tree_session_line("tree-refresh-receipt") and "Inactive:" in tree_session_line("tree-refresh-receipt"), timeout=45)
+        proc.write("/resume\r")
+        wait_for("tree refresh child is initially active", lambda text: "Resume Session" in text and "●" in tree_session_line("tree-refresh-receipt") and "Inactive:" in tree_session_line("tree-refresh-receipt"), timeout=45)
         active_tree_refresh = render_png("tree-refresh-child-active-terminal.png")
         proc.write("\x1b[B")
-        wait_for("active tree child selected", lambda text: ">" in tree_session_line("tree-refresh-receipt"), timeout=10)
+        wait_for("active tree child selected", lambda text: tree_session_selected("tree-refresh-receipt"), timeout=10)
         proc.write("\r")
-        wait_for("running tree child opens", lambda text: "tree-refresh-receipt" in text and "Orchestration Tree" not in text, timeout=30)
-        proc.write("/orchestration-tree\r")
-        wait_for("tree opens from running child", lambda text: "Orchestration Tree" in text and "tree-refresh-receipt" in text, timeout=30)
+        wait_for("running tree child opens", lambda text: "tree-refresh-receipt" in text and "Resume Session" not in text, timeout=30)
+        proc.write("/resume\r")
+        wait_for("tree opens from running child", lambda text: "Resume Session" in text and "tree-refresh-receipt" in text, timeout=30)
         proc.write("\r")
         wait_for("visible final answer appears without reopen", lambda text: "[pi-gentic:return-context]" in text and "Message from agent from session" in text and "tree-refresh-receipt" in text and "was aborted" not in text, timeout=180)
         running_child_returned = render_png("running-child-returned-after-switch-terminal.png")
@@ -330,13 +438,13 @@ def main():
         screen = pyte.Screen(COLS, ROWS)
         stream = pyte.ByteStream(screen)
         proc = spawn(["--session", str(parent_session)])
-        proc.write("/orchestration-tree\r")
-        wait_for("tree refresh child becomes inactive", lambda text: "Orchestration Tree" in text and "○" in tree_session_line("tree-refresh-receipt") and "Inactive:" not in tree_session_line("tree-refresh-receipt"), timeout=45)
+        proc.write("/resume\r")
+        wait_for("tree refresh child becomes inactive", lambda text: "Resume Session" in text and "○" in tree_session_line("tree-refresh-receipt") and "Inactive:" not in tree_session_line("tree-refresh-receipt"), timeout=45)
         inactive_tree_refresh = render_png("tree-refresh-child-inactive-terminal.png")
         proc.write("\x1b[B")
-        wait_for("inactive tree child selected", lambda text: ">" in tree_session_line("tree-refresh-receipt"), timeout=10)
+        wait_for("inactive tree child selected", lambda text: tree_session_selected("tree-refresh-receipt"), timeout=10)
         proc.write("\r")
-        wait_for("inactive tree child opens without crash", lambda text: "Resumed session" in text and "tree-refresh-receipt" in text and "Orchestration Tree" not in text, timeout=30)
+        wait_for("inactive tree child opens without crash", lambda text: "Resumed session" in text and "tree-refresh-receipt" in text and "Resume Session" not in text, timeout=30)
         switched_tree_refresh = render_png("tree-refresh-child-opened-terminal.png")
         stop(proc)
 

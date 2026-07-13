@@ -223,25 +223,25 @@ def main():
         time.sleep(8)
         render_png("03-sync-send-card-updating.png")
 
-        run_command(proc, "/orchestration-tree")
-        wait_for("tree after sync send", lambda value: "Orchestration Tree" in value and ("worker" in value or "sync-step" in value), timeout=60)
+        run_command(proc, "/resume")
+        wait_for("tree after sync send", lambda value: "Resume Session" in value and ("worker" in value or "sync-step" in value), timeout=60)
         render_png("04-tree-with-running-child.png")
         select_child_tree_row(proc, "sync-step")
         time.sleep(3)
         render_png("05-opened-running-child-session.png")
         try:
-            wait_for("child session screen", lambda value: "sync-step" in value and "Orchestration Tree" not in value, timeout=60)
+            wait_for("child session screen", lambda value: "sync-step" in value and "Resume Session" not in value, timeout=60)
             time.sleep(10)
             render_png("06-child-session-updating.png")
         except TimeoutError as error:
             (OUTPUT / "child-session-screen-failure.txt").write_text(str(error), encoding="utf-8")
             render_png("06-child-session-not-updating.png")
 
-        run_command(proc, "/orchestration-tree")
-        wait_for("tree from child", lambda value: "Orchestration Tree" in value, timeout=60)
+        run_command(proc, "/resume")
+        wait_for("tree from child", lambda value: "Resume Session" in value, timeout=60)
         render_png("07-tree-from-child-session.png")
         select_parent_tree_row(proc)
-        wait_for("parent after sync return", lambda value: MODEL in value and "Orchestration Tree" not in value, timeout=60)
+        wait_for("parent after sync return", lambda value: MODEL in value and "Resume Session" not in value, timeout=60)
         render_png("08-parent-returned-to-live-card.png")
         returned_parent = text()
         wait_for("parent live card refresh after return", lambda value: value != returned_parent and "Sent a message" in value, timeout=20)
@@ -256,11 +256,11 @@ def main():
         render_png("11-async-send-card-started.png")
         time.sleep(8)
         render_png("12-async-send-card-updating.png")
-        run_command(proc, "/orchestration-tree")
-        wait_for("async tree", lambda value: "Orchestration Tree" in value and ("worker" in value or "async-step" in value), timeout=60)
+        run_command(proc, "/resume")
+        wait_for("async tree", lambda value: "Resume Session" in value and ("worker" in value or "async-step" in value), timeout=60)
         render_png("13-tree-with-async-child.png")
         select_current_tree_row(proc)
-        wait_for("parent after async tree", lambda value: MODEL in value and "Orchestration Tree" not in value, timeout=60)
+        wait_for("parent after async tree", lambda value: MODEL in value and "Resume Session" not in value, timeout=60)
 
         queue_prompt_a = "create .agentfiles/queue-slow/queue.txt, then perform 20 cycles; before every edit cycle run bash command sleep 2; after each sleep use the edit tool once to add the next line queue-step-a-01 through queue-step-a-20; do not batch edits, do not use loops, and use only files under this working directory"
         queue_prompt_b = "after the current queued or running task, append a short queued-follow-up marker to .agentfiles/queue-slow/queue.txt if possible"
@@ -272,8 +272,8 @@ def main():
         run_command(proc, f"/send {queue_prompt_b} --session {session_id} --no-invoke")
         wait_for("queued send card", lambda value: "Message queued" in value or "Queued message for" in value, timeout=60)
         render_png("15-queued-message-card.png")
-        run_command(proc, "/orchestration-tree")
-        wait_for("tree with queued session", lambda value: "Orchestration Tree" in value and "worker" in value, timeout=60)
+        run_command(proc, "/resume")
+        wait_for("tree with queued session", lambda value: "Resume Session" in value and "worker" in value, timeout=60)
         render_png("16-tree-with-queued-session.png")
 
         report = [

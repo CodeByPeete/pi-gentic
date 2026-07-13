@@ -28,7 +28,7 @@ type LiveRuntimeState = {
   liveHydrationBridgeInstalled: boolean;
 };
 
-type PiCodingAgentPeer = {
+export type PiCodingAgentPeer = {
   AgentSession: { prototype: AnyRecord };
   AgentSessionRuntime: { prototype: AnyRecord };
   InteractiveMode?: { prototype?: AnyRecord };
@@ -45,7 +45,7 @@ type PiCodingAgentPeer = {
 
 let peerModule: Promise<PiCodingAgentPeer> | undefined;
 
-async function piCodingAgent(): Promise<PiCodingAgentPeer> {
+export async function loadPiCodingAgentPeer(): Promise<PiCodingAgentPeer> {
   const localAppData = process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local");
   const managedCli = path.join(
     localAppData,
@@ -209,7 +209,7 @@ export async function installLiveSessionBridge() {
   const state = getLiveRuntimeState();
 
   try {
-    const peer = await piCodingAgent();
+    const peer = await loadPiCodingAgentPeer();
 
     assertCompatibleHost(peer);
     installRuntimeSwitchBridge(state, peer);
@@ -973,7 +973,7 @@ export async function createLiveRuntime({
     createAgentSessionFromServices,
     createAgentSessionRuntime,
     createAgentSessionServices,
-  } = await piCodingAgent();
+  } = await loadPiCodingAgentPeer();
   const agentDir = defaultAgentDir();
   const createRuntime = async (options) => {
     const services = await createAgentSessionServices({

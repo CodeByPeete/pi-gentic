@@ -455,21 +455,48 @@ test("send return invokes stale caller sessions through the background delivery 
 const staleContextError =
   "This extension ctx is stale after session replacement or reload.";
 
-test("foreground send completion continues when the opened child emits agent_end before prompt resolves", async () => {
+test("foreground send waits for the native session to settle after recoverable agent runs", async () => {
   let listener;
+  let resolved = false;
   const session = {
     subscribe: (next) => {
       listener = next;
       return () => {};
     },
   };
-
-  const completed = promptSessionAndWaitForTurnEnd(session, () => {
-    setTimeout(() => listener?.({ type: "agent_end" }), 0);
-    return new Promise(() => {});
+  const completed = promptSessionAndWaitForTurnEnd(
+    session,
+    () => new Promise(() => {}),
+  ).then(() => {
+    resolved = true;
   });
 
+  await Promise.resolve();
+  listener?.({ type: "agent_end" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(resolved, false);
+
+  listener?.({ type: "compaction_start", reason: "overflow" });
+  listener?.({ type: "agent_end" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(resolved, false);
+
+  listener?.({ type: "agent_settled" });
   await completed;
+  assert.equal(resolved, true);
+});
+
+test("foreground send also completes from the native prompt promise", async () => {
+  let unsubscribed = false;
+  const session = {
+    subscribe: () => () => {
+      unsubscribed = true;
+    },
+  };
+
+  await promptSessionAndWaitForTurnEnd(session, async () => {});
+
+  assert.equal(unsubscribed, true);
 });
 
 test("send return skips a stale visible session before starting a caller turn", async () => {

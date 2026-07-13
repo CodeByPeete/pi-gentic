@@ -374,7 +374,7 @@ function waitForSessionTurnEnd(session: AnyRecord, signal?: AbortSignal) {
     interval.unref?.();
     signal?.addEventListener?.("abort", abort, { once: true });
     unsubscribe = session.subscribe?.((event) => {
-      if (event?.type === "agent_end") finish();
+      if (event?.type === "agent_settled") finish();
     });
   });
 }
@@ -402,8 +402,7 @@ export function promptSessionAndWaitForTurnEnd(
 
     signal?.addEventListener?.("abort", abort, { once: true });
     unsubscribe = session.subscribe((event) => {
-      if (promptStarted && event?.type === "agent_end")
-        setTimeout(() => finish(), 0);
+      if (promptStarted && event?.type === "agent_settled") finish();
     });
 
     Promise.resolve()

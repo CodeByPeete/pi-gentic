@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
   deleteRuntimeSession,
+  loadPiCodingAgentPeer,
   setRuntimeSession,
 } from "../dist/pi-host.js";
-import { decorateResumeSelector } from "../dist/resume.js";
+import {
+  decorateResumeSelector,
+  installResumeBridge,
+} from "../dist/resume.js";
 
 const themeCodes = {
   accent: 35,
@@ -228,4 +232,45 @@ test("resume decorator rejects incompatible selectors without mutating them", ()
     /unsupported native session list/,
   );
   assert.equal(typeof component.getSessionList().render, "function");
+});
+
+test("resume session cache reuses unchanged native results and invalidates changed files", async () => {
+  const { dir, file } = writeSession("builder");
+  const peer = await loadPiCodingAgentPeer();
+  const SessionManager = peer.SessionManager;
+  const nativeList = SessionManager.list;
+  let loads = 0;
+  SessionManager.list = async function countedList(...args) {
+    loads++;
+    return nativeList.apply(this, args);
+  };
+
+  try {
+    await installResumeBridge();
+    const first = await SessionManager.list(dir, dir);
+    const second = await SessionManager.list(dir, dir, () => {});
+
+    assert.equal(first.length, 1);
+    assert.equal(second.length, 1);
+    assert.equal(loads, 1);
+
+    appendFileSync(
+      file,
+      `\n${JSON.stringify({
+        type: "message",
+        id: "message-3",
+        parentId: "message-2",
+        timestamp: "2026-07-13T20:00:03.000Z",
+        message: { role: "assistant", content: "Changed session" },
+      })}\n`,
+      "utf8",
+    );
+    const changed = await SessionManager.list(dir, dir);
+
+    assert.equal(loads, 2);
+    assert.equal(changed[0].messageCount, first[0].messageCount + 1);
+  } finally {
+    SessionManager.list = nativeList;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

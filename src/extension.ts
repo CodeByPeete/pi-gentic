@@ -31,7 +31,7 @@ import {
   persistSessionImmediately,
 } from "./pi-host.js";
 import { PiGenticOrchestrator, persistSynchronousToolCard } from "./orchestration.js";
-import { installResumeBridge } from "./resume.js";
+import { installResumeBridge, warmResumeCache } from "./resume.js";
 import {
   buildSessionTree,
   cachedPersistedSessions,
@@ -129,6 +129,10 @@ export default async function piGentic(pi: ExtensionAPI) {
     stopSessionLiveCardRefresh = startSessionLiveCardRefresh(ctx);
     completionContext.capture(ctx);
     reportDiagnostics(pi, ctx);
+    void warmResumeCache(
+      ctx.sessionManager.getCwd?.() ?? ctx.cwd,
+      ctx.sessionManager.getSessionDir?.(),
+    );
     try {
       const defaultResult = await orchestrator.loadDefaultAgent(ctx, event);
 

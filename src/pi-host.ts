@@ -33,6 +33,7 @@ export type PiCodingAgentPeer = {
   theme?: PiTheme;
   AgentSessionRuntime: { prototype: AnyRecord };
   InteractiveMode?: { prototype?: AnyRecord };
+  SessionManager?: AnyRecord;
   createAgentSessionFromServices: (options: AnyRecord) => Promise<{
     session: PiAgentSession;
     modelFallbackMessage?: string;

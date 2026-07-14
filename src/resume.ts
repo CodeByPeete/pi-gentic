@@ -1,4 +1,6 @@
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
+import path from "node:path";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
   formatDuration,
@@ -20,8 +22,17 @@ const ORIGINAL_SESSION = Symbol("pi-gentic.original-session");
 const SESSION_PRESENTATION = Symbol("pi-gentic.session-presentation");
 const REFRESH_INTERVAL_MS = 1000;
 
+type SessionFileSnapshot = Map<string, string>;
+
+type SessionListCacheEntry = {
+  sessions?: AnyRecord[];
+  snapshot?: SessionFileSnapshot;
+  promise?: Promise<AnyRecord[]>;
+};
+
 type ResumeBridgeState = {
   installed: boolean;
+  sessionLists: Map<string, SessionListCacheEntry>;
   originalShowSessionSelector?: (this: AnyRecord, ...args: unknown[]) => unknown;
 };
 
@@ -34,7 +45,9 @@ export async function installResumeBridge() {
   const globalState = globalThis as unknown as Record<PropertyKey, unknown>;
   const bridge = (globalState[RESUME_BRIDGE_KEY] ??= {
     installed: false,
+    sessionLists: new Map(),
   }) as ResumeBridgeState;
+  bridge.sessionLists ??= new Map();
 
   if (bridge.installed) return;
 
@@ -49,7 +62,10 @@ export async function installResumeBridge() {
       );
     if (!peer.theme)
       throw new Error("Pi resume integration unavailable: active theme is inaccessible.");
+    if (!peer.SessionManager)
+      throw new Error("Pi resume integration unavailable: SessionManager is inaccessible.");
 
+    installSessionListCache(peer.SessionManager, bridge.sessionLists);
     bridge.installed = true;
     bridge.originalShowSessionSelector = nativeShowSessionSelector;
     const interactivePrototype = prototype as AnyRecord;
@@ -66,6 +82,130 @@ export async function installResumeBridge() {
     };
   } catch (error) {
     recordCompatibilityDiagnostic(error);
+  }
+}
+
+export async function warmResumeCache(cwd: string, sessionDir?: string) {
+  if (!cwd) return;
+
+  try {
+    const peer = await loadPiCodingAgentPeer();
+    const sessions = await peer.SessionManager?.list?.(cwd, sessionDir);
+
+    if (!Array.isArray(sessions)) return;
+    for (let index = 0; index < sessions.length; index += 8) {
+      sessions.slice(index, index + 8).forEach(enrichSessionSummary);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  } catch (error) {
+    recordCompatibilityDiagnostic(error);
+  }
+}
+
+function installSessionListCache(
+  SessionManager: AnyRecord,
+  entries: Map<string, SessionListCacheEntry>,
+) {
+  const nativeList = SessionManager.list;
+  const nativeListAll = SessionManager.listAll;
+
+  if (typeof nativeList !== "function" || typeof nativeListAll !== "function")
+    throw new Error("Pi resume integration unavailable: session loaders are inaccessible.");
+  SessionManager.list = cachedSessionLoader("current", nativeList, entries);
+  SessionManager.listAll = cachedSessionLoader("all", nativeListAll, entries);
+}
+
+function cachedSessionLoader(
+  scope: string,
+  nativeLoader: (...args: unknown[]) => Promise<AnyRecord[]>,
+  entries: Map<string, SessionListCacheEntry>,
+) {
+  return async function loadCachedSessions(this: unknown, ...args: unknown[]) {
+    const key = `${scope}:${JSON.stringify(
+      args.filter((argument) => typeof argument !== "function"),
+    )}`;
+    const progress = [...args].reverse().find(
+      (argument): argument is (loaded: number, total: number) => void =>
+        typeof argument === "function",
+    );
+    const cached = entries.get(key);
+
+    if (cached?.promise) return cloneSessions(await cached.promise);
+    if (
+      cached?.sessions &&
+      cached.snapshot &&
+      sessionFilesUnchanged(cached.snapshot)
+    ) {
+      progress?.(cached.sessions.length, cached.sessions.length);
+      return cloneSessions(cached.sessions);
+    }
+
+    const pending = Promise.resolve(nativeLoader.apply(this, args)).then(
+      (sessions) => {
+        const stored = cloneSessions(sessions);
+        entries.set(key, {
+          sessions: stored,
+          snapshot: snapshotSessionFiles(stored),
+        });
+        return stored;
+      },
+    );
+    entries.set(key, { promise: pending });
+
+    try {
+      return cloneSessions(await pending);
+    } catch (error) {
+      entries.delete(key);
+      throw error;
+    }
+  };
+}
+
+function cloneSessions(sessions: AnyRecord[]) {
+  return sessions.map((session) => ({
+    ...session,
+    created: new Date(session.created),
+    modified: new Date(session.modified),
+  }));
+}
+
+function snapshotSessionFiles(sessions: AnyRecord[]): SessionFileSnapshot | undefined {
+  if (sessions.length === 0) return undefined;
+  const files = sessions
+    .map((session) => session.path)
+    .filter((file): file is string => typeof file === "string" && file.length > 0);
+  const directories = new Set<string>();
+
+  for (const file of files) {
+    const directory = path.dirname(file);
+    directories.add(directory);
+    directories.add(path.dirname(directory));
+  }
+
+  try {
+    return new Map(
+      [...files, ...directories]
+        .sort()
+        .map((file) => {
+          const stat = statSync(file);
+          return [file, `${stat.mtimeMs}:${stat.size}`];
+        }),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function sessionFilesUnchanged(snapshot: SessionFileSnapshot) {
+  try {
+    for (const [file, fingerprint] of snapshot) {
+      const stat = statSync(file);
+
+      if (`${stat.mtimeMs}:${stat.size}` !== fingerprint) return false;
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 

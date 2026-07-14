@@ -200,7 +200,7 @@ def tree_session_selected(needle):
     return tree_session_line(needle).lstrip().startswith((">", "›"))
 
 
-def write_resume_session(session_id, message, agent_name, timestamp, parent=None):
+def write_resume_session(session_id, message, agent_name, timestamp, parent=None, name=None):
     session_file = SESSION_DIR / f"{timestamp.replace(':', '-')}_{session_id}.jsonl"
     entries = [
         {
@@ -211,6 +211,13 @@ def write_resume_session(session_id, message, agent_name, timestamp, parent=None
             "cwd": str(INTERACTIVE_WORK_DIR),
             **({"parentSession": str(parent)} if parent else {}),
         },
+        *([{
+            "type": "session_info",
+            "id": f"name-{session_id}",
+            "parentId": None,
+            "timestamp": timestamp,
+            "name": name,
+        }] if name else []),
         {
             "type": "message",
             "id": f"message-{session_id}",
@@ -238,6 +245,7 @@ def capture_unified_resume():
         "Plan unified session navigation",
         "orchestrator",
         "2026-07-13T20:00:00.000Z",
+        name="Named orchestration plan",
     )
     write_resume_session(
         "019f2222-bbbb-7000-8000-000000000002",
@@ -252,6 +260,7 @@ def capture_unified_resume():
         "reviewer",
         "2026-07-13T20:03:00.000Z",
         parent,
+        name="Named verification session",
     )
     proc = spawn(["--no-extensions"])
     try:

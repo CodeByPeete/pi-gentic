@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
   formatDuration,
   shortestUniqueSessionId,
@@ -45,6 +47,8 @@ export async function installResumeBridge() {
       throw new Error(
         "Pi resume integration unavailable: InteractiveMode.showSessionSelector is missing.",
       );
+    if (!peer.theme)
+      throw new Error("Pi resume integration unavailable: active theme is inaccessible.");
 
     bridge.installed = true;
     bridge.originalShowSessionSelector = nativeShowSessionSelector;
@@ -57,6 +61,7 @@ export async function installResumeBridge() {
         this,
         bridge.originalShowSessionSelector!,
         args,
+        peer.theme!,
       );
     };
   } catch (error) {
@@ -68,6 +73,7 @@ function openDecoratedResumeSelector(
   mode: AnyRecord,
   nativeShowSessionSelector: (this: AnyRecord, ...args: unknown[]) => unknown,
   args: unknown[],
+  theme: PiTheme,
 ) {
   const nativeShowSelector = mode.showSelector;
 
@@ -83,8 +89,10 @@ function openDecoratedResumeSelector(
       });
 
       try {
-        dispose = decorateResumeSelector(result?.component, () =>
-          mode.ui?.requestRender?.(),
+        dispose = decorateResumeSelector(
+          result?.component,
+          () => mode.ui?.requestRender?.(),
+          theme,
         );
       } catch (error) {
         recordCompatibilityDiagnostic(error);
@@ -104,10 +112,13 @@ function openDecoratedResumeSelector(
 export function decorateResumeSelector(
   component: AnyRecord,
   requestRender = () => {},
+  theme?: PiTheme,
 ) {
   const list = component?.getSessionList?.();
 
   assertDecoratableSessionList(list);
+  if (!isCompatibleTheme(theme))
+    throw new Error("Pi resume integration unavailable: active theme is inaccessible.");
   const nativeSetSessions = list.setSessions.bind(list);
   const nativeFilterSessions = list.filterSessions.bind(list);
   const nativeRender = list.render.bind(list);
@@ -151,7 +162,7 @@ export function decorateResumeSelector(
     refreshSessions();
     syncRefreshTimer();
 
-    return colorDecoratedRows(list, nativeRender(width), width);
+    return renderDecoratedRows(list, nativeRender(width), width, theme);
   };
   list.onSelect = (sessionPath) => {
     const session = (list.allSessions ?? []).find(
@@ -254,13 +265,6 @@ function refreshDecoratedSession(session: DecoratedSession) {
       : original.name
         ? `${title} · Latest: ${lastMessage}`
         : `${lastMessage} · Started: ${title}`;
-  const status = presentation.running ? "●" : "○";
-  const agent = presentation.agentName ? ` [${presentation.agentName}]` : "";
-  const id = presentation.shortId ? ` (${presentation.shortId})` : "";
-  const inactive = presentation.running
-    ? ` Inactive: ${formatDuration(presentation.inactiveMs)}`
-    : "";
-  const decoratedTitle = `${status}${agent}${id}${inactive} ${messageTitle}`;
   const search = [
     original.allMessagesText,
     presentation.agentName,
@@ -271,13 +275,19 @@ function refreshDecoratedSession(session: DecoratedSession) {
     .filter(Boolean)
     .join(" ");
 
-  session[SESSION_PRESENTATION] = presentation;
-  session.name = original.name ? decoratedTitle : undefined;
-  session.firstMessage = decoratedTitle;
+  session[SESSION_PRESENTATION] = {
+    ...presentation,
+    messageTitle,
+  };
   session.allMessagesText = search;
 }
 
-function colorDecoratedRows(list: AnyRecord, lines: string[], width: number) {
+function renderDecoratedRows(
+  list: AnyRecord,
+  lines: string[],
+  width: number,
+  theme: PiTheme,
+) {
   const filtered = list.filteredSessions ?? [];
   const maxVisible = Math.max(1, Number(list.maxVisible ?? 10));
   const selectedIndex = Math.min(
@@ -297,25 +307,143 @@ function colorDecoratedRows(list: AnyRecord, lines: string[], width: number) {
   const result = [...lines];
 
   visible.forEach((node, index) => {
-    const presentation = sessionPresentation(node?.session);
     const lineIndex = rowOffset + index;
 
-    if (!presentation || typeof result[lineIndex] !== "string") return;
-    let line = result[lineIndex];
-
-    if (presentation.agentName) {
-      const badge = `[${presentation.agentName}]`;
-      line = line.replace(
-        badge,
-        styleAgentName(presentation.agentName, { bracketed: true }),
+    if (
+      sessionPresentation(node?.session) &&
+      typeof result[lineIndex] === "string"
+    )
+      result[lineIndex] = renderDecoratedRow(
+        list,
+        node,
+        start + index,
+        width,
+        theme,
       );
-    }
-    if (presentation.running)
-      line = line.replace("●", "\x1b[32m●\x1b[39m");
-    result[lineIndex] = line;
   });
 
   return result;
+}
+
+function renderDecoratedRow(
+  list: AnyRecord,
+  node: AnyRecord,
+  index: number,
+  width: number,
+  theme: PiTheme,
+) {
+  const session = node.session;
+  const original = originalSession(session) ?? session;
+  const presentation = sessionPresentation(session)!;
+  const isSelected = index === Number(list.selectedIndex ?? 0);
+  const isConfirmingDelete = original.path === list.confirmingDeletePath;
+  const isCurrent = list.isCurrentSessionPath?.(original.path) === true;
+  const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
+  const prefix = theme.fg("dim", treePrefix(node));
+  const status = theme.fg(
+    presentation.running ? "success" : "dim",
+    presentation.running ? "●" : "○",
+  );
+  const agent = presentation.agentName
+    ? `${theme.bold(styleAgentName(presentation.agentName, { bracketed: true }))} `
+    : "";
+  const left = `${cursor}${prefix}${status} ${agent}`;
+  const id = presentation.shortId
+    ? ` ${theme.fg("dim", `(${presentation.shortId})`)}`
+    : "";
+  const timerText = formatDuration(presentation.inactiveMs);
+  const inactive = presentation.running
+    ? ` ${theme.fg("dim", "Inactive:")} \x1b[95m${timerText}\x1b[39m${" ".repeat(Math.max(0, 8 - timerText.length))}`
+    : "";
+  const orchestrationMetadata = `${id}${inactive}`;
+  const nativeMetadataWidth = Math.max(
+    0,
+    width - visibleWidth(left) - visibleWidth(orchestrationMetadata) - 12,
+  );
+  const nativeMetadata = truncateToWidth(
+    nativeSessionMetadata(list, original),
+    nativeMetadataWidth,
+    "…",
+  );
+  const right = `${theme.fg("dim", nativeMetadata)}${orchestrationMetadata}`;
+  const messageColor = isConfirmingDelete
+    ? "error"
+    : isCurrent
+      ? "accent"
+      : undefined;
+  const available = Math.max(
+    0,
+    width - visibleWidth(left) - visibleWidth(right) - 2,
+  );
+  const message = truncateToWidth(
+    String(presentation.messageTitle ?? "(no messages)")
+      .replace(/[\x00-\x1f\x7f]/g, " ")
+      .trim(),
+    available,
+    "…",
+  );
+  let styledMessage = messageColor ? theme.fg(messageColor, message) : message;
+
+  if (isSelected) styledMessage = theme.bold(styledMessage);
+  const spacing = " ".repeat(
+    Math.max(
+      1,
+      width -
+        visibleWidth(left) -
+        visibleWidth(styledMessage) -
+        visibleWidth(right),
+    ),
+  );
+  let line = truncateToWidth(`${left}${styledMessage}${spacing}${right}`, width);
+
+  if (isSelected) line = theme.bg("selectedBg", line);
+  return line;
+}
+
+function nativeSessionMetadata(list: AnyRecord, session: AnyRecord) {
+  const parts: string[] = [];
+
+  if (list.showCwd && session.cwd) parts.push(shortenPath(session.cwd));
+  if (list.showPath && session.path) parts.push(shortenPath(session.path));
+  parts.push(String(session.messageCount), formatSessionDate(session.modified));
+  return parts.join(" ");
+}
+
+function treePrefix(node: AnyRecord) {
+  if (Number(node.depth ?? 0) === 0) return "";
+  const ancestors = Array.isArray(node.ancestorContinues)
+    ? node.ancestorContinues.map((continues) => (continues ? "│  " : "   ")).join("")
+    : "";
+  return `${ancestors}${node.isLast ? "└─ " : "├─ "}`;
+}
+
+function shortenPath(value: string) {
+  const home = homedir();
+
+  return value.startsWith(home) ? `~${value.slice(home.length)}` : value;
+}
+
+function formatSessionDate(value: Date) {
+  const ageMs = Date.now() - value.getTime();
+  const minutes = Math.floor(ageMs / 60_000);
+  const hours = Math.floor(ageMs / 3_600_000);
+  const days = Math.floor(ageMs / 86_400_000);
+
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  if (hours < 24) return `${hours}h`;
+  if (days < 7) return `${days}d`;
+  if (days < 30) return `${Math.floor(days / 7)}w`;
+  if (days < 365) return `${Math.floor(days / 30)}mo`;
+  return `${Math.floor(days / 365)}y`;
+}
+
+function isCompatibleTheme(theme: PiTheme | undefined): theme is PiTheme {
+  return (
+    typeof theme?.fg === "function" &&
+    typeof theme?.bg === "function" &&
+    typeof theme?.bold === "function"
+  );
 }
 
 function originalSession(session: DecoratedSession | undefined) {

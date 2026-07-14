@@ -30,6 +30,7 @@ type LiveRuntimeState = {
 
 export type PiCodingAgentPeer = {
   AgentSession: { prototype: AnyRecord };
+  theme?: PiTheme;
   AgentSessionRuntime: { prototype: AnyRecord };
   InteractiveMode?: { prototype?: AnyRecord };
   createAgentSessionFromServices: (options: AnyRecord) => Promise<{
@@ -73,7 +74,20 @@ async function importFirst(specifiers: string[]): Promise<PiCodingAgentPeer> {
 
   for (const specifier of [...new Set(specifiers)]) {
     try {
-      return (await import(specifier)) as unknown as PiCodingAgentPeer;
+      const peer = await import(specifier);
+      let theme: PiTheme | undefined;
+
+      try {
+        const resolved = specifier.startsWith("file:")
+          ? specifier
+          : import.meta.resolve(specifier);
+        const themeModule = await import(
+          new URL("./modes/interactive/theme/theme.js", resolved).href
+        );
+        theme = themeModule.theme;
+      } catch {}
+
+      return { ...peer, theme } as unknown as PiCodingAgentPeer;
     } catch (error) {
       errors.push(error);
     }

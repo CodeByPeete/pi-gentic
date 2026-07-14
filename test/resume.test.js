@@ -9,6 +9,20 @@ import {
 } from "../dist/pi-host.js";
 import { decorateResumeSelector } from "../dist/resume.js";
 
+const themeCodes = {
+  accent: 35,
+  dim: 90,
+  error: 31,
+  success: 32,
+  warning: 33,
+};
+const testTheme = {
+  fg: (color, text) => `\x1b[${themeCodes[color] ?? 39}m${text}\x1b[39m`,
+  bg: (_color, text) => `\x1b[48;5;236m${text}\x1b[49m`,
+  bold: (text) => `\x1b[1m${text}\x1b[22m`,
+};
+const stripAnsi = (text) => text.replace(/\x1b\[[0-9;]*m/g, "");
+
 function writeSession(agentName) {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-resume-"));
   const file = path.join(dir, "session.jsonl");
@@ -97,7 +111,7 @@ function nativeSelector() {
 test("resume decorator builds on native session loading, filtering, and rendering", () => {
   const { dir, file } = writeSession("builder");
   const { component, list, calls } = nativeSelector();
-  const dispose = decorateResumeSelector(component);
+  const dispose = decorateResumeSelector(component, undefined, testTheme);
 
   try {
     list.setSessions([
@@ -121,7 +135,39 @@ test("resume decorator builds on native session loading, filtering, and renderin
     assert.match(output, /Recent session activity/);
     assert.match(output, /Native session title/);
     assert.match(output, /019f1111/);
-    assert.match(output, /1 now/);
+    assert.match(output, /1 (?:now|\d+[mhdw]|\d+mo|\d+y)/);
+    assert.ok(
+      stripAnsi(output).indexOf("Recent session activity") <
+        stripAnsi(output).indexOf("(019f1111)"),
+    );
+  } finally {
+    dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("named sessions keep native filtering without warning-colored rows", () => {
+  const { dir, file } = writeSession(undefined);
+  const { component, list } = nativeSelector();
+  const dispose = decorateResumeSelector(component, undefined, testTheme);
+
+  try {
+    list.setSessions([
+      {
+        id: "019f1111-aaaa-7000-8000-000000000001",
+        path: file,
+        cwd: dir,
+        name: "Named session",
+        modified: new Date("2026-07-13T20:00:00.000Z"),
+        messageCount: 2,
+        firstMessage: "Native session title",
+        allMessagesText: "Native session title Recent session activity",
+      },
+    ]);
+    const output = list.render(120).join("\n");
+
+    assert.match(stripAnsi(output), /Named session · Latest: Recent session activity/);
+    assert.doesNotMatch(output, /\x1b\[33m/);
   } finally {
     dispose();
     rmSync(dir, { recursive: true, force: true });
@@ -141,7 +187,7 @@ test("resume decorator searches agent metadata and selects a live runtime path",
     agentName: "researcher",
     lastActivityAt: new Date().toISOString(),
   });
-  const dispose = decorateResumeSelector(component);
+  const dispose = decorateResumeSelector(component, undefined, testTheme);
 
   try {
     list.setSessions([
@@ -157,7 +203,13 @@ test("resume decorator searches agent metadata and selects a live runtime path",
     ]);
     list.filterSessions("researcher");
     assert.equal(list.filteredSessions.length, 1);
-    assert.match(list.render(120).join("\n"), /●/);
+    const output = list.render(120).join("\n");
+    assert.match(output, /●/);
+    assert.match(output, /\x1b\[95m0s\x1b\[39m/);
+    assert.ok(
+      stripAnsi(output).indexOf("Native session title") <
+        stripAnsi(output).indexOf("(019f1111)"),
+    );
 
     list.onSelect(file);
     assert.deepEqual(calls.selected, [`pi-gentic-live:${sessionId}`]);

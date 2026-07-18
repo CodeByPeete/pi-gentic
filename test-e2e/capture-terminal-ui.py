@@ -173,6 +173,19 @@ def newest_child_session_file_containing(needle):
     raise RuntimeError(f"No child session file contains {needle!r}")
 
 
+def child_session_has_assistant_text(needle):
+    for path in SESSION_DIR.glob("*.jsonl"):
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                entry = json.loads(line)
+                message = entry.get("message", {})
+                if message.get("role") == "assistant" and needle in json.dumps(message):
+                    return True
+        except (OSError, json.JSONDecodeError):
+            pass
+    return False
+
+
 def latest_model_id(session_text):
     matches = re.findall(r'"modelId":"([^"]+)"', session_text)
     if not matches:
@@ -285,8 +298,13 @@ def capture_unified_resume():
 
         proc.write("\x1b")
         time.sleep(0.8)
-        proc.write('/send resume-live-session use the bash tool to run python -c "import time; time.sleep(20)" before replying resume-live-session --agent researcher --bg --no-invoke\r')
+        proc.write('/send resume-live-session use the bash tool to run python -c "import time; time.sleep(20)" before replying FINAL-resume-live-session --agent researcher --bg --no-invoke\r')
         wait_for("live child started", lambda text: "resume-live-session" in text and "Sent a message" in text, timeout=45)
+        initial_inactivity = re.search(r"Inactive:\s+(\d+)s", screen_line("Inactive:"))
+        if not initial_inactivity or int(initial_inactivity.group(1)) > 5:
+            raise AssertionError(
+                f"New child card started with stale inactivity: {screen_line('Inactive:')!r}"
+            )
         proc.write("/resume\r")
         wait_for(
             "live unified resume",
@@ -304,6 +322,28 @@ def capture_unified_resume():
         )
         opened_screenshot = render_png("unified-resume-opened-live-terminal.png")
         print(opened_screenshot)
+
+        wait_for(
+            "opened child receives later live tool activity",
+            lambda text: "resume-live-session" in text and "$ python" in text,
+            timeout=90,
+        )
+        activity_screenshot = render_png(
+            "unified-resume-opened-live-activity-terminal.png"
+        )
+        print(activity_screenshot)
+
+        wait_for(
+            "opened child settles with its final answer",
+            lambda _text: child_session_has_assistant_text(
+                "FINAL-resume-live-session"
+            ),
+            timeout=120,
+        )
+        completed_screenshot = render_png(
+            "unified-resume-opened-live-completed-terminal.png"
+        )
+        print(completed_screenshot)
     finally:
         stop(proc)
 

@@ -10,7 +10,12 @@ import {
   filterSkillPrompt,
   parseSkillEntries,
 } from "../dist/catalog.js";
-import { abortActor, deliverReturnToCaller } from "../dist/orchestration.js";
+import {
+  abortActor,
+  createSessionActivityMonitor,
+  deliverReturnToCaller,
+  lastRuntimeActivities,
+} from "../dist/orchestration.js";
 import {
   isTargetSlashCommand,
   prepareTargetPromptForSend,
@@ -486,6 +491,33 @@ test("foreground send waits for the native session to settle after recoverable a
   assert.equal(resolved, true);
 });
 
+test("settlement tracking preserves later live UI event listeners", async () => {
+  const listeners = [];
+  const session = {
+    subscribe(listener) {
+      listeners.push(listener);
+      return () => {
+        const index = listeners.indexOf(listener);
+
+        if (index !== -1) listeners.splice(index, 1);
+      };
+    },
+  };
+  const completed = promptSessionAndWaitForTurnEnd(
+    session,
+    () => new Promise(() => {}),
+  );
+
+  await Promise.resolve();
+  const visibleEvents = [];
+  session.subscribe((event) => visibleEvents.push(event.type));
+
+  for (const listener of listeners) listener({ type: "agent_settled" });
+  await completed;
+
+  assert.deepEqual(visibleEvents, ["agent_settled"]);
+});
+
 test("foreground send also completes from the native prompt promise", async () => {
   let unsubscribed = false;
   const session = {
@@ -748,6 +780,115 @@ test("sessions that stop without an answer keep a stopped status", () => {
   assert.equal(outcome.status, "stopped");
 
   assert.match(outcome.text, /stopped before returning a final answer/);
+});
+
+test("activity monitors reset inactivity for lifecycle and reasoning progress", () => {
+  const originalNow = Date.now;
+  const published = [];
+
+  try {
+    Date.now = () => 1_000;
+    const monitor = createSessionActivityMonitor(
+      { status: "running", updatedAt: 100 },
+      (details) => {
+        published.push(details);
+        return details;
+      },
+    );
+
+    monitor.observe({ type: "agent_start" });
+    assert.equal(published.at(-1).updatedAt, 1_000);
+    assert.deepEqual(published.at(-1).activities, []);
+
+    Date.now = () => 2_000;
+    monitor.observe({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "still working" }],
+      },
+    });
+    assert.equal(published.at(-1).updatedAt, 2_000);
+    assert.deepEqual(published.at(-1).activities, []);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("queued activity monitors ignore the target's current run until the queued turn starts", () => {
+  const published = [];
+  const monitor = createSessionActivityMonitor(
+    { status: "queued", updatedAt: 100 },
+    (details) => {
+      published.push(details);
+      return details;
+    },
+  );
+
+  monitor.observe({
+    type: "tool_execution_start",
+    toolCallId: "current-run-tool",
+    toolName: "read",
+    args: {},
+  });
+  assert.deepEqual(published, []);
+
+  monitor.observe({
+    type: "message_start",
+    message: { role: "user", content: "queued request" },
+  });
+  assert.equal(published.at(-1).status, "running");
+  assert.deepEqual(published.at(-1).activities, []);
+
+  monitor.observe({
+    type: "tool_execution_start",
+    toolCallId: "queued-run-tool",
+    toolName: "write",
+    args: { path: "result.txt" },
+  });
+  assert.deepEqual(
+    published.at(-1).activities.map((activity) => activity.id),
+    ["queued-run-tool"],
+  );
+});
+
+test("runtime activity history merges cached and current session activities", () => {
+  const runtime = {
+    lastActivities: [
+      {
+        id: "cached-tool",
+        type: "tool",
+        name: "read",
+        summary: "cached",
+        status: "done",
+      },
+    ],
+    session: {
+      agent: {
+        state: {
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                { type: "text", text: "current answer" },
+                {
+                  type: "toolCall",
+                  id: "current-tool",
+                  name: "write",
+                  arguments: { path: "result.txt" },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  };
+
+  assert.deepEqual(
+    lastRuntimeActivities(runtime).map((activity) => activity.id),
+    ["assistant", "current-tool", "cached-tool"],
+  );
 });
 
 test("session status keeps running duration stable and explains queued messages", () => {

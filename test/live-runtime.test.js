@@ -63,6 +63,79 @@ test("runtime registry preserves object identity for live activity updates", () 
     getRuntimeSession("activity-session").lastActivityAt,
     "2026-01-01T00:00:10.000Z",
   );
+
+  deleteRuntimeSession("activity-session");
+});
+
+test("runtime activity heartbeats track every meaningful live session event", () => {
+  const originalNow = Date.now;
+  let listener;
+  let subscribed = 0;
+  let unsubscribed = 0;
+  const session = {
+    sessionManager: { getSessionId: () => "heartbeat-session" },
+    subscribe(nextListener) {
+      subscribed += 1;
+      listener = nextListener;
+      return () => {
+        unsubscribed += 1;
+      };
+    },
+  };
+
+  try {
+    Date.now = () => 1_000;
+    const runtime = setRuntimeSession("heartbeat-session", { session });
+
+    Date.now = () => 2_000;
+    listener({ type: "agent_start" });
+    assert.equal(runtime.lastActivityAt, "1970-01-01T00:00:02.000Z");
+
+    Date.now = () => 3_000;
+    listener({
+      type: "message_update",
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "working" }],
+      },
+    });
+    assert.equal(runtime.lastActivityAt, "1970-01-01T00:00:03.000Z");
+
+    setRuntimeSession("heartbeat-session", { session });
+    assert.equal(subscribed, 1);
+  } finally {
+    deleteRuntimeSession("heartbeat-session");
+    Date.now = originalNow;
+  }
+
+  assert.equal(unsubscribed, 1);
+});
+
+test("runtime activity tracking follows session replacement without leaking listeners", () => {
+  const listeners = [];
+  const unsubscribed = [];
+  const trackedSession = (name) => ({
+    sessionManager: { getSessionId: () => "replacement-session" },
+    subscribe(listener) {
+      listeners.push({ name, listener });
+      return () => unsubscribed.push(name);
+    },
+  });
+  const first = trackedSession("first");
+  const second = trackedSession("second");
+
+  try {
+    const runtime = setRuntimeSession("replacement-session", { session: first });
+    setRuntimeSession("replacement-session", { session: second });
+
+    assert.deepEqual(unsubscribed, ["first"]);
+    assert.equal(listeners.length, 2);
+    assert.equal(runtime.session, second);
+  } finally {
+    deleteRuntimeSession("replacement-session");
+  }
+
+  assert.deepEqual(unsubscribed, ["first", "second"]);
 });
 
 test("active visible context is shared through live runtime state", () => {

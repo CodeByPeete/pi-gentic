@@ -1050,6 +1050,58 @@ export function findRuntimeSession(predicate: (runtime: PiRuntimeSession) => boo
   return [...getLiveRuntimeState().runtimeSessions.values()].find(predicate);
 }
 
+const RUNTIME_ACTIVITY_EVENTS = new Set([
+  "agent_start",
+  "agent_end",
+  "agent_settled",
+  "turn_start",
+  "turn_end",
+  "message_start",
+  "message_update",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_update",
+  "tool_execution_end",
+  "queue_update",
+  "compaction_start",
+  "compaction_end",
+  "auto_retry_start",
+  "auto_retry_end",
+]);
+
+export function isSessionActivityEvent(event: unknown) {
+  return Boolean(
+    event &&
+      typeof event === "object" &&
+      RUNTIME_ACTIVITY_EVENTS.has(String((event as AnyRecord).type ?? "")),
+  );
+}
+
+function syncRuntimeActivityTracking(sessionId: string, runtime: PiRuntimeSession) {
+  const session = runtime.session;
+
+  if (runtime.activitySession === session) return;
+  stopRuntimeActivityTracking(runtime);
+
+  if (!session || typeof session.subscribe !== "function") return;
+  runtime.activitySession = session;
+  runtime.activityUnsubscribe = session.subscribe((event) => {
+    if (!isSessionActivityEvent(event)) return;
+    const current = getRuntimeSession(sessionId);
+
+    if (current !== runtime || current.session !== session) return;
+    runtime.lastActivityAt = new Date(Date.now()).toISOString();
+  });
+}
+
+function stopRuntimeActivityTracking(runtime: PiRuntimeSession | undefined) {
+  runtime?.activityUnsubscribe?.();
+
+  if (!runtime) return;
+  delete runtime.activityUnsubscribe;
+  delete runtime.activitySession;
+}
+
 export function setRuntimeSession(sessionId: string, runtime: PiRuntimeSession) {
   const runtimeSessions = getLiveRuntimeState().runtimeSessions;
   const existing = runtimeSessions.get(sessionId);
@@ -1057,6 +1109,7 @@ export function setRuntimeSession(sessionId: string, runtime: PiRuntimeSession) 
 
   Object.assign(next, runtime, { lastSeenAt: Date.now() });
   runtimeSessions.set(sessionId, next);
+  syncRuntimeActivityTracking(sessionId, next);
   pruneRuntimeSessions();
 
   return next;
@@ -1075,7 +1128,10 @@ export function listRuntimeSessions() {
 }
 
 export function deleteRuntimeSession(sessionId: string) {
-  getLiveRuntimeState().runtimeSessions.delete(sessionId);
+  const runtimeSessions = getLiveRuntimeState().runtimeSessions;
+
+  stopRuntimeActivityTracking(runtimeSessions.get(sessionId));
+  runtimeSessions.delete(sessionId);
 }
 
 export function pruneRuntimeSessions({
@@ -1090,7 +1146,7 @@ export function pruneRuntimeSessions({
     const lastSeenAt = Number(runtime.lastSeenAt ?? 0);
 
     if (!running && lastSeenAt && now - lastSeenAt > maxIdleMs)
-      runtimeSessions.delete(sessionId);
+      deleteRuntimeSession(sessionId);
   }
 
   const entries = [...runtimeSessions.entries()];
@@ -1106,7 +1162,7 @@ export function pruneRuntimeSessions({
     0,
     Math.max(0, entries.length - maxEntries),
   ))
-    runtimeSessions.delete(sessionId);
+    deleteRuntimeSession(sessionId);
 }
 
 export function persistSessionImmediately(sessionManager) {

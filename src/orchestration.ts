@@ -34,6 +34,7 @@ import {
   createLiveRuntime,
   findRuntimeSession,
   getRuntimeSession,
+  isSessionActivityEvent,
   listRuntimeSessions,
   persistSessionImmediately,
   pruneRuntimeSessions,
@@ -374,7 +375,7 @@ function waitForSessionTurnEnd(session: AnyRecord, signal?: AbortSignal) {
     interval.unref?.();
     signal?.addEventListener?.("abort", abort, { once: true });
     unsubscribe = session.subscribe?.((event) => {
-      if (event?.type === "agent_settled") finish();
+      if (event?.type === "agent_settled") queueMicrotask(() => finish());
     });
   });
 }
@@ -402,7 +403,8 @@ export function promptSessionAndWaitForTurnEnd(
 
     signal?.addEventListener?.("abort", abort, { once: true });
     unsubscribe = session.subscribe((event) => {
-      if (promptStarted && event?.type === "agent_settled") finish();
+      if (promptStarted && event?.type === "agent_settled")
+        queueMicrotask(() => finish());
     });
 
     Promise.resolve()
@@ -623,11 +625,19 @@ export function createSessionActivityMonitor(baseDetails, publish) {
       return state.activities;
     },
     observe(event) {
+      if (!isSessionActivityEvent(event)) return;
+
+      if (state.status === "queued") {
+        if (event?.type !== "message_start" || event.message?.role !== "user")
+          return;
+        touch();
+        publishState("running");
+        return;
+      }
       const activity = eventToActivity(event);
 
-      if (!activity) return;
       touch();
-      upsertActivity(state.activities, activity);
+      if (activity) upsertActivity(state.activities, activity);
       publishState("running");
     },
     finish({ activities }) {
@@ -671,7 +681,10 @@ function completeSessionActivities(monitor, session) {
 }
 
 export function collectSessionActivities(session) {
-  return session.agent.state.messages.flatMap((message) => {
+  const messages = session?.agent?.state?.messages;
+
+  if (!Array.isArray(messages)) return [];
+  return messages.flatMap((message) => {
     if (message.role === "assistant")
       return assistantMessageActivities(message);
 
@@ -700,9 +713,10 @@ export function mergeActivities(...activityLists: unknown[][]) {
 }
 
 export function lastRuntimeActivities(runtime) {
-  return runtime.lastActivities?.length
-    ? runtime.lastActivities
-    : collectSessionActivities(runtime.session);
+  return mergeActivities(
+    collectSessionActivities(runtime.session),
+    runtime.lastActivities ?? [],
+  );
 }
 
 export function latestActivityLines(runtime, count = 3) {
@@ -1354,6 +1368,7 @@ export class PiGenticOrchestrator {
     );
     const targetSessionId = target.session.sessionManager.getSessionId();
     const targetBusy = target.session.isStreaming === true;
+    const readyAt = Date.now();
     const callerSessionManager = ctx.sessionManager;
     const callerSessionId = callerSessionManager.getSessionId();
     const callerCwd = ctx.cwd;
@@ -1368,7 +1383,7 @@ export class PiGenticOrchestrator {
         message: input.message,
         queued: targetBusy,
         startedAt,
-        updatedAt: startedAt,
+        updatedAt: readyAt,
         activities: [],
       },
     );
@@ -1424,7 +1439,8 @@ export class PiGenticOrchestrator {
       once: true,
     });
     const run = async () => {
-      target.runStartedAt ??= startedAt;
+      target.runStartedAt ??= readyAt;
+      target.lastActivityAt = new Date(readyAt).toISOString();
       const monitor = createSessionActivityMonitor(details, (nextDetails) => {
         target.lastActivityAt = new Date(
           nextDetails.updatedAt ?? Date.now(),

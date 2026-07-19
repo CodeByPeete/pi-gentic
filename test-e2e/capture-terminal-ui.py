@@ -298,7 +298,7 @@ def capture_unified_resume():
 
         proc.write("\x1b")
         time.sleep(0.8)
-        proc.write('/send resume-live-session use the bash tool to run python -c "import time; time.sleep(20)" before replying FINAL-resume-live-session --agent researcher --bg --no-invoke\r')
+        proc.write('/send resume-live-session use the bash tool to run python -c "import time; time.sleep(30)" before replying FINAL-resume-live-session --agent researcher --bg --no-invoke\r')
         wait_for("live child started", lambda text: "resume-live-session" in text and "Sent a message" in text, timeout=45)
         initial_inactivity = re.search(r"Inactive:\s+(\d+)s", screen_line("Inactive:"))
         if not initial_inactivity or int(initial_inactivity.group(1)) > 5:
@@ -333,6 +333,31 @@ def capture_unified_resume():
         )
         print(activity_screenshot)
 
+        time.sleep(2.2)
+        proc.write("/resume\r")
+        wait_for(
+            "resume keeps the live inactivity timestamp",
+            lambda text: "Resume Session" in text
+            and "Inactive:" in tree_session_line("resume-live-session"),
+            timeout=30,
+        )
+        preserved_line = tree_session_line("resume-live-session")
+        preserved_inactivity = re.search(r"Inactive:\s+(\d+)s", preserved_line)
+        if not preserved_inactivity or int(preserved_inactivity.group(1)) < 1:
+            raise AssertionError(
+                f"Opening resume reset live session activity: {preserved_line!r}"
+            )
+        preserved_screenshot = render_png(
+            "unified-resume-live-timer-preserved-terminal.png"
+        )
+        print(preserved_screenshot)
+
+        proc.write("\r")
+        wait_for(
+            "reopened live child after timer check",
+            lambda text: "resume-live-session" in text and "Resume Session" not in text,
+            timeout=30,
+        )
         wait_for(
             "opened child settles with its final answer",
             lambda _text: child_session_has_assistant_text(

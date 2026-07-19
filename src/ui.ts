@@ -5,8 +5,6 @@ import {
   shortSessionId,
 } from "./catalog.js";
 
-const RUNNING_CARD_TTL_MS = 10 * 60_000;
-
 const COMPLETED_CARD_TTL_MS = 60_000;
 
 const ACTIVE_CARD_STATUSES = new Set(["queued", "running"]);
@@ -45,10 +43,13 @@ export function setLiveCardDetails(
 
   if (existing?.timer) clearTimeout(existing.timer);
   const nextDetails = { ...(existing?.details ?? {}), ...details };
-  const ttlMs = Math.max(100, Number(options.ttlMs ?? defaultTtl(nextDetails)));
-  const timer = setTimeout(() => liveCards.delete(key), ttlMs);
+  const ttlMs = liveCardTtl(nextDetails, options.ttlMs);
+  const timer =
+    ttlMs === undefined
+      ? undefined
+      : setTimeout(() => liveCards.delete(key), ttlMs);
 
-  timer.unref?.();
+  timer?.unref?.();
 
   liveCards.set(key, { details: nextDetails, timer });
   notifyLiveCardRefreshers();
@@ -119,10 +120,10 @@ function notifyLiveCardRefreshers() {
   for (const refresh of liveCardRefreshers) refresh();
 }
 
-function defaultTtl(details) {
-  return details.completedAt || isTerminalCard(details)
-    ? COMPLETED_CARD_TTL_MS
-    : RUNNING_CARD_TTL_MS;
+function liveCardTtl(details, requestedTtl) {
+  if (!details.completedAt && !isTerminalCard(details)) return undefined;
+
+  return Math.max(100, Number(requestedTtl ?? COMPLETED_CARD_TTL_MS));
 }
 
 const COMBINING_MARK = /\p{Mark}/u;
@@ -536,12 +537,13 @@ export function startLiveRefresh(
     pulseTimer.unref?.();
   }
 
-  timeout = setTimeout(
-    () => stop(),
-    Math.max(1000, Number(options.ttlMs ?? 10 * 60_000)),
-  );
-
-  timeout.unref?.();
+  if (options.ttlMs !== undefined) {
+    timeout = setTimeout(
+      () => stop(),
+      Math.max(1000, Number(options.ttlMs)),
+    );
+    timeout.unref?.();
+  }
 
   return stop;
 }
@@ -555,9 +557,7 @@ export function startSessionLiveCardRefresh(ctx: PiContext) {
 
     return stop;
   }
-  const stop = startLiveRefresh(ctx, "session-live-cards", {
-    ttlMs: RUNNING_CARD_TTL_MS,
-  });
+  const stop = startLiveRefresh(ctx, "session-live-cards");
 
   stop.refresh?.();
 

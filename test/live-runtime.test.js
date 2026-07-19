@@ -790,8 +790,13 @@ test("switching away from an opened live run parks it instead of disposing it", 
     sessionManager: { getSessionId: () => "running-session" },
   };
   const runtimeHost = { session };
+  const lastActivityAt = "2026-07-18T09:54:05.060Z";
 
-  setRuntimeSession("running-session", { runtimeHost, session });
+  setRuntimeSession("running-session", {
+    runtimeHost,
+    session,
+    lastActivityAt,
+  });
   const restore = parkCurrentLiveRuntimeForSwitch(state, runtimeHost);
 
   session.dispose();
@@ -799,6 +804,10 @@ test("switching away from an opened live run parks it instead of disposing it", 
   assert.equal(disposed, 0);
 
   assert.equal(state.liveRuntimes.get("running-session").runtime, runtimeHost);
+  assert.equal(
+    getRuntimeSession("running-session").lastActivityAt,
+    lastActivityAt,
+  );
 
   restore();
   session.dispose();

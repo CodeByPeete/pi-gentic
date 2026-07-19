@@ -4,6 +4,7 @@ import {
   AGENT_WIDGET_KEY,
   LIVE_REFRESH_WIDGET_KEY,
   clearLiveCardDetails,
+  getLiveCardDetails,
   setAgentLabel,
   setLiveCardDetails,
   showCard,
@@ -131,6 +132,64 @@ test("live refresh repaints timers without terminal input and stops cleanly", as
     undefined,
     { placement: "belowEditor" },
   ]);
+});
+
+test("running cards and their repaint loop remain live until explicitly settled", () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const originalClearInterval = globalThis.clearInterval;
+  const timers = [];
+  const cardId = "long-silent-run";
+
+  globalThis.setTimeout = (callback, ms) => {
+    const timer = { callback, ms, unref() {} };
+    timers.push(timer);
+    return timer;
+  };
+  globalThis.setInterval = (callback, ms) => ({ callback, ms, unref() {} });
+  globalThis.clearTimeout = () => {};
+  globalThis.clearInterval = () => {};
+
+  try {
+    setLiveCardDetails({ cardId, kind: "send", status: "running" });
+    const ctx = {
+      mode: "tui",
+      ui: { setWidget() {} },
+      sessionManager: {
+        getEntries: () => [
+          {
+            type: "message",
+            message: {
+              role: "toolResult",
+              toolName: "agents",
+              details: { cardId, kind: "send", status: "running" },
+            },
+          },
+        ],
+      },
+    };
+    const stop = startSessionLiveCardRefresh(ctx);
+
+    assert.equal(getLiveCardDetails({ cardId })?.status, "running");
+    assert.equal(
+      timers.some(({ ms }) => ms === 10 * 60_000),
+      false,
+    );
+
+    stop();
+    setLiveCardDetails({ cardId, status: "done", completedAt: Date.now() });
+    assert.equal(
+      timers.some(({ ms }) => ms === 60_000),
+      true,
+    );
+  } finally {
+    clearLiveCardDetails({ cardId });
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearTimeout = originalClearTimeout;
+    globalThis.clearInterval = originalClearInterval;
+  }
 });
 
 test("resumed sessions with visible live cards refresh from live updates", async () => {

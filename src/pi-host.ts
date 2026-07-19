@@ -407,7 +407,6 @@ export function parkCurrentLiveRuntimeForSwitch(
     parentSessionPath:
       tracked?.parentSessionPath ??
       session.sessionManager.getHeader?.()?.parentSession,
-    lastActivityAt: new Date().toISOString(),
   });
 
   state.liveRuntimes.set(sessionId, {

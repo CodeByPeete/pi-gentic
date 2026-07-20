@@ -152,7 +152,7 @@ test("live refresh repaints timers without remounting its widget", async () => {
   ]);
 });
 
-test("live panel gives every active card one compact detailed row", async () => {
+test("live panel gives every active session one compact detailed row", async () => {
   const cards = [
     {
       cardId: "compact-one",
@@ -180,6 +180,20 @@ test("live panel gives every active card one compact detailed row", async () => 
       message: "Implement the terminal fix",
       startedAt: Date.now() - 2_000,
       updatedAt: Date.now() - 2_000,
+      activities: [],
+    },
+    {
+      cardId: "compact-three",
+      kind: "send",
+      status: "queued",
+      livePanel: true,
+      callerSessionId: "parent-session",
+      sessionId: "child-two",
+      agentName: "builder",
+      async: false,
+      message: "Continue the terminal fix",
+      startedAt: Date.now() - 1_000,
+      updatedAt: Date.now() - 1_000,
       activities: [],
     },
   ];
@@ -212,7 +226,7 @@ test("live panel gives every active card one compact detailed row", async () => 
     assert.equal(researcherRows.length, 1);
     assert.match(researcherRows[0], /\[ASYNC\].*\(child-on\).*\[read\] src\/ui\.ts.*idle.*total/);
     assert.equal(builderRows.length, 1);
-    assert.match(builderRows[0], /\[SYNC\].*\(child-tw\).*Queued: Implement the terminal fix.*idle.*total/);
+    assert.match(builderRows[0], /\[SYNC\].*\(child-tw\).*Queued: Continue the terminal fix.*idle.*total/);
   } finally {
     stop();
     for (const card of cards) clearLiveCardDetails(card);

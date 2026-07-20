@@ -587,7 +587,7 @@ export function sessionHasVisibleLiveCard(ctx: PiContext) {
 }
 
 function sessionLiveCardDetails(ctx: PiContext) {
-  return [...liveCards.values()]
+  const cards = [...liveCards.values()]
     .map((entry) => entry.details)
     .filter(
       (details) => isActiveCard(details) && cardBelongsToSession(ctx, details),
@@ -597,6 +597,12 @@ function sessionLiveCardDetails(ctx: PiContext) {
         Number(left.startedAt ?? left.updatedAt ?? 0) -
         Number(right.startedAt ?? right.updatedAt ?? 0),
     );
+
+  return [
+    ...new Map(
+      cards.map((details) => [details.sessionId ?? liveCardKey(details), details]),
+    ).values(),
+  ];
 }
 
 function cardBelongsToSession(ctx: PiContext, details: AnyRecord) {

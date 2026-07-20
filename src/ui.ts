@@ -16,7 +16,7 @@ const TERMINAL_CARD_STATUSES = new Set([
 ]);
 const liveCards = new Map();
 const persistedCards = new Map();
-const liveCardRefreshers = new Set<() => void>();
+const liveCardRefreshers = new Set<(details?: AnyRecord) => void>();
 
 export function isActiveCard(details) {
   return ACTIVE_CARD_STATUSES.has(details?.status);
@@ -52,7 +52,7 @@ export function setLiveCardDetails(
   timer?.unref?.();
 
   liveCards.set(key, { details: nextDetails, timer });
-  notifyLiveCardRefreshers();
+  notifyLiveCardRefreshers(nextDetails);
 
   return nextDetails;
 }
@@ -70,7 +70,7 @@ export function setPersistedCardDetails(details) {
   const nextDetails = { ...(persistedCards.get(key) ?? {}), ...details };
 
   persistedCards.set(key, nextDetails);
-  notifyLiveCardRefreshers();
+  notifyLiveCardRefreshers(nextDetails);
 
   return nextDetails;
 }
@@ -113,11 +113,11 @@ export function clearLiveCardDetails(details) {
 
   if (key) liveCards.delete(key);
 
-  notifyLiveCardRefreshers();
+  notifyLiveCardRefreshers(entry?.details ?? details);
 }
 
-function notifyLiveCardRefreshers() {
-  for (const refresh of liveCardRefreshers) refresh();
+function notifyLiveCardRefreshers(details?: AnyRecord) {
+  for (const refresh of liveCardRefreshers) refresh(details);
 }
 
 function liveCardTtl(details, requestedTtl) {
@@ -468,17 +468,22 @@ export function startLiveRefresh(
   key = "default",
   options: AnyRecord = {},
 ) {
-  const noop = (() => {}) as (() => void) & { refresh?: () => void };
+  const noop = (() => {}) as (() => void) & {
+    refresh?: (details?: AnyRecord) => void;
+  };
 
   noop.refresh = () => {};
 
   if (ctx.mode !== "tui" || typeof ctx.ui?.setWidget !== "function")
     return noop;
   const widgetKey = `${LIVE_REFRESH_WIDGET_KEY}:${key}`;
+  const placement = options.placement ?? "aboveEditor";
   const resolveContext = () => options.resolveContext?.() ?? ctx;
   const minIntervalMs = Math.max(16, Number(options.intervalMs ?? 100));
   let stopped = false;
   let pending = false;
+  let mountedContext: PiContext | undefined;
+  let tui: AnyRecord | undefined;
   let lastRefreshAt = 0;
   let refreshTimer: NodeJS.Timeout | undefined;
   let pulseTimer: NodeJS.Timeout | undefined;
@@ -498,9 +503,7 @@ export function startLiveRefresh(
     if (timeout) clearTimeout(timeout);
 
     try {
-      resolveContext().ui?.setWidget?.(widgetKey, undefined, {
-        placement: "belowEditor",
-      });
+      mountedContext?.ui?.setWidget?.(widgetKey, undefined, { placement });
     } catch {
     }
   };
@@ -511,16 +514,34 @@ export function startLiveRefresh(
 
     try {
       lastRefreshAt = Date.now();
-      resolveContext().ui?.setWidget?.(widgetKey, () => invisibleComponent(), {
-        placement: "belowEditor",
-      });
+
+      if (tui) {
+        tui.requestRender?.();
+        return;
+      }
+      const currentContext = resolveContext();
+
+      if (!currentContext) return;
+      mountedContext = currentContext;
+      currentContext.ui?.setWidget?.(
+        widgetKey,
+        (nextTui, theme) => {
+          tui = nextTui;
+
+          return (
+            options.createComponent?.(nextTui, theme) ?? invisibleComponent()
+          );
+        },
+        { placement },
+      );
     } catch {
       if (resolveContext() === ctx) stop();
     }
   };
 
-  stop.refresh = () => {
-    if (stopped || pending) return;
+  stop.refresh = (details?: AnyRecord) => {
+    if (stopped || pending || options.acceptsDetails?.(details) === false)
+      return;
     const delay = Math.max(0, minIntervalMs - (Date.now() - lastRefreshAt));
     pending = true;
     refreshTimer = setTimeout(renderPulse, delay);
@@ -530,10 +551,10 @@ export function startLiveRefresh(
   if (options.trackLiveCards !== false) liveCardRefreshers.add(stop.refresh);
 
   if (options.autoPulse !== false) {
-    pulseTimer = setInterval(
-      renderPulse,
-      Math.max(250, Number(options.pulseIntervalMs ?? 1000)),
-    );
+    pulseTimer = setInterval(() => {
+      if (options.shouldPulse?.() === false) return;
+      renderPulse();
+    }, Math.max(250, Number(options.pulseIntervalMs ?? 1000)));
     pulseTimer.unref?.();
   }
 
@@ -548,16 +569,13 @@ export function startLiveRefresh(
   return stop;
 }
 
-
 export function startSessionLiveCardRefresh(ctx: PiContext) {
-  if (!sessionHasVisibleLiveCard(ctx)) {
-    const stop = (() => {}) as (() => void) & { refresh?: () => void };
-
-    stop.refresh = () => {};
-
-    return stop;
-  }
-  const stop = startLiveRefresh(ctx, "session-live-cards");
+  const stop = startLiveRefresh(ctx, "session-live-cards", {
+    acceptsDetails: (details) =>
+      !details || cardBelongsToSession(ctx, details),
+    createComponent: (tui, theme) => new LiveCardsPanel(ctx, tui, theme),
+    shouldPulse: () => sessionLiveCardDetails(ctx).length > 0,
+  });
 
   stop.refresh?.();
 
@@ -565,12 +583,54 @@ export function startSessionLiveCardRefresh(ctx: PiContext) {
 }
 
 export function sessionHasVisibleLiveCard(ctx: PiContext) {
-  const entries = [
-    ...(ctx.sessionManager?.getEntries?.() ?? []),
-    ...(ctx.sessionManager?.getBranch?.() ?? []),
-  ];
+  return sessionLiveCardDetails(ctx).length > 0;
+}
 
-  return entries.some((entry) => {
+function sessionLiveCardDetails(ctx: PiContext) {
+  return [...liveCards.values()]
+    .map((entry) => entry.details)
+    .filter(
+      (details) => isActiveCard(details) && cardBelongsToSession(ctx, details),
+    )
+    .sort(
+      (left, right) =>
+        Number(left.startedAt ?? left.updatedAt ?? 0) -
+        Number(right.startedAt ?? right.updatedAt ?? 0),
+    );
+}
+
+function cardBelongsToSession(ctx: PiContext, details: AnyRecord) {
+  const sessionId = currentSessionId(ctx);
+
+  if (details?.callerSessionId)
+    return details.callerSessionId === sessionId;
+  const key = liveCardKey(details);
+
+  return Boolean(key && sessionCardKeys(ctx).has(key));
+}
+
+function currentSessionId(ctx: PiContext) {
+  try {
+    return ctx.sessionManager?.getSessionId?.();
+  } catch {
+    return undefined;
+  }
+}
+
+function sessionCardKeys(ctx: PiContext) {
+  const keys = new Set();
+  let entries: AnyRecord[] = [];
+
+  try {
+    entries = [
+      ...(ctx.sessionManager?.getEntries?.() ?? []),
+      ...(ctx.sessionManager?.getBranch?.() ?? []),
+    ];
+  } catch {
+    return keys;
+  }
+
+  for (const entry of entries) {
     const details =
       entry?.type === "custom_message" &&
       entry.customType === CARD_MESSAGE_TYPE &&
@@ -581,8 +641,107 @@ export function sessionHasVisibleLiveCard(ctx: PiContext) {
             entry.message?.toolName === "agents"
           ? entry.message.details
           : undefined;
-    return isActiveCard(getLiveCardDetails(details));
-  });
+    const key = liveCardKey(details);
+
+    if (key) keys.add(key);
+  }
+
+  return keys;
+}
+
+class LiveCardsPanel {
+  ctx: PiContext;
+  tui: AnyRecord;
+  theme: PiTheme;
+
+  constructor(ctx: PiContext, tui: AnyRecord, theme: PiTheme) {
+    this.ctx = ctx;
+    this.tui = tui;
+    this.theme = theme;
+  }
+
+  invalidate() {}
+
+  render(width: number) {
+    const cards = sessionLiveCardDetails(this.ctx);
+
+    if (cards.length === 0) return [];
+    const terminalRows = Math.max(8, Number(this.tui.terminal?.rows ?? 24));
+    const rowLimit = Math.max(1, terminalRows - 10);
+    const hiddenCount = Math.max(0, cards.length - rowLimit);
+    const visibleCards = cards.slice(-rowLimit);
+    const rows = visibleCards.map((details) =>
+      this.cardRow(details, Math.max(10, width - 4)),
+    );
+
+    if (hiddenCount > 0)
+      rows[0] = this.dim(
+        `… ${hiddenCount} earlier active card${hiddenCount === 1 ? "" : "s"}`,
+      );
+
+    return renderBordered(
+      width,
+      (text) => this.dim(text),
+      () => rows,
+    );
+  }
+
+  cardRow(details: AnyRecord, width: number) {
+    const queued = details.status === "queued";
+    const indicator = queued ? this.accent("○") : this.success("●");
+    const mode = this.accent(details.async ? "[ASYNC]" : "[SYNC]");
+    const agent =
+      details.agentName && details.agentName !== "agentless"
+        ? styleAgentName(details.agentName)
+        : this.bold("agent");
+    const session = details.sessionId
+      ? this.dim(`(${shortSessionId(details.sessionId)})`)
+      : "";
+    const activities = Array.isArray(details.activities)
+      ? details.activities
+      : [];
+    const detail = normalizeInline(
+      activities.length > 0
+        ? formatActivity(activities.at(-1))
+        : queued
+          ? `Queued: ${details.message ?? ""}`
+          : details.message,
+    );
+    const now = Date.now();
+    const inactive = formatDuration(
+      Math.max(0, now - Number(details.updatedAt ?? now)),
+    );
+    const total = formatDuration(
+      Math.max(0, now - Number(details.startedAt ?? now)),
+    );
+    const left = `${indicator} ${mode} ${agent}${session ? ` ${session}` : ""}`;
+    const middle = ` ${this.dim("│")} ${detail}`;
+    const right =
+      `${this.dim("idle")} ${this.timer(inactive)} ` +
+      `${this.dim("· total")} ${this.timer(total)}`;
+
+    return joinWithMiddle(left, middle, right, width);
+  }
+
+  bold(text: string) {
+    return this.theme.bold(text);
+  }
+
+  accent(text: string) {
+    return this.theme.fg("accent", text);
+  }
+
+  success(text: string) {
+    return this.theme.fg("success", text);
+  }
+
+  dim(text: string) {
+    return this.theme.fg("dim", text);
+  }
+
+  timer(text: string) {
+    return `\x1b[95m${text}\x1b[39m`;
+  }
 }
 
 export function styleAgentName(
@@ -676,6 +835,9 @@ export function renderAgentsResult(
   const originalDetails =
     result.details && typeof result.details === "object" ? result.details : {};
   const { details, liveDetails, live } = resolveCardDetails(originalDetails);
+
+  if (isActiveCard(originalDetails) && details.livePanel === true)
+    return new InvisibleComponent();
   const restoredRunning =
     details.status === "running" && !options.isPartial && !liveDetails;
 

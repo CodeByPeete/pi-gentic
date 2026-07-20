@@ -25,7 +25,6 @@ import {
   parseSkillCommand,
 } from "./interface.js";
 import {
-  activeVisibleContext,
   hostCompatibilityDiagnostics,
   installLiveSessionBridge,
   persistSessionImmediately,
@@ -46,7 +45,6 @@ import {
   renderAgentsResult,
   restorePersistedCardDetails,
   showCard,
-  startLiveRefresh,
   startSessionLiveCardRefresh,
 } from "./ui.js";
 
@@ -278,17 +276,10 @@ export default async function piGentic(pi: ExtensionAPI) {
         return;
       }
 
-      let stopRefresh = (() => {}) as (() => void) & { refresh?: () => void };
-
       try {
         let showedProgress = false;
-        stopRefresh = startLiveRefresh(ctx, "send-command", {
-          resolveContext: activeVisibleContext,
-        });
         const result = await orchestrator.send(ctx, parsed, {
           awaitCompletion: false,
-          onSettled: () => stopRefresh(),
-          onRefresh: () => stopRefresh.refresh?.(),
           onUpdate: (update) => {
             if (showedProgress) return;
             showedProgress = true;
@@ -300,12 +291,8 @@ export default async function piGentic(pi: ExtensionAPI) {
           },
         });
 
-        if (!["running", "queued"].includes(result.details?.status))
-          stopRefresh();
-
         if (!showedProgress) showCard(pi, result.text, result.details);
       } catch (error) {
-        stopRefresh();
         showErrorCard(pi, orchestrator, error, "send");
       }
     },
@@ -624,24 +611,7 @@ async function executeAction(orchestrator, ctx, input, onUpdate, signal) {
   if (input.action === "send") {
     if (typeof input.message !== "string" || !input.message.trim())
       throw new Error('Field "message" is required for send.');
-    const stopRefresh = startLiveRefresh(ctx, "agents-tool", {
-      resolveContext: activeVisibleContext,
-    });
-    try {
-      const result = await orchestrator.send(ctx, input, {
-        onUpdate,
-        signal,
-        onRefresh: () => stopRefresh.refresh?.(),
-        onSettled: () => stopRefresh(),
-      });
-
-      if (!["running", "queued"].includes(result.details?.status)) stopRefresh();
-
-      return result;
-    } catch (error) {
-      stopRefresh();
-      throw error;
-    }
+    return orchestrator.send(ctx, input, { onUpdate, signal });
   }
 
   if (input.action === "abort") {

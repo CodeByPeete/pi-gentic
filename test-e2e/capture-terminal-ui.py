@@ -373,10 +373,68 @@ def capture_unified_resume():
         stop(proc)
 
 
+def capture_scroll_safe_live_panel():
+    reset_output()
+    proc = spawn()
+    try:
+        token = "scroll-safe-live-panel"
+        proc.write(
+            f'/send {token} use the bash tool to run python -c "import time; time.sleep(8)" before replying {token}-done --agent researcher --bg --no-invoke\r'
+        )
+        wait_for(
+            "compact live panel",
+            lambda text: token in text
+            and "[ASYNC]" in text
+            and "idle" in text
+            and "total" in text,
+            timeout=60,
+        )
+        before = screen_line("[ASYNC]")
+        running = render_png("scroll-safe-live-panel-running-terminal.png")
+        raw_start = len(raw_chunks)
+        time.sleep(2.2)
+        after = screen_line("[ASYNC]")
+        timer_output = "".join(raw_chunks[raw_start:])
+        total_before = re.search(r"total\s+(\d+)s", before)
+        total_after = re.search(r"total\s+(\d+)s", after)
+
+        if (
+            not total_before
+            or not total_after
+            or int(total_after.group(1)) <= int(total_before.group(1))
+        ):
+            raise AssertionError(
+                f"Compact live panel timer did not update autonomously: {before!r} -> {after!r}"
+            )
+        if "\x1b[3J" in timer_output:
+            raise AssertionError("Live panel timer update cleared terminal scrollback")
+
+        updated = render_png("scroll-safe-live-panel-updated-terminal.png")
+        wait_for(
+            "stable completion card",
+            lambda text: "Agent answered." in text and f"{token}-done" in text,
+            timeout=120,
+        )
+        completed = render_png("scroll-safe-live-panel-completed-terminal.png")
+        evidence = OUTPUT / "scroll-safe-live-panel-check.txt"
+        evidence.write_text(
+            f"before={before}\nafter={after}\nclear_scrollback=false\n",
+            encoding="utf-8",
+        )
+
+        for path in [running, updated, completed, evidence]:
+            print(path)
+    finally:
+        stop(proc)
+
+
 def main():
     global stop_reader, screen, stream
     if os.environ.get("PI_E2E_RESUME_ONLY") == "1":
         capture_unified_resume()
+        return
+    if os.environ.get("PI_E2E_REFRESH_ONLY") == "1":
+        capture_scroll_safe_live_panel()
         return
     reset_output()
     proc = spawn()

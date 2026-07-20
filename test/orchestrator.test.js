@@ -13,6 +13,7 @@ import {
 import {
   abortActor,
   createSessionActivityMonitor,
+  deliverCardToCaller,
   deliverReturnToCaller,
   lastRuntimeActivities,
 } from "../dist/orchestration.js";
@@ -224,6 +225,72 @@ test("send with no invoke returns answer as context without triggering a caller 
   assert.equal(sentMessages[0].message.customType, "pi-gentic:return-context");
 
   assert.match(sentMessages[0].message.content, /Worker answer/);
+});
+
+test("deferred completion cards are delivered to the live caller session", async () => {
+  const sent = [];
+  const mode = await deliverCardToCaller({
+    pi: { sendMessage() {} },
+    ctx: {
+      cwd: process.cwd(),
+      sessionManager: { getSessionId: () => "caller" },
+    },
+    callerSessionId: "caller",
+    callerSessionManager: { appendCustomMessageEntry() {} },
+    text: "Agent answer",
+    details: { cardId: "send:child:1", status: "done" },
+    visibleSession: {
+      sessionManager: { getSessionId: () => "caller" },
+      sendCustomMessage: (...args) => sent.push(args),
+    },
+  });
+
+  assert.equal(mode, "live");
+  assert.deepEqual(sent, [
+    [
+      {
+        customType: "pi-gentic:card",
+        content: "Agent answer",
+        display: true,
+        details: { cardId: "send:child:1", status: "done" },
+      },
+      { triggerTurn: false },
+    ],
+  ]);
+});
+
+test("deferred completion cards persist in their original caller session", async () => {
+  const entries = [];
+  let persisted = 0;
+  const sessionManager = {
+    appendCustomMessageEntry: (...args) => entries.push(args),
+  };
+  const mode = await deliverCardToCaller({
+    pi: { sendMessage() {} },
+    ctx: {
+      cwd: process.cwd(),
+      sessionManager: { getSessionId: () => "visible-other" },
+    },
+    callerSessionId: "caller",
+    callerSessionManager: sessionManager,
+    text: "Agent answer",
+    details: { cardId: "send:child:1", status: "done" },
+    persist: (value) => {
+      assert.equal(value, sessionManager);
+      persisted += 1;
+    },
+  });
+
+  assert.equal(mode, "persisted");
+  assert.deepEqual(entries, [
+    [
+      "pi-gentic:card",
+      "Agent answer",
+      true,
+      { cardId: "send:child:1", status: "done" },
+    ],
+  ]);
+  assert.equal(persisted, 1);
 });
 
 test("send return uses the active visible session after a session switch", async () => {

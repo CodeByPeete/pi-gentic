@@ -60,6 +60,7 @@ import {
 } from "./sessions.js";
 import { prepareWorktree } from "./worktrees.js";
 import {
+  CARD_MESSAGE_TYPE,
   CARD_STATE_ENTRY_TYPE,
   isTerminalCard,
   setAgentLabel,
@@ -204,6 +205,56 @@ export async function deliverReturnToCaller({
   persistReturnForCaller({ callerSessionManager, text, invoke, persist });
 
   return "persisted";
+}
+
+export async function deliverCardToCaller({
+  pi,
+  ctx,
+  callerSessionId,
+  callerSessionManager,
+  text,
+  details,
+  persist,
+  visibleSession,
+}) {
+  const message = {
+    customType: CARD_MESSAGE_TYPE,
+    content: text,
+    display: true,
+    details,
+  };
+  const liveTarget = liveCallerSession(ctx, callerSessionId, visibleSession);
+
+  try {
+    if (liveTarget?.session?.sendCustomMessage) {
+      await liveTarget.session.sendCustomMessage(message, {
+        triggerTurn: false,
+      });
+
+      return "live";
+    }
+
+    if (contextStillActive(ctx, callerSessionId)) {
+      pi.sendMessage(message, customMessageOptions(ctx));
+
+      return "live";
+    }
+  } catch {
+  }
+
+  try {
+    callerSessionManager.appendCustomMessageEntry?.(
+      CARD_MESSAGE_TYPE,
+      text,
+      true,
+      details,
+    );
+    persist?.(callerSessionManager);
+
+    return "persisted";
+  } catch {
+    return "unavailable";
+  }
 }
 
 export async function deliverToLiveCaller({
@@ -1377,6 +1428,8 @@ export class PiGenticOrchestrator {
       targetBusy ? "queued" : "running",
       {
         cardId: `send:${targetSessionId}:${startedAt}`,
+        livePanel: true,
+        callerSessionId,
         async: targetAsync,
         agentName: target.agentName,
         sessionId: targetSessionId,
@@ -1511,6 +1564,12 @@ export class PiGenticOrchestrator {
             ? buildReturnText(target.agentName, targetSessionId, outcome.text)
             : outcome.text;
         if (returnDelivery.kind === "callerMessage") {
+          await this.deliverCallerCard(ctx, {
+            callerSessionId,
+            callerSessionManager,
+            text: outcome.text,
+            details: completed,
+          });
           await this.deliverCallerMessage(ctx, {
             callerSessionId,
             callerSessionManager,
@@ -1537,7 +1596,13 @@ export class PiGenticOrchestrator {
             activities: completeSessionActivities(monitor, target.session),
           }),
         );
-        if (returnDelivery.kind === "callerMessage")
+        if (returnDelivery.kind === "callerMessage") {
+          await this.deliverCallerCard(ctx, {
+            callerSessionId,
+            callerSessionManager,
+            text: outcome.text,
+            details: failed,
+          });
           await this.deliverCallerMessage(ctx, {
             callerSessionId,
             callerSessionManager,
@@ -1547,6 +1612,7 @@ export class PiGenticOrchestrator {
             invoke: invokeMeLater,
             queue: returnDelivery.queue,
           });
+        }
 
         return { answer: outcome.text, details: failed };
       } finally {
@@ -1885,6 +1951,27 @@ export class PiGenticOrchestrator {
     await runtime.session.abort();
 
     return `Aborted session ${shortSessionId(runtime.session.sessionManager.getSessionId())}.`;
+  }
+
+  async deliverCallerCard(
+    ctx: PiContext,
+    {
+      callerSessionId,
+      callerSessionManager,
+      text,
+      details,
+    }: AnyRecord,
+  ) {
+    return deliverCardToCaller({
+      pi: this.pi,
+      ctx: activeVisibleContext() ?? ctx,
+      callerSessionId,
+      callerSessionManager,
+      text,
+      details,
+      persist: persistSessionImmediately,
+      visibleSession: activeVisibleSession(),
+    });
   }
 
   async deliverCallerMessage(

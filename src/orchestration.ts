@@ -39,7 +39,7 @@ import {
   persistSessionImmediately,
   pruneRuntimeSessions,
   registerAgentCall,
-  resolveModelFromRegistry,
+  resolveModelFromCatalog,
   setRuntimeSession,
   unregisterLiveRuntime,
 } from "./pi-host.js";
@@ -1827,8 +1827,8 @@ export class PiGenticOrchestrator {
     session.setActiveToolsByName(policy.resources.tools);
 
     if (policy.model) {
-      const model = resolveModelFromRegistry(
-        session.modelRegistry,
+      const model = resolveModelFromCatalog(
+        session.modelRegistry ?? session.modelRuntime,
         policy.model,
       );
 
@@ -2008,7 +2008,7 @@ export class PiGenticOrchestrator {
   }
 
   resolveModel(ctx, modelName) {
-    return resolveModelFromRegistry(ctx.modelRegistry, modelName);
+    return resolveModelFromCatalog(ctx.modelRegistry, modelName);
   }
 
   cardDetails(kind, status, details = {}) {

@@ -1,3 +1,5 @@
+import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -21,8 +23,9 @@ else:
     PI = [PI]
 COLS = 150
 ROWS = 46
-MODEL = "gpt-5.4-mini"
-MODEL_FULL = "openai-codex/gpt-5.4-mini"
+MODEL = os.environ.get("PI_GENTIC_E2E_MODEL", "gpt-5.4-mini")
+MODEL_FULL = MODEL if "/" in MODEL else f"openai-codex/{MODEL}"
+ACTIVATION_ONLY = os.environ.get("PI_GENTIC_E2E_ACTIVATION_ONLY") == "1"
 
 screen = pyte.Screen(COLS, ROWS)
 stream = pyte.ByteStream(screen)
@@ -41,7 +44,7 @@ def reset_output():
         encoding="utf-8",
     )
     (WORK_DIR / ".pi" / "extensions" / "pi-gentic" / "agents" / "worker.md").write_text(
-        "---\nname: worker\ndescription: Performs file-editing validation tasks.\ntools: read,write,edit,bash\nmodel: openai-codex/gpt-5.4-mini\nthinking: high\n---\nYou are a worker agent. Follow the requested file-editing task directly. Use the requested tools. Keep the final answer short and include the edited file path.",
+        f"---\nname: worker\ndescription: Performs delegated validation tasks.\ntools: read,write,edit,bash\nmodel: {MODEL_FULL}\nthinking: high\n---\nYou are a worker agent. Complete the delegated task directly and return a concise final answer.",
         encoding="utf-8",
     )
 
@@ -174,6 +177,25 @@ def child_session_file_containing(needle):
     raise AssertionError(f"No child session file contains {needle!r}")
 
 
+def wait_for_child_answer(needle, timeout=180):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for path in newest_session_files():
+            content = path.read_text(encoding="utf-8", errors="replace")
+            if '"parentSession"' not in content:
+                continue
+            for line in content.splitlines():
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                message = entry.get("message", {})
+                if message.get("role") == "assistant" and needle in json.dumps(message):
+                    return path, content
+        time.sleep(0.25)
+    raise AssertionError(f"No active child session answered with {needle!r}")
+
+
 def ensure_model(proc):
     if MODEL in text():
         return
@@ -214,7 +236,35 @@ def main():
     proc = spawn()
     try:
         ensure_model(proc)
-        render_png("01-pi-started-with-gpt-5-4-mini.png")
+        render_png("01-pi-started.png")
+
+        if ACTIVATION_ONLY:
+            activation_token = "CHILD-ACTIVATION-OK"
+            run_command(
+                proc,
+                f"/send Reply with the exact text {activation_token} without using tools. --agent worker --bg --no-invoke",
+            )
+            wait_for(
+                "child activation started",
+                lambda value: activation_token in value
+                and "Agent call failed." not in value,
+                timeout=60,
+            )
+            render_png("02-child-activation-started.png")
+            child_path, child_content = wait_for_child_answer(activation_token)
+            wait_for(
+                "child activation completed",
+                lambda value: "Agent answered." in value,
+                timeout=60,
+            )
+            render_png("03-child-activation-completed.png")
+            if "getAvailable" in child_content:
+                raise AssertionError("Child activation retained the model runtime failure")
+            (OUTPUT / "summary.txt").write_text(
+                f"model={MODEL_FULL}\nchild={child_path.name}\nanswer={activation_token}\n",
+                encoding="utf-8",
+            )
+            return
 
         sync_prompt = "write a new temporary file and edit it 20 times using the edit tool; name each edit step sync-step-01 through sync-step-20; use only files under this working directory"
         run_command(proc, f"/send {sync_prompt} --agent worker --no-invoke")

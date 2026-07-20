@@ -978,3 +978,66 @@ test("agent availability has a reusable core boundary", () => {
     /Unavailable agent/,
   );
 });
+
+test("named child sessions activate with the current Pi model runtime", async () => {
+  const sessionId = "019fmodel-1111-7111-8111-111111111111";
+  const selectedModel = {
+    provider: "openai-codex",
+    id: "gpt-5.6-sol",
+  };
+  const entries = [];
+  const appliedModels = [];
+  const session = {
+    modelRuntime: {
+      getModel: (provider, id) =>
+        provider === selectedModel.provider && id === selectedModel.id
+          ? selectedModel
+          : undefined,
+      getModels: () => [selectedModel],
+      getAvailableSnapshot: () => [selectedModel],
+    },
+    resourceLoader: { getSkills: () => ({ skills: [] }) },
+    sessionManager: {
+      appendCustomEntry: (customType, data) =>
+        entries.push({ type: "custom", customType, data }),
+      getEntries: () => entries,
+      getSessionId: () => sessionId,
+    },
+    getAllTools: () => [],
+    setActiveToolsByName: () => undefined,
+    setModel: async (model) => appliedModels.push(model),
+    setThinkingLevel: () => undefined,
+  };
+  const config = {
+    settings: {
+      agentDefaults: {},
+      agentlessSession: {},
+      globalMaxSubagentDepth: 6,
+    },
+    agents: [
+      {
+        name: "researcher",
+        model: "gpt-5.6-sol",
+        thinking: "high",
+      },
+    ],
+  };
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] });
+
+  try {
+    await orchestrator.loadAgentIntoSession(
+      session,
+      "researcher",
+      undefined,
+      config,
+    );
+
+    assert.deepEqual(appliedModels, [selectedModel]);
+    assert.deepEqual(entries.at(-1)?.data, {
+      agentName: "researcher",
+      overrides: undefined,
+    });
+  } finally {
+    deleteRuntimeSession(sessionId);
+  }
+});

@@ -71,3 +71,24 @@ test("inherited model does not append a duplicate model change", async () => {
 
   assert.deepEqual(applied, []);
 });
+
+test("agentless child sessions inherit through the current Pi model runtime", async () => {
+  const selected = { provider: "openai-codex", id: "gpt-5.6-sol" };
+  const applied = [];
+  const model = await applyInheritedModel(
+    {
+      modelRuntime: {
+        getModel: (provider, id) =>
+          provider === selected.provider && id === selected.id
+            ? selected
+            : undefined,
+      },
+      setModel: async (next) => applied.push(next),
+    },
+    {},
+    selected,
+  );
+
+  assert.equal(model, selected);
+  assert.deepEqual(applied, [selected]);
+});

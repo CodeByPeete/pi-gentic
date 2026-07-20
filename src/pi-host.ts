@@ -1170,18 +1170,25 @@ export function persistSessionImmediately(sessionManager) {
   sessionManager.flushed = true;
 }
 
-export function resolveModelFromRegistry(modelRegistry, modelName) {
-  const available = modelRegistry.getAvailable();
-
+export function resolveModelFromCatalog(modelCatalog, modelName) {
   if (modelName.includes("/")) {
     const [provider, id] = modelName.split("/", 2);
 
-    return modelRegistry.find(provider, id);
+    return (
+      modelCatalog.find?.(provider, id) ??
+      modelCatalog.getModel?.(provider, id)
+    );
   }
 
+  const available =
+    modelCatalog.getAvailableSnapshot?.() ?? modelCatalog.getAvailable?.();
+  const models = Array.isArray(available)
+    ? available
+    : (modelCatalog.getModels?.() ?? []);
+
   return (
-    available.find((model) => model.id === modelName) ??
-    available.find((model) =>
+    models.find((model) => model.id === modelName) ??
+    models.find((model) =>
       model.id.toLowerCase().includes(modelName.toLowerCase()),
     )
   );
@@ -1198,8 +1205,10 @@ export async function applyInheritedModel(session, policy, inheritedModel) {
 
   if (!modelRef) return undefined;
   const model =
-    session.modelRegistry.find(modelRef.provider, modelRef.id) ??
-    inheritedModel;
+    resolveModelFromCatalog(
+      session.modelRegistry ?? session.modelRuntime,
+      `${modelRef.provider}/${modelRef.id}`,
+    ) ?? inheritedModel;
 
   if (modelsEqual(session.model, model)) return model;
 

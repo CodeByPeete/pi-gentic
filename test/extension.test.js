@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { completeSend, isCompletingSendSession } from "../dist/interface.js";
-import {
-  persistAgentCardState,
-  persistSynchronousToolCard,
-} from "../dist/orchestration.js";
+import { persistAgentCardState } from "../dist/orchestration.js";
 
 test("send flag completion preserves message text before the completed flag", () => {
   const [completion] = completeSend("please review the patch --a");
@@ -159,6 +156,7 @@ test("terminal async card state is persisted outside model context", () => {
     cardId: "send:child:1",
     kind: "send",
     status: "done",
+    answer: "Completed report",
     startedAt: 1_000,
     completedAt: 451_000,
     activities: [{ type: "tool", name: "write", summary: "report.json" }],
@@ -186,43 +184,6 @@ test("running card state is not persisted as a completed snapshot", () => {
     ),
     false,
   );
-  assert.deepEqual(entries, []);
-});
-
-test("completed synchronous send tool cards are persisted for reopen", () => {
-  const entries = [];
-  const sessionManager = {
-    appendCustomMessageEntry: (...args) => entries.push(args),
-  };
-
-  persistSynchronousToolCard(
-    { sessionManager },
-    { action: "send" },
-    {
-      text: "Agent answered.",
-      details: { kind: "send", status: "done", sessionId: "child" },
-    },
-    () => entries.push(["flushed"]),
-  );
-
-  assert.deepEqual(entries[0], [
-    "pi-gentic:card",
-    "Agent answered.",
-    true,
-    { kind: "send", status: "done", sessionId: "child" },
-  ]);
-
-  assert.deepEqual(entries[1], ["flushed"]);
-});
-
-test("running send tool cards are not duplicated into persisted cards", () => {
-  const entries = [];
-  persistSynchronousToolCard(
-    { sessionManager: { appendCustomMessageEntry: (...args) => entries.push(args) } },
-    { action: "send" },
-    { text: "Running", details: { kind: "send", status: "running" } },
-  );
-
   assert.deepEqual(entries, []);
 });
 

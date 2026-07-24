@@ -214,8 +214,11 @@ export async function deliverCardToCaller({
   callerSessionManager,
   text,
   details,
+  invoke,
   persist,
+  invokeInactiveCaller,
   visibleSession,
+  queue,
 }) {
   const message = {
     customType: CARD_MESSAGE_TYPE,
@@ -227,19 +230,26 @@ export async function deliverCardToCaller({
 
   try {
     if (liveTarget?.session?.sendCustomMessage) {
-      await liveTarget.session.sendCustomMessage(message, {
-        triggerTurn: false,
-      });
+      await liveTarget.session.sendCustomMessage(
+        message,
+        customDeliveryOptions(liveTarget.session, invoke, queue),
+      );
 
       return "live";
     }
 
     if (contextStillActive(ctx, callerSessionId)) {
-      pi.sendMessage(message, customMessageOptions(ctx));
+      pi.sendMessage(message, customDeliveryOptions(ctx, invoke, queue));
 
       return "live";
     }
   } catch {
+  }
+
+  if (invoke && invokeInactiveCaller) {
+    await invokeInactiveCaller(message);
+
+    return "background";
   }
 
   try {
@@ -601,6 +611,13 @@ function customMessageOptions(ctx, queue = "followUp") {
   };
 }
 
+function customDeliveryOptions(target, invoke, queue = "followUp") {
+  const streaming =
+    target?.isStreaming === true || target?.isIdle?.() === false;
+
+  return streaming ? { deliverAs: queue } : { triggerTurn: invoke === true };
+}
+
 export function persistAgentCardState(
   sessionManager: PiSessionManager,
   details: AnyRecord,
@@ -620,25 +637,6 @@ export function persistAgentCardState(
   persist?.(sessionManager);
 
   return true;
-}
-
-export function persistSynchronousToolCard(
-  ctx: PiContext,
-  input: AnyRecord,
-  result: AnyRecord,
-  persist?: (sessionManager: PiSessionManager) => void,
-) {
-  if (input.action !== "send") return;
-  if (["running", "queued"].includes(String(result.details?.status ?? "")))
-    return;
-
-  ctx.sessionManager.appendCustomMessageEntry?.(
-    "pi-gentic:card",
-    result.text,
-    true,
-    result.details,
-  );
-  persist?.(ctx.sessionManager);
 }
 
 export function contextStillActive(ctx, callerSessionId?: string) {
@@ -691,10 +689,13 @@ export function createSessionActivityMonitor(baseDetails, publish) {
       if (activity) upsertActivity(state.activities, activity);
       publishState("running");
     },
-    finish({ activities }) {
+    finish(updates: AnyRecord = {}) {
+      const { activities = [], ...details } = updates;
+
       state.activities = mergeActivities(state.activities, activities);
 
       return publishState("done", {
+        ...details,
         completedAt: Date.now(),
         updatedAt: state.updatedAt,
       });
@@ -973,14 +974,44 @@ export function sessionRunOutcome(
 
   return {
     status: "stopped",
-    text: sessionOutcomeText(runtime, "stopped", { request }),
+    text: sessionOutcomeText(runtime, "stopped", {
+      request,
+      reason: stoppedRunReason(assistant),
+      recentError: recentAssistantError(session.agent.state.messages, assistant),
+    }),
   };
+}
+
+function stoppedRunReason(assistant) {
+  if (!assistant) return "No assistant response was recorded.";
+
+  if (assistant.stopReason === "length")
+    return "The model reached its output token limit before returning a final answer.";
+
+  if (assistant.stopReason)
+    return `The model stopped with reason "${assistant.stopReason}" before returning a final answer.`;
+
+  return "The assistant turn ended without a final answer.";
+}
+
+function recentAssistantError(messages, terminalAssistant) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+
+    if (message === terminalAssistant) continue;
+    if (["user", "custom"].includes(message?.role)) break;
+    if (message?.role !== "assistant" || message.stopReason !== "error")
+      continue;
+    if (message.errorMessage) return message.errorMessage;
+  }
+
+  return undefined;
 }
 
 export function sessionOutcomeText(
   runtime: AnyRecord,
   kind: string,
-  { request, error }: AnyRecord = {},
+  { request, error, reason, recentError }: AnyRecord = {},
 ) {
   const session = runtime.session as { sessionManager: PiSessionManager };
   const sessionId = shortSessionId(session.sessionManager.getSessionId?.());
@@ -1001,6 +1032,10 @@ export function sessionOutcomeText(
     kind === "error" ? `Error: ${error || "Unknown error"}` : undefined,
     kind === "stopped"
       ? `Session ${sessionId}${agent} stopped before returning a final answer.`
+      : undefined,
+    kind === "stopped" && reason ? `Reason: ${reason}` : undefined,
+    kind === "stopped" && recentError
+      ? `Recent model error: ${recentError}`
       : undefined,
     request ? `Request: ${request}` : undefined,
     activityLines.length
@@ -1119,18 +1154,7 @@ function formatStatusActivity(activity) {
     .trim();
 }
 
-
 export { prepareWorktree };
-
-type CallerMessageDelivery = {
-  callerSessionId?: string;
-  callerSessionManager: PiSessionManager;
-  callerCwd?: string;
-  config: AnyRecord;
-  text: string;
-  invoke: boolean;
-  queue?: string;
-};
 
 function registerRuntimeHost(runtimeHost, metadata: AnyRecord = {}) {
   const session = runtimeHost.session;
@@ -1531,20 +1555,19 @@ export class PiGenticOrchestrator {
           callbacks.signal,
         );
         if (targetPrompt.command && !startsAgentTurn(targetPrompt.command)) {
+          const answer = slashCommandDeliveryText(
+            targetPrompt.command,
+            targetSessionId,
+          );
           const completed = recordRunResult(
             target,
             monitor.finish({
+              answer,
               activities: completeSessionActivities(monitor, target.session),
             }),
           );
 
-          return {
-            answer: slashCommandDeliveryText(
-              targetPrompt.command,
-              targetSessionId,
-            ),
-            details: completed,
-          };
+          return { answer, details: completed };
         }
         if (targetBusy) await waitForSessionTurnEnd(target.session, callbacks.signal);
         const outcome = sessionRunOutcome(target, { request: input.message });
@@ -1552,6 +1575,7 @@ export class PiGenticOrchestrator {
           target,
           outcome.status === "done"
             ? monitor.finish({
+                answer: outcome.text,
                 activities: completeSessionActivities(monitor, target.session),
               })
             : monitor.stop(outcome.status, {
@@ -1567,15 +1591,10 @@ export class PiGenticOrchestrator {
           await this.deliverCallerCard(ctx, {
             callerSessionId,
             callerSessionManager,
-            text: outcome.text,
-            details: completed,
-          });
-          await this.deliverCallerMessage(ctx, {
-            callerSessionId,
-            callerSessionManager,
             callerCwd,
             config,
             text: returnText,
+            details: completed,
             invoke: invokeMeLater,
             queue: returnDelivery.queue,
           });
@@ -1596,23 +1615,17 @@ export class PiGenticOrchestrator {
             activities: completeSessionActivities(monitor, target.session),
           }),
         );
-        if (returnDelivery.kind === "callerMessage") {
+        if (returnDelivery.kind === "callerMessage")
           await this.deliverCallerCard(ctx, {
-            callerSessionId,
-            callerSessionManager,
-            text: outcome.text,
-            details: failed,
-          });
-          await this.deliverCallerMessage(ctx, {
             callerSessionId,
             callerSessionManager,
             callerCwd,
             config,
             text: outcome.text,
+            details: failed,
             invoke: invokeMeLater,
             queue: returnDelivery.queue,
           });
-        }
 
         return { answer: outcome.text, details: failed };
       } finally {
@@ -1958,8 +1971,12 @@ export class PiGenticOrchestrator {
     {
       callerSessionId,
       callerSessionManager,
+      callerCwd,
+      config,
       text,
       details,
+      invoke,
+      queue,
     }: AnyRecord,
   ) {
     return deliverCardToCaller({
@@ -1969,38 +1986,15 @@ export class PiGenticOrchestrator {
       callerSessionManager,
       text,
       details,
-      persist: persistSessionImmediately,
-      visibleSession: activeVisibleSession(),
-    });
-  }
-
-  async deliverCallerMessage(
-    ctx: PiContext,
-    {
-      callerSessionId,
-      callerSessionManager,
-      callerCwd,
-      config,
-      text,
-      invoke,
-      queue,
-    }: CallerMessageDelivery,
-  ) {
-    return deliverReturnToCaller({
-      pi: this.pi,
-      ctx: activeVisibleContext() ?? ctx,
-      callerSessionId,
-      callerSessionManager,
-      text,
       invoke,
       persist: persistSessionImmediately,
       visibleSession: activeVisibleSession(),
       queue,
-      invokeInactiveCaller: (text) =>
+      invokeInactiveCaller: (message) =>
         this.invokeCallerSession({
           callerSessionManager,
           callerCwd,
-          text,
+          message,
           config,
           queue,
         }),
@@ -2010,7 +2004,7 @@ export class PiGenticOrchestrator {
   async invokeCallerSession({
     callerSessionManager,
     callerCwd,
-    text,
+    message,
     config,
     queue = "steer",
   }) {
@@ -2025,12 +2019,12 @@ export class PiGenticOrchestrator {
     });
 
     await this.applyPolicyToAgentSession(runtime.session, config);
-    runtime.lastMessage = text;
+    runtime.lastMessage = String(message?.content ?? "");
     runtime.lastActivityAt = new Date().toISOString();
     void runtime.session
-      .prompt(
-        text,
-        runtime.session.isStreaming ? { streamingBehavior: queue } : undefined,
+      .sendCustomMessage(
+        message,
+        customDeliveryOptions(runtime.session, true, queue),
       )
       .catch((error) => {
         runtime.lastActivityAt = new Date().toISOString();

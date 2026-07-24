@@ -29,7 +29,7 @@ import {
   installLiveSessionBridge,
   persistSessionImmediately,
 } from "./pi-host.js";
-import { PiGenticOrchestrator, persistSynchronousToolCard } from "./orchestration.js";
+import { PiGenticOrchestrator } from "./orchestration.js";
 import { installResumeBridge, warmResumeCache } from "./resume.js";
 import {
   buildSessionTree,
@@ -324,8 +324,6 @@ export default async function piGentic(pi: ExtensionAPI) {
           onUpdate,
           signal,
         );
-
-        persistSynchronousToolCard(ctx, input, result, persistSessionImmediately);
 
         return {
           content: [{ type: "text", text: result.text }],

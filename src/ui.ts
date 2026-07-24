@@ -863,6 +863,11 @@ export function renderAgentsResult(
       sessionId: details.sessionId ?? context.args.sessionId,
       message:
         details.message ?? context.args.message ?? firstText(result.content),
+      answer:
+        details.answer ??
+        (details.kind === "send" && details.status === "done"
+          ? firstText(result.content)
+          : undefined),
       activities: details.activities ?? [],
       startedAt:
         details.startedAt ??
@@ -1016,21 +1021,27 @@ class AgentsCard {
       return this.sessionTreeLines(width);
 
     if (this.data.kind === "load") return this.configurationLines(width);
-    const message = wrap(this.data.message || "", width);
+    const content = wrap(this.bodyText(), width);
     const activityLines = this.activityLines(width);
 
-    return [...message, ...activityLines];
+    return [...content, ...activityLines];
   }
 
   collapsedBody(width: number, maxLines: number) {
     if (this.data.kind !== "send" || this.data.error) return this.body(width);
-    const message = wrap(this.data.message || "", width).slice(0, 2);
+    const content = wrap(this.bodyText(), width).slice(0, 2);
     const activities = this.activityLines(
       width,
-      Math.max(0, maxLines - message.length),
+      Math.max(0, maxLines - content.length),
     );
 
-    return [...message, ...activities];
+    return [...content, ...activities];
+  }
+
+  bodyText() {
+    return this.data.kind === "send" && this.data.status === "done"
+      ? this.data.answer || this.data.message || ""
+      : this.data.message || "";
   }
 
   sessionTreeLines(width: number) {
@@ -1101,8 +1112,16 @@ class AgentsCard {
   }
 
   activityLines(width: number, maxLines = this.expanded ? 14 : 4) {
+    const answer = normalizeInline(this.data.answer);
     const activities = Array.isArray(this.data.activities)
-      ? this.data.activities
+      ? this.data.activities.filter(
+          (activity) =>
+            !(
+              answer &&
+              activity?.type === "assistant" &&
+              normalizeInline(activity.text) === answer
+            ),
+        )
       : [];
 
     if (activities.length === 0 || maxLines <= 0) return [];

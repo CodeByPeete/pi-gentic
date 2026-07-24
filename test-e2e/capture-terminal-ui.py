@@ -201,6 +201,21 @@ def parent_session_file(child_session_file):
     return pathlib.Path(parent)
 
 
+def canonical_completion_entries(session_text, receipt):
+    matches = []
+    for line in session_text.splitlines():
+        entry = json.loads(line)
+        if entry.get("type") == "custom_message":
+            content = entry.get("content", "")
+        elif entry.get("type") == "message" and entry.get("message", {}).get("role") == "user":
+            content = "".join(part.get("text", "") for part in entry["message"].get("content", []) if part.get("type") == "text")
+        else:
+            continue
+        if content.startswith("Message from") and receipt in content:
+            matches.append(entry)
+    return matches
+
+
 def screen_line(needle):
     return next((line for line in screen_text().splitlines() if needle in line), "")
 
@@ -428,8 +443,83 @@ def capture_scroll_safe_live_panel():
         stop(proc)
 
 
+def capture_completed_card_answer():
+    session_id = "019f8c5c-0000-7000-8000-000000000001"
+    child_id = "019f8c5c-0000-7000-8000-000000000002"
+    request = "Task: This request belongs only to the running card."
+    answer = "The completed card now shows the agent answer in its body."
+    reset_output()
+    details = {
+        "kind": "send",
+        "status": "done",
+        "cardId": f"send:{child_id}:1784768000000",
+        "async": True,
+        "agentName": "builder",
+        "sessionId": child_id,
+        "message": request,
+        "answer": answer,
+        "startedAt": 1784767990000,
+        "updatedAt": 1784768000000,
+        "completedAt": 1784768000000,
+        "activities": [{"type": "tool", "name": "write", "summary": "result.json", "status": "done"}],
+    }
+    fixture = SESSION_DIR / f"2026-07-23T00-00-00-000Z_{session_id}.jsonl"
+    entries = [
+        {"type": "session", "version": 3, "id": session_id, "timestamp": "2026-07-23T00:00:00.000Z", "cwd": str(INTERACTIVE_WORK_DIR)},
+        {"type": "custom", "customType": "pi-gentic:card-state", "data": details, "id": "fixture-state", "parentId": None, "timestamp": "2026-07-23T00:00:02.000Z"},
+        {"type": "custom_message", "customType": "pi-gentic:card", "content": f"Message from [builder] agent from session {child_id}:\n{answer}", "display": True, "details": details, "id": "fixture-card", "parentId": "fixture-state", "timestamp": "2026-07-23T00:00:03.000Z"},
+    ]
+    fixture.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
+    proc = spawn(["--session", str(fixture)])
+    try:
+        text = wait_for("completed card answer", lambda value: "Agent answered." in value and answer in value, timeout=30)
+        if request in text:
+            raise AssertionError("Completed card body displayed the request instead of the answer")
+        screenshot = render_png("completed-card-answer-terminal.png")
+        evidence = OUTPUT / "completed-card-answer-check.txt"
+        evidence.write_text("answer_in_card=true\nrequest_in_card=false\n", encoding="utf-8")
+        print(screenshot)
+        print(evidence)
+    finally:
+        stop(proc)
+
+
+def capture_completion_deduplication():
+    receipt = "completion-deduplication-receipt"
+    request = f"reply with the exact text {receipt}"
+    reset_output()
+    proc = spawn()
+    try:
+        proc.write("/agent researcher\r")
+        wait_for("researcher loaded", lambda text: "Loaded researcher" in text, timeout=30)
+        proc.write(f"/send {request} --no-invoke\r")
+        wait_for("single completion card", lambda text: "Agent answered." in text and receipt in text, timeout=180)
+        child, _ = newest_child_session_file_containing(receipt)
+        parent = parent_session_file(child)
+        entries = canonical_completion_entries(parent.read_text(encoding="utf-8", errors="replace"), receipt)
+        if len(entries) != 1 or entries[0].get("customType") != "pi-gentic:card":
+            raise AssertionError(f"Expected one canonical completion context entry in {parent}, got {entries}")
+        if entries[0].get("details", {}).get("answer") != receipt:
+            raise AssertionError(f"Expected the terminal card state to contain the raw answer, got {entries[0]}")
+        if request in screen_text():
+            raise AssertionError("Completed card body displayed the request instead of the answer")
+        screenshot = render_png("completion-deduplication-terminal.png")
+        evidence = OUTPUT / "completion-deduplication-check.txt"
+        evidence.write_text(f"parent={parent}\ncompletion_entries=1\ncustom_type=pi-gentic:card\nanswer_in_card=true\n", encoding="utf-8")
+        print(screenshot)
+        print(evidence)
+    finally:
+        stop(proc)
+
+
 def main():
     global stop_reader, screen, stream
+    if os.environ.get("PI_E2E_CARD_ONLY") == "1":
+        capture_completed_card_answer()
+        return
+    if os.environ.get("PI_E2E_COMPLETION_ONLY") == "1":
+        capture_completion_deduplication()
+        return
     if os.environ.get("PI_E2E_RESUME_ONLY") == "1":
         capture_unified_resume()
         return
@@ -460,10 +550,14 @@ def main():
         invalid_agent_error = render_png("invalid-agent-error-card-terminal.png")
 
         proc.write("/send reply with the exact text no invoke receipt --no-invoke\r")
-        wait_for("no invoke returned context", lambda text: "Message from agent from session" in text and "no invoke receipt" in text, timeout=180)
+        wait_for("single no-invoke completion card", lambda text: "Agent answered." in text and "no invoke receipt" in text, timeout=180)
         no_invoke_child, no_invoke_child_text = newest_child_session_file_containing("reply with the exact text no invoke receipt")
         parent_session = parent_session_file(no_invoke_child)
-        parent_model_id = latest_model_id(parent_session.read_text(encoding="utf-8", errors="replace"))
+        parent_text = parent_session.read_text(encoding="utf-8", errors="replace")
+        completion_entries = canonical_completion_entries(parent_text, "no invoke receipt")
+        if len(completion_entries) != 1 or completion_entries[0].get("customType") != "pi-gentic:card":
+            raise AssertionError(f"Expected one canonical completion context entry in {parent_session}, got {completion_entries}")
+        parent_model_id = latest_model_id(parent_text)
         child_model_id = latest_model_id(no_invoke_child_text)
         if child_model_id != parent_model_id:
             raise AssertionError(f"Expected agentless child to inherit {parent_model_id}, got {child_model_id} in {no_invoke_child}")
@@ -563,7 +657,7 @@ def main():
         proc.write("/resume\r")
         wait_for("tree opens from running child", lambda text: "Resume Session" in text and "tree-refresh-receipt" in text, timeout=30)
         proc.write("\r")
-        wait_for("visible final answer appears without reopen", lambda text: "[pi-gentic:return-context]" in text and "Message from agent from session" in text and "tree-refresh-receipt" in text and "was aborted" not in text, timeout=180)
+        wait_for("visible final answer appears once without reopen", lambda text: "Agent answered." in text and "tree-refresh-receipt" in text and "was aborted" not in text, timeout=180)
         running_child_returned = render_png("running-child-returned-after-switch-terminal.png")
         parent_session = newest_session_file_containing("pi-gentic:card")
         stop(proc)

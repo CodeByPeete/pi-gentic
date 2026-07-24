@@ -227,7 +227,7 @@ test("send with no invoke returns answer as context without triggering a caller 
   assert.match(sentMessages[0].message.content, /Worker answer/);
 });
 
-test("deferred completion cards are delivered to the live caller session", async () => {
+test("deferred completion uses one visible context message to invoke the live caller", async () => {
   const sent = [];
   const mode = await deliverCardToCaller({
     pi: { sendMessage() {} },
@@ -239,6 +239,7 @@ test("deferred completion cards are delivered to the live caller session", async
     callerSessionManager: { appendCustomMessageEntry() {} },
     text: "Agent answer",
     details: { cardId: "send:child:1", status: "done" },
+    invoke: true,
     visibleSession: {
       sessionManager: { getSessionId: () => "caller" },
       sendCustomMessage: (...args) => sent.push(args),
@@ -254,9 +255,63 @@ test("deferred completion cards are delivered to the live caller session", async
         display: true,
         details: { cardId: "send:child:1", status: "done" },
       },
-      { triggerTurn: false },
+      { triggerTurn: true },
     ],
   ]);
+});
+
+test("deferred completion steers the same visible card into a running caller", async () => {
+  const sent = [];
+
+  await deliverCardToCaller({
+    pi: { sendMessage() {} },
+    ctx: {
+      cwd: process.cwd(),
+      sessionManager: { getSessionId: () => "caller" },
+    },
+    callerSessionId: "caller",
+    callerSessionManager: { appendCustomMessageEntry() {} },
+    text: "Agent answer",
+    details: { cardId: "send:child:1", status: "done" },
+    invoke: true,
+    queue: "steer",
+    visibleSession: {
+      isStreaming: true,
+      sessionManager: { getSessionId: () => "caller" },
+      sendCustomMessage: (...args) => sent.push(args),
+    },
+  });
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0][0].customType, "pi-gentic:card");
+  assert.equal(sent[0][0].content, "Agent answer");
+  assert.deepEqual(sent[0][1], { deliverAs: "steer" });
+});
+
+test("deferred completion invokes an inactive caller with the same canonical card", async () => {
+  const invoked = [];
+  const persisted = [];
+  const mode = await deliverCardToCaller({
+    pi: { sendMessage() {} },
+    ctx: {
+      cwd: process.cwd(),
+      sessionManager: { getSessionId: () => "visible-other" },
+    },
+    callerSessionId: "caller",
+    callerSessionManager: {
+      appendCustomMessageEntry: (...args) => persisted.push(args),
+    },
+    text: "Agent answer",
+    details: { cardId: "send:child:1", status: "done" },
+    invoke: true,
+    invokeInactiveCaller: (message) => invoked.push(message),
+  });
+
+  assert.equal(mode, "background");
+  assert.equal(invoked.length, 1);
+  assert.equal(invoked[0].customType, "pi-gentic:card");
+  assert.equal(invoked[0].content, "Agent answer");
+  assert.deepEqual(persisted, []);
 });
 
 test("deferred completion cards persist in their original caller session", async () => {
@@ -830,7 +885,7 @@ test("aborted child outcomes are delivered back so parent sessions can continue"
   assert.deepEqual(userMessages[0].options, { deliverAs: "steer" });
 });
 
-test("sessions that stop without an answer keep a stopped status", () => {
+test("sessions that stop at the output limit report the stop reason and recent model error", () => {
   const outcome = sessionRunOutcome(
     {
       agentName: "researcher",
@@ -838,15 +893,28 @@ test("sessions that stop without an answer keep a stopped status", () => {
         sessionManager: {
           getSessionId: () => "019ecdce-4317-701b-9c51-1b05272f0db0",
         },
-        agent: { state: { messages: [{ role: "assistant", content: "" }] } },
+        agent: {
+          state: {
+            messages: [
+              {
+                role: "assistant",
+                content: "",
+                stopReason: "error",
+                errorMessage: "Input exceeds the context window.",
+              },
+              { role: "assistant", content: "", stopReason: "length" },
+            ],
+          },
+        },
       },
     },
     { request: "continue" },
   );
 
   assert.equal(outcome.status, "stopped");
-
   assert.match(outcome.text, /stopped before returning a final answer/);
+  assert.match(outcome.text, /output token limit/i);
+  assert.match(outcome.text, /Recent model error: Input exceeds the context window\./);
 });
 
 test("activity monitors reset inactivity for lifecycle and reasoning progress", () => {
@@ -880,6 +948,26 @@ test("activity monitors reset inactivity for lifecycle and reasoning progress", 
   } finally {
     Date.now = originalNow;
   }
+});
+
+test("activity monitors preserve the completed answer in terminal card state", () => {
+  const published = [];
+  const monitor = createSessionActivityMonitor(
+    { status: "running", updatedAt: 100 },
+    (details) => {
+      published.push(details);
+      return details;
+    },
+  );
+
+  const completed = monitor.finish({
+    answer: "Final agent answer",
+    activities: [{ type: "tool", name: "write", summary: "result.json" }],
+  });
+
+  assert.equal(completed.status, "done");
+  assert.equal(completed.answer, "Final agent answer");
+  assert.equal(published.at(-1).answer, "Final agent answer");
 });
 
 test("queued activity monitors ignore the target's current run until the queued turn starts", () => {

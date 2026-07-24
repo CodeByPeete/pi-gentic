@@ -260,6 +260,7 @@ test("terminal card state restores duration and activities after restart", () =>
           data: {
             ...initialDetails,
             status: "done",
+            answer: "Dependency research completed",
             completedAt,
             updatedAt: completedAt - 1_000,
             activities: [
@@ -296,6 +297,8 @@ test("terminal card state restores duration and activities after restart", () =>
     );
 
     assert.match(output, /Agent answered\./);
+    assert.match(output, /Dependency research completed/);
+    assert.doesNotMatch(output, /research dependencies/);
     assert.match(output, /\[write\] research\.json/);
     assert.match(output, /7m:30s/);
     assert.doesNotMatch(output, /Inactive:/);
@@ -304,7 +307,7 @@ test("terminal card state restores duration and activities after restart", () =>
   }
 });
 
-test("collapsed send cards reserve two prompt lines for the latest activities", () => {
+test("collapsed completed send cards show the answer before recent activities", () => {
   const activities = Array.from({ length: 10 }, (_, index) => ({
     type: "tool",
     name: "read",
@@ -313,11 +316,17 @@ test("collapsed send cards reserve two prompt lines for the latest activities", 
   const output = text(
     renderAgentsResult(
       {
-        content: [{ type: "text", text: "done" }],
+        content: [
+          {
+            type: "text",
+            text: "Message from [researcher] agent from session child:\nWrapped answer",
+          },
+        ],
         details: {
           kind: "send",
           status: "done",
-          message: "Prompt line one\nPrompt line two\nPrompt line three",
+          message: "Original task that should stay out of the completed body",
+          answer: "Answer line one\nAnswer line two\nAnswer line three",
           activities,
           startedAt: 1_000,
           completedAt: 2_000,
@@ -329,12 +338,63 @@ test("collapsed send cards reserve two prompt lines for the latest activities", 
     ).render(120),
   );
 
-  assert.match(output, /Prompt line one/);
-  assert.match(output, /Prompt line two/);
-  assert.doesNotMatch(output, /Prompt line three/);
+  assert.match(output, /Answer line one/);
+  assert.match(output, /Answer line two/);
+  assert.doesNotMatch(output, /Answer line three/);
+  assert.doesNotMatch(output, /Original task/);
+  assert.doesNotMatch(output, /Wrapped answer/);
   assert.doesNotMatch(output, /activity 1(?:\D|$)/);
   assert.match(output, /activity 10/);
   assert.equal([...output.matchAll(/\[read\] activity/g)].length, 8);
+});
+
+test("completed cards from older sessions fall back to their returned content", () => {
+  const output = text(
+    renderAgentsResult(
+      {
+        content: [{ type: "text", text: "Historical agent answer" }],
+        details: {
+          kind: "send",
+          status: "done",
+          message: "Historical request",
+          completedAt: 2_000,
+        },
+      },
+      { expanded: false, isPartial: false },
+      theme,
+      { args: {}, isError: false },
+    ).render(120),
+  );
+
+  assert.match(output, /Historical agent answer/);
+  assert.doesNotMatch(output, /Historical request/);
+});
+
+test("completed cards do not repeat their answer as assistant activity", () => {
+  const output = text(
+    renderAgentsResult(
+      {
+        content: [{ type: "text", text: "Wrapped answer" }],
+        details: {
+          kind: "send",
+          status: "done",
+          message: "Original request",
+          answer: "Final answer",
+          activities: [
+            { type: "assistant", text: "Final answer" },
+            { type: "tool", name: "write", summary: "result.json" },
+          ],
+          completedAt: 2_000,
+        },
+      },
+      { expanded: true, isPartial: false },
+      theme,
+      { args: {}, isError: false },
+    ).render(120),
+  );
+
+  assert.equal([...output.matchAll(/Final answer/g)].length, 1);
+  assert.match(output, /\[write\] result\.json/);
 });
 
 test("stopped send cards use a specific title instead of a generic failure", () => {
@@ -347,8 +407,11 @@ test("stopped send cards use a specific title instead of a generic failure", () 
           status: "stopped",
           agentName: "researcher",
           sessionId: "child-session",
-          error:
+          error: [
             "Session child-session [researcher] stopped before returning a final answer.",
+            "Reason: The model reached its output token limit before returning a final answer.",
+            "Recent model error: Input exceeds the context window.",
+          ].join("\n"),
         },
       },
       { expanded: false, isPartial: false },
@@ -358,7 +421,8 @@ test("stopped send cards use a specific title instead of a generic failure", () 
   );
 
   assert.match(output, /Agent stopped before answering\./);
-
+  assert.match(output, /output token limit/);
+  assert.match(output, /Input exceeds the context window\./);
   assert.doesNotMatch(output, /Agent call failed\./);
 });
 

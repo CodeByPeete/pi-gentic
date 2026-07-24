@@ -77,7 +77,9 @@ const cases = [
       agentName: "researcher",
       sessionId: "2f91a8c4-demo",
       message:
-        "Determine the cleanest dependency-management approach for this Pi workspace after the Pi update.\nPreserve deterministic installs and compatibility while eliminating unnecessary lockfile churn.\nThis third prompt line should stay hidden while the card is collapsed.",
+        "Determine the cleanest dependency-management approach for this Pi workspace after the Pi update.",
+      answer:
+        "Use the workspace lockfile as the canonical dependency source.\nThe package now preserves deterministic installs without unnecessary lockfile churn.\nThis third answer line should stay hidden while the card is collapsed.",
       startedAt: Date.now() - 450_000,
       completedAt: Date.now(),
       activities: Array.from({ length: 10 }, (_, index) => ({
@@ -85,6 +87,31 @@ const cases = [
         name: index % 2 === 0 ? "read" : "bash",
         summary: `validated activity ${index + 1}`,
       })),
+    },
+  },
+  {
+    name: "completed-expanded-answer",
+    expanded: true,
+    details: {
+      kind: "send",
+      status: "done",
+      async: true,
+      agentName: "builder",
+      sessionId: "0de4f7aa-demo",
+      message: "Implement the requested card behavior.",
+      answer:
+        "Implemented the completed-card presentation.\n\nChanges:\n- The answer is the primary body content.\n- The original request remains available as card state.\n- Matching assistant activity is shown once.",
+      startedAt: Date.now() - 90_000,
+      completedAt: Date.now(),
+      activities: [
+        {
+          type: "assistant",
+          text:
+            "Implemented the completed-card presentation.\n\nChanges:\n- The answer is the primary body content.\n- The original request remains available as card state.\n- Matching assistant activity is shown once.",
+        },
+        { type: "tool", name: "edit", summary: "src/ui.ts" },
+        { type: "tool", name: "bash", summary: "220 tests passed" },
+      ],
     },
   },
   {
@@ -127,7 +154,7 @@ const cases = [
       agentName: "researcher",
       sessionId: "2f91a8c4-demo",
       error:
-        "Session 2f91a8c [researcher] stopped before returning a final answer.\nRequest: Continue the analysis after your current turn.",
+        "Session 2f91a8c [researcher] stopped before returning a final answer.\nReason: The model reached its output token limit before returning a final answer.\nRecent model error: Input exceeds the context window.\nRequest: Continue the analysis after your current turn.",
       startedAt: Date.now() - 18_000,
       completedAt: Date.now(),
     },
@@ -173,7 +200,7 @@ for (const item of cases) {
             details: item.details,
           },
           {
-            expanded: item.name === "load-agent",
+            expanded: item.expanded ?? item.name === "load-agent",
             isPartial: item.details.status === "running",
           },
           theme,

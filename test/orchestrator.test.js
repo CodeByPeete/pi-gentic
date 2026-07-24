@@ -227,6 +227,80 @@ test("send with no invoke returns answer as context without triggering a caller 
   assert.match(sentMessages[0].message.content, /Worker answer/);
 });
 
+test("aborted async sends persist terminal failures after the caller extension becomes stale", async () => {
+  const callerSessionId = "stale-caller";
+  const targetSessionId = "aborted-target";
+  const persistedMessages = [];
+  const targetMessages = [];
+  let stale = false;
+  let rejectPrompt;
+  let markPromptStarted;
+  let markSettled;
+  const promptStarted = new Promise((resolve) => {
+    markPromptStarted = resolve;
+  });
+  const settled = new Promise((resolve) => {
+    markSettled = resolve;
+  });
+  const callerSessionManager = {
+    getSessionId: () => callerSessionId,
+    getEntries: () => [],
+    appendCustomEntry() {},
+    appendCustomMessageEntry: (...args) => persistedMessages.push(args),
+  };
+  const target = {
+    agentName: "researcher",
+    session: {
+      isStreaming: false,
+      agent: { state: { messages: targetMessages } },
+      sessionManager: { getSessionId: () => targetSessionId },
+      prompt: () =>
+        new Promise((_resolve, reject) => {
+          rejectPrompt = reject;
+          markPromptStarted();
+        }),
+      abort: async () => {},
+    },
+  };
+  const orchestrator = new PiGenticOrchestrator({
+    getAllTools: () => [],
+    sendMessage: () => {
+      if (stale) throw new Error(staleContextError);
+    },
+  });
+  orchestrator.load = () => ({});
+  orchestrator.resolvePolicy = () => ({ agentsTool: {} });
+  orchestrator.resolveTargetSession = async () => target;
+  orchestrator.invokeCallerSession = async () => {
+    throw new Error("Caller session unavailable.");
+  };
+
+  try {
+    await orchestrator.send(
+      {
+        cwd: process.cwd(),
+        sessionManager: callerSessionManager,
+        isIdle: () => true,
+      },
+      { message: "Research Pi updates", async: true },
+      { onSettled: markSettled },
+    );
+    await promptStarted;
+    stale = true;
+    targetMessages.push({ role: "assistant", content: "", stopReason: "aborted" });
+    rejectPrompt(new Error("Agent call aborted."));
+    await settled;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(persistedMessages.length, 1);
+    assert.equal(persistedMessages[0][0], "pi-gentic:card");
+    assert.match(persistedMessages[0][1], /Caller session unavailable/);
+    assert.equal(persistedMessages[0][3].status, "error");
+  } finally {
+    deleteRuntimeSession(targetSessionId);
+  }
+});
+
 test("deferred completion uses one visible context message to invoke the live caller", async () => {
   const sent = [];
   const mode = await deliverCardToCaller({

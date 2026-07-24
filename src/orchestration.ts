@@ -1642,22 +1642,30 @@ export class PiGenticOrchestrator {
 
     if (returnDelivery.kind === "callerMessage") {
       void run()
-        .catch((error) =>
-          this.pi.sendMessage(
-            {
-              customType: "pi-gentic:card",
-              content: getErrorMessage(error),
-              display: true,
-              details: this.cardDetails("send", "error", {
-                ...details,
-                error: getErrorMessage(error),
-                completedAt: Date.now(),
-              }),
-            },
-            { triggerTurn: false, deliverAs: "nextTurn" },
-          ),
-        )
-        .finally(() => callbacks.onSettled?.());
+        .catch(async (error) => {
+          const message = getErrorMessage(error);
+          const completedAt = Date.now();
+
+          await this.deliverCallerCard(ctx, {
+            callerSessionId,
+            callerSessionManager,
+            callerCwd,
+            config,
+            text: message,
+            details: this.cardDetails("send", "error", {
+              ...details,
+              status: "error",
+              error: message,
+              completedAt,
+              updatedAt: completedAt,
+            }),
+            invoke: false,
+            queue: returnDelivery.queue,
+          });
+        })
+        .catch(() => undefined)
+        .finally(() => callbacks.onSettled?.())
+        .catch(() => undefined);
 
       return {
         text: sendPendingText({

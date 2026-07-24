@@ -512,8 +512,75 @@ def capture_completion_deduplication():
         stop(proc)
 
 
+def capture_abort_after_session_switch():
+    token = "stale-context-abort"
+    reset_output()
+    proc = spawn()
+    try:
+        proc.write("/agent researcher\r")
+        wait_for("researcher loaded", lambda text: "Loaded researcher" in text, timeout=30)
+        proc.write(
+            f'/send {token} use the bash tool to run python -c "import time; time.sleep(60)" before replying {token}-done --bg --no-invoke\r'
+        )
+        wait_for(
+            "async child starts",
+            lambda text: token in text and "[ASYNC]" in text,
+            timeout=60,
+        )
+        proc.write("/resume\r")
+        wait_for(
+            "running child appears in resume",
+            lambda text: "Resume Session" in text and token in text,
+            timeout=30,
+        )
+        proc.write("\x1b[B")
+        wait_for(
+            "running child selected",
+            lambda _text: tree_session_selected(token),
+            timeout=10,
+        )
+        proc.write("\r")
+        wait_for(
+            "running child opens",
+            lambda text: token in text and "Resume Session" not in text,
+            timeout=30,
+        )
+        proc.write("\x1b")
+        wait_for(
+            "switched child abort settles",
+            lambda text: "Operation aborted" in text
+            or "Agent got aborted" in text
+            or "was aborted while handling your request" in text,
+            timeout=60,
+        )
+        proc.write("/agent\r")
+        wait_for(
+            "CLI remains interactive after abort",
+            lambda text: "Active agent: researcher" in text
+            or "No active agent." in text,
+            timeout=30,
+        )
+        if not proc.isalive():
+            raise AssertionError("Pi exited after aborting the switched async child")
+
+        screenshot = render_png("stale-context-abort-survives-terminal.png")
+        evidence = OUTPUT / "stale-context-abort-check.txt"
+        evidence.write_text(
+            "child_opened=true\nchild_aborted=true\ncli_alive=true\n",
+            encoding="utf-8",
+        )
+        RAW_LOG.write_text("".join(raw_chunks), encoding="utf-8", errors="replace")
+        for path in [screenshot, evidence, RAW_LOG]:
+            print(path)
+    finally:
+        stop(proc)
+
+
 def main():
     global stop_reader, screen, stream
+    if os.environ.get("PI_E2E_ABORT_ONLY") == "1":
+        capture_abort_after_session_switch()
+        return
     if os.environ.get("PI_E2E_CARD_ONLY") == "1":
         capture_completed_card_answer()
         return

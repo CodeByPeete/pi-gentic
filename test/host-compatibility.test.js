@@ -29,14 +29,14 @@ function compatiblePeer(version) {
 }
 
 test("the legacy bridge rejects unknown Pi versions before installation", () => {
-  assert.throws(() => assertLegacyHostCompatible(compatiblePeer("0.83.0")), /supports Pi 0\.82\.0.*received 0\.83\.0/i);
+  assert.throws(() => assertLegacyHostCompatible(compatiblePeer("0.83.0")), /supports Pi 0\.82\.1.*received 0\.83\.0/i);
 });
 
 test("the legacy bridge reports every missing host capability", () => {
   assert.throws(
     () =>
       assertLegacyHostCompatible({
-        ...compatiblePeer("0.82.0"),
+        ...compatiblePeer("0.82.1"),
         AgentSession: { prototype: {} },
         AgentSessionRuntime: { prototype: {} },
         InteractiveMode: { prototype: {} },
@@ -48,6 +48,6 @@ test("the legacy bridge reports every missing host capability", () => {
 test("the installed Pi peer reports the exact compatibility version", async () => {
   const peer = await loadPiCodingAgentPeer();
 
-  assert.equal(peer.version, "0.82.0");
+  assert.equal(peer.version, "0.82.1");
   assert.doesNotThrow(() => assertLegacyHostCompatible(peer));
 });

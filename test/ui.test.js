@@ -96,12 +96,13 @@ test("agents result renderer tolerates malformed native boundary values", () => 
 });
 
 test("agents tool call shell stays invisible so only the result card is shown", () => {
-  const output = renderAgentsCall({ action: "send", message: "hello" }, theme, {
+  const call = renderAgentsCall({ action: "send", message: "hello" }, theme, {
     executionStarted: true,
     expanded: false,
-  }).render(120);
+  });
 
-  assert.deepEqual(output, []);
+  call.invalidate();
+  assert.deepEqual(call.render(120), []);
 });
 
 test("expanded cards render all body lines without truncation", () => {
@@ -648,4 +649,34 @@ test("multiline aborted cards keep every rendered line inside the border", () =>
   assert.match(output, /Aborted by: user in that session\./);
 
   assert.match(output, /Request: Count from 1 to 1000/);
+});
+
+test("cards preserve terminal geometry through repeated narrow and wide resizes", () => {
+  const component = renderAgentsResult(
+    {
+      content: [{ type: "text", text: "A completed answer with Unicode 🧪 and enough text to wrap repeatedly." }],
+      details: {
+        kind: "send",
+        status: "done",
+        async: true,
+        agentName: "builder",
+        sessionId: "019ecd34-898f-72fa-a885-41b783c0680d",
+        answer: "A completed answer with Unicode 🧪 and enough text to wrap repeatedly.",
+        activities: Array.from({ length: 25 }, (_, index) => ({
+          type: "tool",
+          name: "write",
+          summary: `nested/path/result-${index}.json`,
+          status: "done",
+        })),
+        startedAt: Date.now() - 3_600_000,
+        completedAt: Date.now(),
+      },
+    },
+    { expanded: true, isPartial: false },
+    theme,
+    { args: {}, isError: false },
+  );
+
+  for (const width of [24, 40, 80, 160, 32, 120])
+    for (const line of component.render(width)) assert.equal(terminalTextWidth(line), width, `${width}: ${line}`);
 });

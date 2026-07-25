@@ -146,6 +146,34 @@ test("live refresh repaints timers without remounting its widget", async () => {
   assert.deepEqual(calls.at(-1), [`${LIVE_REFRESH_WIDGET_KEY}:timer`, undefined, { placement: "aboveEditor" }]);
 });
 
+test("live timer cadence never catches up with subsecond repaint bursts", async () => {
+  const ticks = [];
+  const tui = { requestRender: () => ticks.push(performance.now()) };
+  const stop = startLiveRefresh(
+    {
+      mode: "tui",
+      ui: { setWidget: (_key, factory) => factory?.(tui, {}) },
+    },
+    runtime,
+    "steady-cadence",
+    { pulseIntervalMs: 250, trackLiveCards: false },
+  );
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const blockedUntil = performance.now() + 800;
+    while (performance.now() < blockedUntil) {}
+    const resumedAt = performance.now();
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    const resumedTicks = ticks.filter((tick) => tick >= resumedAt);
+
+    assert.ok(resumedTicks.length >= 3);
+    assert.ok(resumedTicks.slice(1).every((tick, index) => tick - resumedTicks[index] >= 200));
+  } finally {
+    stop();
+  }
+});
+
 test("live card lookup contains stale session-manager failures", () => {
   clearLiveCardDetails();
   setLiveCardDetails({
@@ -445,6 +473,26 @@ test("live card updates stay in the visible panel without clearing terminal scro
     tui.stop();
     clearLiveCardDetails({ cardId });
   }
+});
+
+test("bounded activity cards retain the exact hidden activity count", () => {
+  const card = renderCard({
+    kind: "send",
+    status: "running",
+    live: true,
+    message: "Long-running delegation",
+    startedAt: Date.now() - 1_000,
+    updatedAt: Date.now(),
+    activityCount: 20_000,
+    activities: Array.from({ length: 100 }, (_, index) => ({
+      id: `tool-${index}`,
+      type: "tool",
+      name: "edit",
+      summary: `file-${index}.ts`,
+    })),
+  });
+
+  assert.match(card.render(100).join("\n"), /\[\+19991 activities\]/);
 });
 
 function renderCard(details) {

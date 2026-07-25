@@ -78,6 +78,7 @@ export function resolveSessionReference(sessions: UnknownRecord[], reference: un
 }
 
 const persistedSummaryCache = new Map();
+const PERSISTED_SUMMARY_CACHE_CAPACITY = 4_096;
 
 export const listSessionSkeletonsEffect = Effect.fn("SessionDirectory.listSkeletons")(function* (
   sessionDir: string | undefined,
@@ -107,6 +108,27 @@ export const listSessionSkeletonsEffect = Effect.fn("SessionDirectory.listSkelet
         allMessagesText: `${id} ${pathName}`,
       };
     });
+});
+
+export const listAllSessionSkeletonsEffect = Effect.fn("SessionDirectory.listAllSkeletons")(function* (
+  sessionsDir: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const names = yield* fileSystem.readDirectory(sessionsDir).pipe(Effect.orElseSucceed(() => []));
+  const directories = yield* Effect.filter(
+    names.map((name) => path.join(sessionsDir, name)),
+    (entry) =>
+      fileSystem.stat(entry).pipe(
+        Effect.map((info) => info.type === "Directory"),
+        Effect.orElseSucceed(() => false),
+      ),
+    { concurrency: "unbounded" },
+  );
+  const sessions = yield* Effect.forEach(directories, (directory) => listSessionSkeletonsEffect(directory, directory), {
+    concurrency: "unbounded",
+  });
+
+  return sessions.flat().sort((left, right) => right.modified.getTime() - left.modified.getTime());
 });
 
 function sessionIdFromFileName(name: string) {
@@ -142,9 +164,9 @@ export function summarizeSession(session: UnknownRecord, options: UnknownRecord 
     parentSessionPath: session.parentSessionPath,
     name: session.name,
     firstMessage: persisted.firstUserMessage ?? session.firstMessage,
-    lastMessage: persisted.lastUserMessage ?? session.name ?? session.firstMessage,
+    lastMessage: persisted.lastUserMessage ?? session.lastMessage ?? session.name ?? session.firstMessage,
     modified: session.modified,
-    agentName: persisted.agentName,
+    agentName: persisted.agentName ?? session.agentName,
   };
 }
 
@@ -452,7 +474,7 @@ function readPersistedSessionSummary(filePath: string, modified?: string | numbe
   }
 }
 
-function prunePersistedSummaryCache(maxEntries = 500) {
+function prunePersistedSummaryCache(maxEntries = PERSISTED_SUMMARY_CACHE_CAPACITY) {
   if (persistedSummaryCache.size <= maxEntries) return;
   for (const key of persistedSummaryCache.keys()) {
     persistedSummaryCache.delete(key);

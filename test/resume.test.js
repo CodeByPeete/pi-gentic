@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { Duration, Effect, Schedule, Stream } from "effect";
 import { deleteRuntimeSession, loadPiCodingAgentPeer, setRuntimeSession } from "../dist/pi-host.js";
-import { decorateResumeSelector, installResumeBridge, warmResumeCache } from "../dist/resume.js";
+import { decorateResumeSelector, installResumeBridge, visibleSessionMembership } from "../dist/resume.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
 import { listSessionSkeletonsEffect } from "../dist/sessions.js";
 
@@ -103,21 +104,6 @@ function nativeSelector() {
   return { component, list, calls };
 }
 
-test("resume cache warming contains native list failures", async () => {
-  const peer = await loadPiCodingAgentPeer();
-  const nativeList = peer.SessionManager.list;
-  peer.SessionManager.list = async () => {
-    throw new Error("list failed");
-  };
-
-  try {
-    await warmResumeCache(undefined);
-    await warmResumeCache(process.cwd());
-  } finally {
-    peer.SessionManager.list = nativeList;
-  }
-});
-
 test("resume decorator builds on native session loading, filtering, and rendering", () => {
   const { dir, file } = writeSession("builder");
   const { component, list, calls } = nativeSelector();
@@ -139,7 +125,8 @@ test("resume decorator builds on native session loading, filtering, and renderin
       },
     ]);
     list.filterSessions("builder");
-    const output = list.render(120).join("\n");
+    list.showPath = true;
+    const output = list.render(200).join("\n");
 
     assert.equal(calls.setSessions, 1);
     assert.ok(calls.filterSessions >= 2);
@@ -238,10 +225,111 @@ test("resume decorator searches agent metadata and updates live timers", async (
   }
 });
 
-test("resume decorator opens 500-session lists without synchronous enrichment", async () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-resume-500-"));
+test("Effect file watching emits live session membership changes", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-membership-watch-"));
+  const runtime = createExtensionRuntime();
+  const changes = runtime.runPromise(
+    visibleSessionMembership({
+      sessionManager: { getCwd: () => dir, getSessionDir: () => dir },
+    }).pipe(Stream.take(2), Stream.runCollect),
+  );
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const id = "019f1111-aaaa-7000-8000-000000000098";
+    const file = path.join(dir, `2026-07-13T21-00-00-000Z_${id}.jsonl`);
+    writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id, cwd: dir })}\n`);
+    const emissions = [...(await changes)];
+
+    assert.equal(emissions[0].length, 0);
+    assert.equal(emissions[1][0]?.path, file);
+  } finally {
+    await runtime.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Effect membership streams contain missing and stale visible scopes", async () => {
+  const runtime = createExtensionRuntime();
+
+  try {
+    const missing = await runtime.runPromise(
+      visibleSessionMembership({
+        sessionManager: { getCwd: () => process.cwd(), getSessionDir: () => undefined },
+      }).pipe(Stream.runCollect),
+    );
+    const stale = await runtime.runPromise(
+      visibleSessionMembership({
+        sessionManager: {
+          getCwd: () => {
+            throw new Error("stale context");
+          },
+        },
+      }).pipe(Stream.runCollect),
+    );
+
+    assert.deepEqual([...missing], [[]]);
+    assert.deepEqual([...stale], [[]]);
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+test("an open resume selector reconciles added and removed sessions without reopening", async () => {
+  const { component, list } = nativeSelector();
+  const runtime = createExtensionRuntime();
+  const first = {
+    id: "019f1111-aaaa-7000-8000-000000000001",
+    path: "/sessions/first.jsonl",
+    cwd: "/project",
+    created: new Date(1),
+    modified: new Date(1),
+    firstMessage: "First",
+  };
+  const second = {
+    ...first,
+    id: "019f1111-aaaa-7000-8000-000000000002",
+    path: "/sessions/second.jsonl",
+    created: new Date(2),
+    modified: new Date(2),
+    firstMessage: "Second",
+  };
+  let membership = [first];
+  const dispose = decorateResumeSelector(
+    component,
+    () => {},
+    testTheme,
+    runtime,
+    Stream.fromEffectSchedule(
+      Effect.sync(() => membership),
+      Schedule.spaced(Duration.millis(50)),
+    ),
+  );
+
+  try {
+    list.setSessions([first], false);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    membership = [second, first];
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    assert.deepEqual(
+      list.allSessions.map((session) => session.path),
+      [second.path, first.path],
+    );
+    membership = [];
+    for (let attempts = 0; list.allSessions.length > 0 && attempts < 20; attempts++)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(list.allSessions, []);
+  } finally {
+    dispose();
+    await runtime.dispose();
+  }
+});
+
+test("resume decorator opens 1000-session lists without synchronous enrichment", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-resume-1000-"));
   const payload = "x".repeat(1_000);
-  const sessions = Array.from({ length: 500 }, (_, index) => {
+  const sessions = Array.from({ length: 1_000 }, (_, index) => {
     const id = `019f${String(index).padStart(4, "0")}-aaaa-7000-8000-${String(index).padStart(12, "0")}`;
     const file = path.join(dir, `${id}.jsonl`);
     const messages = Array.from({ length: 10 }, (__, messageIndex) =>
@@ -282,6 +370,9 @@ test("resume decorator opens 500-session lists without synchronous enrichment", 
     };
   });
   const { component, list } = nativeSelector();
+  list.sortMode = "threaded";
+  list.nameFilter = "all";
+  list.searchInput.getValue = () => "";
   const dispose = decorateResumeSelector(component, undefined, testTheme);
   const runtime = createExtensionRuntime();
 
@@ -293,12 +384,14 @@ test("resume decorator opens 500-session lists without synchronous enrichment", 
     const durationMs = performance.now() - startedAt;
     const decorationMs = performance.now() - loadedAt;
 
-    assert.equal(skeletons.length, 500);
-    assert.equal(list.allSessions.length, 500);
+    assert.equal(skeletons.length, 1_000);
+    assert.equal(list.allSessions.length, 1_000);
+    assert.equal(list.filteredSessions.length, 1_000);
+    assert.equal(list.filteredSessions[0].session.firstMessage, "Session 999");
     assert.ok(decorationMs < 750, `Expected decoration under 750ms, took ${decorationMs.toFixed(1)}ms.`);
     assert.ok(
       durationMs < 1_200,
-      `Expected the 500-session selector to open under 1200ms, took ${durationMs.toFixed(1)}ms.`,
+      `Expected the 1000-session selector to open under 1200ms, took ${durationMs.toFixed(1)}ms.`,
     );
   } finally {
     dispose();
@@ -340,6 +433,11 @@ test("resume decorator rejects incompatible selectors without mutating them", ()
 test("resume session cache reuses unchanged native results and invalidates changed files", async () => {
   const { dir, file } = writeSession("builder");
   const missDir = mkdtempSync(path.join(tmpdir(), "pi-gentic-resume-miss-"));
+  const agentDir = mkdtempSync(path.join(tmpdir(), "pi-gentic-resume-agent-"));
+  const globalSessionDir = path.join(agentDir, "sessions", "project");
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  mkdirSync(globalSessionDir, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = agentDir;
   const peer = await loadPiCodingAgentPeer();
   const SessionManager = peer.SessionManager;
   const nativeList = SessionManager.list;
@@ -398,34 +496,62 @@ test("resume session cache reuses unchanged native results and invalidates chang
 
     for (let index = 1; index <= 101; index++) {
       const sessionId = `019f${index.toString(16).padStart(4, "0")}-aaaa-7000-8000-${index.toString(16).padStart(12, "0")}`;
-      writeFileSync(
-        path.join(dir, `2026-07-13T21-00-00-000Z_${sessionId}.jsonl`),
-        `${JSON.stringify({
-          type: "session",
-          version: 3,
-          id: sessionId,
-          timestamp: "2026-07-13T21:00:00.000Z",
-          cwd: dir,
-        })}\n`,
-      );
+      const header = `${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: "2026-07-13T21:00:00.000Z",
+        cwd: dir,
+      })}\n`;
+      const fileName = `2026-07-13T21-00-00-000Z_${sessionId}.jsonl`;
+      writeFileSync(path.join(dir, fileName), header);
+      writeFileSync(path.join(globalSessionDir, fileName), header);
     }
     delayNativeList = true;
     const skeletons = await SessionManager.list(dir, dir);
+    const allSkeletons = await SessionManager.listAll(dir);
+    const globalSkeletons = await SessionManager.listAll();
+    const concurrentStartedAt = performance.now();
+    const concurrentSkeletons = await SessionManager.list(dir, dir);
+    const concurrentMs = performance.now() - concurrentStartedAt;
 
     assert.equal(skeletons.length, 101);
+    assert.equal(allSkeletons.length, 101);
+    assert.equal(globalSkeletons.length, 101);
+    assert.equal(concurrentSkeletons.length, 101);
     assert.match(String(skeletons[0].firstMessage), /^Session /);
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.ok(concurrentMs < 100, `Pending cache blocked resume for ${concurrentMs.toFixed(1)}ms.`);
     delayNativeList = false;
-    const hydrated = await SessionManager.list(dir, dir);
+    let hydrated = skeletons;
+    for (let attempts = 0; hydrated[0]?.firstMessage !== "(no messages)" && attempts < 50; attempts++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      hydrated = await SessionManager.list(dir, dir);
+    }
 
     assert.equal(hydrated.length, 101);
+    assert.equal(hydrated[0].firstMessage, "(no messages)");
     await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(loads, 5);
+    assert.equal(loads, 3);
+
+    const newSessionId = "019f0066-aaaa-7000-8000-000000000066";
+    writeFileSync(
+      path.join(dir, `2026-07-13T21-01-00-000Z_${newSessionId}.jsonl`),
+      `${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: newSessionId,
+        timestamp: "2026-07-13T21:01:00.000Z",
+        cwd: dir,
+      })}\n`,
+    );
+    assert.equal((await SessionManager.list(dir, dir)).length, 102);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(loads, 3);
 
     rejectNativeList = true;
-    assert.equal((await SessionManager.list(dir, dir)).length, 101);
+    assert.equal((await SessionManager.list(dir, dir)).length, 102);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(loads, 6);
+    assert.equal(loads, 3);
     await assert.rejects(SessionManager.list(missDir, missDir), /native list unavailable/);
   } finally {
     SessionManager.list = nativeList;
@@ -433,6 +559,9 @@ test("resume session cache reuses unchanged native results and invalidates chang
     await runtime.dispose();
     rmSync(dir, { recursive: true, force: true });
     rmSync(missDir, { recursive: true, force: true });
+    rmSync(agentDir, { recursive: true, force: true });
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
   }
 });
 

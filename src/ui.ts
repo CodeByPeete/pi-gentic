@@ -393,7 +393,7 @@ export function startLiveRefresh(
     pulseFiber = runtime.runFork(
       Effect.sync(() => {
         if (options.shouldPulse?.() !== false) renderPulse();
-      }).pipe(Effect.repeat(Schedule.fixed(Duration.millis(interval)))),
+      }).pipe(Effect.repeat(Schedule.spaced(Duration.millis(interval)))),
     );
   }
 
@@ -660,6 +660,7 @@ export function renderAgentsResult(resultValue: unknown, optionsValue: unknown, 
         details.answer ??
         (details.kind === "send" && details.status === "done" ? firstText(result.content) : undefined),
       activities: details.activities ?? [],
+      activityCount: details.activityCount,
       startedAt:
         details.startedAt ??
         previousCard?.data?.startedAt ??
@@ -867,9 +868,10 @@ class AgentsCard {
       : [];
 
     if (activities.length === 0 || maxLines <= 0) return [];
-    const activityLimit = Math.max(0, maxLines - (activities.length > maxLines ? 1 : 0));
+    const activityCount = Math.max(activities.length, Number(this.data.activityCount ?? 0));
+    const activityLimit = Math.max(0, maxLines - (activityCount > maxLines ? 1 : 0));
     const visible = activityLimit > 0 ? activities.slice(-activityLimit) : [];
-    const hidden = activities.length - visible.length;
+    const hidden = activityCount - visible.length;
     const lines = hidden > 0 ? [this.muted(`├─ [+${hidden} activities]`)] : [];
 
     for (const activity of visible) {

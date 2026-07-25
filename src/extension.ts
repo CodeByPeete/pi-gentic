@@ -34,7 +34,7 @@ import { hostCompatibilityDiagnostics, installLiveSessionBridge, setActiveVisibl
 import { PiGenticOrchestrator } from "./orchestration.js";
 import type { PiApi, PiContext, UnknownRecord } from "./pi-types.js";
 import { createExtensionRuntime, shouldDisposeExtensionRuntime } from "./runtime/ExtensionRuntime.js";
-import { installResumeBridge, warmResumeCache } from "./resume.js";
+import { installResumeBridge } from "./resume.js";
 import { buildSessionTree, enrichSessionSummaries, findSessionSummary, sessionCompletionScope } from "./sessions.js";
 import {
   renderAgentsCall,
@@ -95,7 +95,6 @@ export default async function piGentic(pi: ExtensionAPI) {
     stopSessionLiveCardRefresh = startSessionLiveCardRefresh(ctx, runtime);
     completionContext.capture(ctx);
     reportDiagnostics(pi, ctx);
-    void warmResumeCache(ctx.sessionManager.getCwd?.() ?? ctx.cwd, ctx.sessionManager.getSessionDir?.());
     try {
       const defaultResult = await orchestrator.loadDefaultAgent(ctx, event);
 

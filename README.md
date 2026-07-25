@@ -216,7 +216,7 @@ A background send returns immediately and keeps the delegated task visible.
 
 Pi-gentic decorates Pi's native session selector with agent labels, running state, inactivity, short session ids, and parent-child relationships. Pi's standard search, sort, scope, rename, path, delete, and session switching behavior remains native.
 
-Large directories open from one fast filesystem snapshot. Native Pi summaries and persisted pi-gentic metadata are revalidated in the background, then applied to the open selector without blocking its first render. The 500-session regression gate covers both loading and decoration.
+Large directories open from one fast filesystem snapshot. The exact native Pi loader runs outside the TUI event loop, while Effect filesystem events add, enrich, or remove sessions in an already-open selector. The 500-session regression gate requires the first view within one second and a newly created session within 750 milliseconds.
 
 <img src="./docs/assets/resume.png" alt="Native resume selector with pi-gentic session details" width="900">
 
@@ -305,9 +305,9 @@ flowchart TD
 
 The extension host owns one scoped `ManagedRuntime`. Runtime metadata is observable through `SubscriptionRef`, background delegations are owned by `FiberMap`, native session enrichment is coalesced by `Cache`, and TUI cadence uses `Schedule`. Live repaint delays, timer pulses, and expiry are runtime-owned fibers. Git operations use scoped streams, timeouts, spans, redacted attributes, and metrics. Shutdown interrupts every owned fiber and releases runtime entries. The exact-version adapter under `src/infrastructure/pi/legacy-v0_82/` contains every private Pi 0.82 integration.
 
-Unknown host and persistence values are decoded once with Effect Schema. Card snapshots accept JSON values plus absent top-level fields; activity builders omit absent nested fields before persistence. This keeps stored snapshots valid without weakening their JSON contract.
+Unknown host, process, and persistence values are decoded once with Effect Schema. Card snapshots accept JSON values plus absent top-level fields. Long-running cards preserve the latest 100 activities and the exact hidden count, keeping persistence and rendering work bounded.
 
-The refactor baseline contained 10,769 TypeScript source lines. The current source contains 9,056, a 15.9% reduction, while expanding deterministic behavior coverage. `Prettier` with the repository configuration keeps that compact layout reproducible. The exhaustive sidebar mapping is recorded in [`docs/effect-feature-ledger.md`](docs/effect-feature-ledger.md).
+The refactor baseline contained 10,769 TypeScript source lines. The current source contains 9,192, a 14.6% reduction, while expanding deterministic behavior coverage. Capability parity limits deletion. `Prettier` keeps the layout reproducible, and the exhaustive sidebar mapping is recorded in [`docs/effect-feature-ledger.md`](docs/effect-feature-ledger.md).
 
 ---
 
@@ -464,7 +464,7 @@ Or install from a Git repository:
 pi install git+https://github.com/CodeByPeete/pi-gentic.git#v0.3.0
 ```
 
-Pi-gentic 0.3 supports the exact Pi peer version `0.82.0`. Startup fails with a compatibility diagnostic when the installed host version or required host capability differs. Recoverable compatibility, persistence, and stale-context failures are retained in a bounded structured diagnostic history.
+Pi-gentic 0.3 supports the exact Pi peer version `0.82.1`. Startup fails with a compatibility diagnostic when the installed host version or required host capability differs. Recoverable compatibility, persistence, and stale-context failures are retained in a bounded structured diagnostic history.
 
 Diagnostics never intentionally include raw prompts, returned answers, credentials, environment values, or full user paths. Pi-gentic does not send telemetry to an external service.
 

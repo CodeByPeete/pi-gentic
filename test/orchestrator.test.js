@@ -455,6 +455,14 @@ test("aborted async sends persist terminal failures after the caller extension b
     appendCustomEntry() {},
     appendCustomMessageEntry: (...args) => persistedMessages.push(args),
   };
+  const callerContext = {
+    cwd: process.cwd(),
+    get sessionManager() {
+      if (stale) throw new Error(staleContextError);
+      return callerSessionManager;
+    },
+    isIdle: () => true,
+  };
   const target = {
     agentName: "researcher",
     session: {
@@ -469,6 +477,7 @@ test("aborted async sends persist terminal failures after the caller extension b
       abort: async () => {
         targetAborted = true;
         rejectPrompt?.(new Error("Agent call aborted."));
+        throw new Error("Target abort cleanup failed.");
       },
     },
   };
@@ -490,11 +499,7 @@ test("aborted async sends persist terminal failures after the caller extension b
 
   try {
     await orchestrator.send(
-      {
-        cwd: process.cwd(),
-        sessionManager: callerSessionManager,
-        isIdle: () => true,
-      },
+      callerContext,
       { message: "Research Pi updates", async: true },
       { onSettled: markSettled, signal: controller.signal },
     );
@@ -1165,6 +1170,8 @@ test("orchestrator routes target, status, abort, and policy operations", async (
     },
   };
 
+  const model = { provider: "provider", id: "model" };
+  assert.equal(orchestrator.resolveModel({ modelRegistry: { find: () => model } }, "provider/model"), model);
   await assert.rejects(() => orchestrator.status(ctx), /sessionId.*required/);
   orchestrator.getOrOpenSession = async () => target;
   assert.equal((await orchestrator.status(ctx, sessionId)).sessionId, sessionId);
@@ -1245,6 +1252,9 @@ test("orchestrator creates native child and fork session runtimes", async () => 
 
     const forked = await orchestrator.createChildSession(ctx, { message: "fork child", fork: true }, {});
     assert.equal(forked.session.sessionManager, forkedManager);
+
+    const reopened = await orchestrator.createRuntimeForSessionManager(manager("registered-runtime"), process.cwd());
+    assert.equal(reopened.session.sessionManager.getSessionId(), "registered-runtime");
   } finally {
     Object.assign(peer.SessionManager, {
       create: originals.create,
@@ -1257,6 +1267,7 @@ test("orchestrator creates native child and fork session runtimes", async () => 
     });
     deleteRuntimeSession("created-child");
     deleteRuntimeSession("forked-child");
+    deleteRuntimeSession("registered-runtime");
   }
 });
 
@@ -1475,14 +1486,18 @@ test("worktree preparation uses cwd as folder and empty worktree as branch from 
   const repo = createGitRepo();
   const worktreeParent = mkdtempSync(path.join(tmpdir(), "pi-gentic-worktree-parent-"));
   const worktree = path.join(worktreeParent, "task-branch");
+  const runtime = createExtensionRuntime();
+  const orchestrator = new PiGenticOrchestrator({}, runtime);
 
-  const resolved = await prepareWorktree({
-    repoCwd: repo,
-    message: "Implement task",
-    cwd: worktree,
-    worktree: "",
-    allowedWorktreeRoots: [worktreeParent],
-  });
+  const resolved = await orchestrator.resolveSendCwd(
+    { cwd: repo },
+    {
+      message: "Implement task",
+      cwd: worktree,
+      worktree: "",
+      allowedWorktreeRoots: [worktreeParent],
+    },
+  );
 
   assert.equal(resolved, worktree);
 
@@ -1518,6 +1533,7 @@ test("worktree preparation uses cwd as folder and empty worktree as branch from 
   assert.equal(defaultWorktree.startsWith(path.join(repo, ".agentfiles", "worktrees")), true);
 
   assert.equal(existsSync(path.join(defaultWorktree, ".git")), true);
+  await runtime.dispose();
 });
 
 test("worktree preparation can use an explicit absolute source repository", async () => {
@@ -1618,6 +1634,14 @@ test("abort actor is always defined for caller and agent sessions", () => {
     }),
     "[researcher] agent",
   );
+
+  const staleContext = {};
+  Object.defineProperty(staleContext, "sessionManager", {
+    get() {
+      throw new Error(staleContextError);
+    },
+  });
+  assert.equal(abortActor(staleContext), "caller session");
 });
 
 test("aborted child outcomes are delivered back so parent sessions can continue", async () => {
@@ -1846,6 +1870,32 @@ test("activity monitors normalize every native progress event", () => {
       { type: "tool", status: "done" },
     ],
   );
+});
+
+test("activity projection stays responsive through 20,000 unique tool events", () => {
+  let latest;
+  const monitor = createSessionActivityMonitor({ status: "running" }, (details) => {
+    latest = details;
+    return details;
+  });
+  const startedAt = performance.now();
+
+  for (let index = 0; index < 20_000; index++)
+    monitor.observe({
+      type: "tool_execution_end",
+      toolCallId: `stress-${index}`,
+      toolName: "edit",
+      result: { content: [{ text: "done" }] },
+      isError: false,
+    });
+
+  const durationMs = performance.now() - startedAt;
+  assert.equal(latest.activityCount, 20_000);
+  assert.equal(latest.activities.length, 100);
+  assert.equal(latest.activities[0].id, "stress-19900");
+  assert.equal(latest.activities.at(-1).id, "stress-19999");
+  assert.ok(JSON.stringify(latest).length < 30_000);
+  assert.ok(durationMs < 500, `Expected 20,000 activities under 500ms, took ${durationMs.toFixed(1)}ms.`);
 });
 
 test("activity monitors preserve the completed answer in terminal card state", () => {

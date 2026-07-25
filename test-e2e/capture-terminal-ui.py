@@ -567,10 +567,10 @@ def capture_completed_card_answer():
         stop(proc)
 
 
-def capture_resume_500_sessions():
+def capture_resume_1000_sessions():
     reset_output(clear_artifacts=False)
     start = datetime.datetime(2026, 7, 23, tzinfo=datetime.timezone.utc)
-    for index in range(500):
+    for index in range(1000):
         session_id = f"019f{index:04x}-aaaa-7000-8000-{index:012x}"
         timestamp = start + datetime.timedelta(seconds=index)
         filename_timestamp = timestamp.strftime("%Y-%m-%dT%H-%M-%S-000Z")
@@ -582,27 +582,69 @@ def capture_resume_500_sessions():
         fixture.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
 
     proc = spawn()
-    started_at = time.monotonic()
     try:
+        wait_for("Pi startup", lambda text: "[Extensions]" in text and "extension.js" in text, timeout=10)
+        started_at = time.monotonic()
         proc.write("/resume\r")
         wait_for(
-            "500-session resume first render",
-            lambda text: "Resume Session" in text and "019f01f3" in text,
+            "1000-session resume first render",
+            lambda text: "Resume Session" in text and "019f03e7" in text,
             timeout=10,
         )
         first_render_ms = round((time.monotonic() - started_at) * 1000, 1)
         wait_for(
-            "500-session resume enrichment",
-            lambda text: "Fixture session 499" in text,
+            "1000-session resume enrichment",
+            lambda text: "Fixture session 999" in text,
             timeout=20,
         )
         enriched_ms = round((time.monotonic() - started_at) * 1000, 1)
-        if first_render_ms >= 2000:
-            raise AssertionError(f"500-session resume first render took {first_render_ms}ms")
-        screenshot = render_png("resume-500-sessions-terminal.png")
-        evidence = OUTPUT / "resume-500-sessions-check.txt"
+        if first_render_ms >= 1000:
+            raise AssertionError(f"1000-session resume first render took {first_render_ms}ms")
+
+        fresh_id = "019f0400-aaaa-7000-8000-000000000400"
+        fresh_timestamp = start + datetime.timedelta(seconds=1000)
+        fresh_file = SESSION_DIR / f"{fresh_timestamp.strftime('%Y-%m-%dT%H-%M-%S-000Z')}_{fresh_id}.jsonl"
+        fresh_file.write_text(
+            "\n".join(
+                json.dumps(entry)
+                for entry in [
+                    {"type": "session", "version": 3, "id": fresh_id, "timestamp": fresh_timestamp.isoformat().replace("+00:00", "Z"), "cwd": str(INTERACTIVE_WORK_DIR)},
+                    {"type": "message", "message": {"role": "user", "content": "Fresh session during runtime"}},
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        fresh_started_at = time.monotonic()
+        fresh_text = wait_for("fresh runtime session in open resume", lambda text: "Fresh session during runtime" in text, timeout=5)
+        if "Fixture session 999" not in fresh_text:
+            raise AssertionError("Live resume membership refresh replaced enriched native session metadata")
+        fresh_session_ms = round((time.monotonic() - fresh_started_at) * 1000, 1)
+        if fresh_session_ms >= 750:
+            raise AssertionError(f"Fresh session appeared after {fresh_session_ms}ms")
+
+        reopen_ms = []
+        for attempt in range(3):
+            proc.write("\x1b")
+            wait_for(f"close resume {attempt + 1}", lambda text: "Resume Session" not in text, timeout=5)
+            reopened_at = time.monotonic()
+            proc.write("/resume\r")
+            wait_for(
+                f"reopen 1000-session resume {attempt + 1}",
+                lambda text: "Resume Session" in text
+                and "Fixture session 999" in text
+                and "Fresh session during runtime" in text,
+                timeout=5,
+            )
+            elapsed = round((time.monotonic() - reopened_at) * 1000, 1)
+            reopen_ms.append(elapsed)
+            if elapsed >= 1000:
+                raise AssertionError(f"1000-session resume reopen {attempt + 1} took {elapsed}ms")
+
+        screenshot = render_png("resume-1000-sessions-terminal.png")
+        evidence = OUTPUT / "resume-1000-sessions-check.txt"
         evidence.write_text(
-            f"session_count=500\nfirst_render_ms={first_render_ms}\nenriched_ms={enriched_ms}\n",
+            f"session_count=1001\nfirst_render_ms={first_render_ms}\nenriched_ms={enriched_ms}\nfresh_session_ms={fresh_session_ms}\nreopen_max_ms={max(reopen_ms)}\n",
             encoding="utf-8",
         )
         print(screenshot)
@@ -707,7 +749,7 @@ def main():
     global stop_reader, screen, stream
     if "--deterministic" in sys.argv:
         capture_completed_card_answer()
-        capture_resume_500_sessions()
+        capture_resume_1000_sessions()
         return
     if os.environ.get("PI_E2E_ABORT_ONLY") == "1":
         capture_abort_after_session_switch()

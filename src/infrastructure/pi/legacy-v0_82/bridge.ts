@@ -218,6 +218,7 @@ async function abortCalls(calls: AgentCall[], options: LegacyRecord = {}) {
   for (const call of calls) {
     if (!call || state.calls.has(call.id)) continue;
     state.calls.add(call.id);
+    getLiveRuntimeState().activeCalls.delete(call.id);
 
     if (call.targetSessionId && !state.sessions.has(call.targetSessionId)) {
       state.sessions.add(call.targetSessionId);
@@ -276,7 +277,7 @@ export function hostCompatibilityDiagnostics() {
   return [...getLiveRuntimeState().compatibilityDiagnostics];
 }
 
-const LEGACY_HOST_VERSION = "0.82.0";
+const LEGACY_HOST_VERSION = "0.82.1";
 
 export function assertLegacyHostCompatible(peer: PiCodingAgentPeer) {
   if (peer.version !== LEGACY_HOST_VERSION)
@@ -736,83 +737,10 @@ function installInteractiveLiveSessionHydrationBridge(
   InteractiveMode.prototype.renderCurrentSessionState = function renderCurrentSessionStateWithLiveHydration(
     ...args: unknown[]
   ) {
-    if (renderVisibleLiveSessionState(this)) return;
-
     const result = state.hostRenderCurrentSessionState?.apply(this, args);
     replayCurrentStreamingMessage(this);
-
     return result;
   };
-}
-
-export function renderVisibleLiveSessionState(mode: LegacyRecord) {
-  const session = mode?.session;
-  const liveMessages = liveAgentMessages(session);
-
-  if (session?.isStreaming !== true || liveMessages.length === 0 || typeof mode.renderSessionContext !== "function")
-    return false;
-
-  resetVisibleSessionState(mode);
-  const sessionContext = safeSessionContext(session.sessionManager);
-  const persistedMessages = Array.isArray(sessionContext.messages) ? sessionContext.messages : [];
-  const hydration = reconcileVisibleSessionMessages(persistedMessages, liveMessages);
-
-  mode.renderSessionContext(
-    { ...sessionContext, messages: hydration.renderedMessages },
-    { updateFooter: true, populateHistory: true },
-  );
-
-  for (const message of hydration.liveOnlyMessages) replayLiveOnlyMessage(mode, message);
-
-  for (const toolCall of unresolvedToolCalls(liveMessages)) replayToolExecutionStart(mode, toolCall);
-
-  return true;
-}
-
-function reconcileVisibleSessionMessages(persistedMessages: LegacyRecord[], liveMessages: LegacyRecord[]) {
-  const renderedMessages: LegacyRecord[] = [];
-  let liveIndex = 0;
-
-  for (const persistedMessage of persistedMessages) {
-    const liveMessage = liveMessages[liveIndex];
-
-    if (liveMessage && messageSignature(persistedMessage) === messageSignature(liveMessage)) {
-      renderedMessages.push(persistedMessage);
-      liveIndex += 1;
-      continue;
-    }
-
-    if (isPersistedUiMessage(persistedMessage)) renderedMessages.push(persistedMessage);
-  }
-
-  return {
-    renderedMessages,
-    liveOnlyMessages: liveMessages.slice(liveIndex),
-  };
-}
-
-function isPersistedUiMessage(message: LegacyRecord) {
-  return message?.role === "custom";
-}
-
-function resetVisibleSessionState(mode: LegacyRecord) {
-  mode.chatContainer?.clear?.();
-  mode.pendingMessagesContainer?.clear?.();
-  mode.compactionQueuedMessages = [];
-  mode.streamingComponent = undefined;
-  mode.streamingMessage = undefined;
-  mode.pendingTools?.clear?.();
-}
-
-function replayLiveOnlyMessage(mode: LegacyRecord, message: LegacyRecord) {
-  if (typeof mode.handleEvent !== "function") return;
-
-  if (message?.role === "assistant") {
-    replayStreamingMessage(mode, message);
-    return;
-  }
-
-  void mode.handleEvent({ type: "message_start", message });
 }
 
 function replayCurrentStreamingMessage(mode: LegacyRecord) {
@@ -830,84 +758,6 @@ function replayCurrentStreamingMessage(mode: LegacyRecord) {
 function replayStreamingMessage(mode: LegacyRecord, message: LegacyRecord) {
   void mode.handleEvent({ type: "message_start", message });
   void mode.handleEvent({ type: "message_update", message });
-}
-
-function replayToolExecutionStart(mode: LegacyRecord, toolCall: LegacyRecord) {
-  if (typeof mode.handleEvent !== "function") return;
-  void mode.handleEvent({
-    type: "tool_execution_start",
-    toolCallId: toolCall.id,
-    toolName: toolCall.name,
-    args: toolCall.arguments ?? {},
-  });
-}
-
-function liveAgentMessages(session: LegacyRecord) {
-  const agentState = session?.state ?? session?.agent?.state;
-  const messages = Array.isArray(agentState?.messages) ? agentState.messages : [];
-  const streamingMessage = agentState?.streamingMessage;
-
-  return streamingMessage && !messages.includes(streamingMessage) ? [...messages, streamingMessage] : messages;
-}
-
-function safeSessionContext(sessionManager: LegacyRecord) {
-  try {
-    const context = sessionManager?.buildSessionContext?.();
-
-    return context && typeof context === "object" ? context : { messages: [] };
-  } catch (error) {
-    reportRuntimeDiagnostic("legacy-session-context", error);
-    return { messages: [] };
-  }
-}
-
-function messageSignature(message: LegacyRecord) {
-  if (!message || typeof message !== "object") return "";
-
-  return JSON.stringify({
-    role: message.role,
-    customType: message.customType,
-    toolCallId: message.toolCallId,
-    toolName: message.toolName,
-    text: messageText(message),
-    toolCalls: messageToolCalls(message).map((toolCall) => ({
-      id: toolCall.id,
-      name: toolCall.name,
-    })),
-  });
-}
-
-function messageText(message: LegacyRecord) {
-  const content = message?.content;
-
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-
-  return content
-    .filter((part) => part?.type === "text")
-    .map((part) => part.text ?? "")
-    .join("\n");
-}
-
-function messageToolCalls(message: LegacyRecord) {
-  const content = message?.content;
-
-  if (!Array.isArray(content)) return [];
-
-  return content.filter((part) => part?.type === "toolCall" && part.id);
-}
-
-function unresolvedToolCalls(messages: LegacyRecord[]) {
-  const unresolved = new Map<string, LegacyRecord>();
-
-  for (const message of messages) {
-    if (message?.role === "assistant")
-      for (const toolCall of messageToolCalls(message)) unresolved.set(toolCall.id, toolCall);
-
-    if (message?.role === "toolResult" && message.toolCallId) unresolved.delete(message.toolCallId);
-  }
-
-  return [...unresolved.values()];
 }
 
 export function livePath(sessionId: unknown) {

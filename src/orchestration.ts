@@ -100,7 +100,6 @@ import {
 
 type Configuration = ReturnType<typeof loadConfiguration>;
 type SessionPolicy = ReturnType<typeof resolveSessionPolicy>;
-type PiModel = NonNullable<PiContext["model"]>;
 
 interface SendCompletionOptions {
   async?: boolean;
@@ -180,9 +179,14 @@ interface CallerInvocationParameters {
 }
 
 export function abortActor(ctx: PiContext) {
-  const agentName = getActiveState(ctx.sessionManager).agentName;
+  try {
+    const agentName = getActiveState(ctx.sessionManager).agentName;
 
-  return agentName ? `[${agentName}] agent` : "caller session";
+    return agentName ? `[${agentName}] agent` : "caller session";
+  } catch (error) {
+    reportRuntimeDiagnostic("abort-actor", error);
+    return "caller session";
+  }
 }
 
 export function shouldDeferSendCompletion({ async, awaitCompletion }: SendCompletionOptions = {}) {
@@ -755,22 +759,41 @@ export function isStaleExtensionContextError(error: unknown) {
   return getErrorMessage(error).includes("This extension ctx is stale");
 }
 
+const MAX_PERSISTED_ACTIVITIES = 100;
+
 export function createSessionActivityMonitor(
   baseDetails: UnknownRecord,
   publish: (details: UnknownRecord) => UnknownRecord,
 ) {
+  const initialActivities = Array.isArray(baseDetails.activities)
+    ? baseDetails.activities.filter(isRecord).slice(-MAX_PERSISTED_ACTIVITIES)
+    : [];
   const state: SendCardDetails & {
     activities: UnknownRecord[];
+    activityCount: number;
     updatedAt: number;
   } = {
     ...baseDetails,
-    activities: [],
+    activities: initialActivities,
+    activityCount: Math.max(Number(baseDetails.activityCount ?? 0), initialActivities.length),
     updatedAt: typeof baseDetails.updatedAt === "number" ? baseDetails.updatedAt : Date.now(),
+  };
+  const activityIndexes = new Map<unknown, number>();
+  const seenActivities = new Set(initialActivities.map(activityKey));
+  initialActivities.forEach((activity, index) => activityIndexes.set(activityKey(activity), index));
+  const recordActivities = (activities: unknown[]) => {
+    for (const activity of activities.filter(isRecord))
+      if (upsertActivity(state.activities, activity, activityIndexes, seenActivities, MAX_PERSISTED_ACTIVITIES))
+        state.activityCount += 1;
   };
   const publishState = (status = state.status, updates: UnknownRecord = {}) => {
     Object.assign(state, updates, { status });
+    const { activityCount, ...details } = state;
+    const activities = [...state.activities];
 
-    return publish({ ...state, activities: [...state.activities] });
+    return publish(
+      activityCount > activities.length ? { ...details, activities, activityCount } : { ...details, activities },
+    );
   };
   const touch = () => {
     state.updatedAt = Date.now();
@@ -793,14 +816,13 @@ export function createSessionActivityMonitor(
       const activity = eventToActivity(event);
 
       touch();
-      if (activity) upsertActivity(state.activities, activity);
+      if (activity) recordActivities([activity]);
       publishState("running");
     },
     finish(updates: UnknownRecord = {}) {
       const { activities = [], ...details } = updates;
 
-      state.activities = mergeActivities(state.activities, Array.isArray(activities) ? activities : []);
-
+      recordActivities(Array.isArray(activities) ? activities : []);
       return publishState("done", {
         ...details,
         completedAt: Date.now(),
@@ -808,7 +830,7 @@ export function createSessionActivityMonitor(
       });
     },
     stop(status: string, updates: UnknownRecord = {}) {
-      state.activities = mergeActivities(state.activities, Array.isArray(updates.activities) ? updates.activities : []);
+      recordActivities(Array.isArray(updates.activities) ? updates.activities : []);
 
       return publishState(status, {
         completedAt: Date.now(),
@@ -834,8 +856,8 @@ function recordRunResult(runtime: PiRuntimeSession, details: UnknownRecord) {
   return details;
 }
 
-function completeSessionActivities(monitor: { activities: UnknownRecord[] }, session: PiAgentSession) {
-  return mergeActivities(monitor.activities, collectSessionActivities(session));
+function completeSessionActivities(session: PiAgentSession) {
+  return collectSessionActivities(session);
 }
 
 export function collectSessionActivities(session: PiAgentSession) {
@@ -863,8 +885,9 @@ export function collectSessionActivities(session: PiAgentSession) {
 
 export function mergeActivities(...activityLists: unknown[][]) {
   const merged: UnknownRecord[] = [];
+  const indexes = new Map<unknown, number>();
 
-  for (const activity of activityLists.flat().filter(isRecord)) upsertActivity(merged, activity);
+  for (const activity of activityLists.flat().filter(isRecord)) upsertActivity(merged, activity, indexes);
 
   return merged;
 }
@@ -972,12 +995,33 @@ function assistantActivity(message: UnknownRecord) {
   return text ? { id: "assistant", type: "assistant", text } : undefined;
 }
 
-function upsertActivity(activities: UnknownRecord[], activity: UnknownRecord) {
-  const key = activity.id ?? `${activity.type}:${activity.name ?? ""}`;
-  const index = activities.findIndex((item: UnknownRecord) => (item.id ?? `${item.type}:${item.name ?? ""}`) === key);
+function upsertActivity(
+  activities: UnknownRecord[],
+  activity: UnknownRecord,
+  indexes: Map<unknown, number>,
+  seen?: Set<unknown>,
+  limit = Number.POSITIVE_INFINITY,
+) {
+  const key = activityKey(activity);
+  const index = indexes.get(key);
 
-  if (index === -1) activities.push(activity);
-  else activities[index] = { ...activities[index], ...activity };
+  if (index !== undefined) {
+    activities[index] = { ...activities[index], ...activity };
+    return false;
+  }
+  if (seen?.has(key)) return false;
+  seen?.add(key);
+  if (activities.length >= limit) {
+    indexes.delete(activityKey(activities.shift()!));
+    activities.forEach((value, activityIndex) => indexes.set(activityKey(value), activityIndex));
+  }
+  indexes.set(key, activities.length);
+  activities.push(activity);
+  return true;
+}
+
+function activityKey(activity: UnknownRecord) {
+  return activity.id ?? `${activity.type}:${activity.name ?? ""}`;
 }
 
 function messageText(message: UnknownRecord | undefined) {
@@ -1486,6 +1530,7 @@ export class PiGenticOrchestrator {
     if (input.agent) this.assertAgentAvailable(ctx, input.agent, config);
     const callerState = getActiveState(ctx.sessionManager);
     const callerAgent = callerState.agentName;
+    const callerActor = callerAgent ? `[${callerAgent}] agent` : "caller session";
     const defaults = this.resolvePolicy(ctx, config, callerState).agentsTool;
     const invokeDefaults = isRecord(defaults.invokeMeLater) ? defaults.invokeMeLater : {};
     const targetAsync = input.sessionId ? true : chooseBoolean(input.async, chooseBoolean(defaults.async, false));
@@ -1576,7 +1621,7 @@ export class PiGenticOrchestrator {
       aborting = true;
       try {
         target.lastAbort = {
-          actor: typeof options.actor === "string" ? options.actor : abortActor(ctx),
+          actor: typeof options.actor === "string" ? options.actor : callerActor,
           at: Date.now(),
         };
         if (options.skipSessionAbort !== targetSessionId) await target.session.abort();
@@ -1594,12 +1639,31 @@ export class PiGenticOrchestrator {
         await this.runtime.runPromise(Effect.flatMap(DelegationFibers, (fibers) => fibers.abort(delegationId)));
       },
     });
-    const abortFromSignal = () => void abortTarget({ actor: abortActor(ctx) });
+    const runAbort = (scope: string, operation: () => Promise<unknown>) => {
+      try {
+        this.runtime.runFork(
+          Effect.tryPromise({
+            try: operation,
+            catch: (cause) => AgentCallFailed.make({ message: getErrorMessage(cause), cause }),
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.sync(() => {
+                reportRuntimeDiagnostic(scope, error);
+              }),
+            ),
+          ),
+        );
+      } catch (error) {
+        reportRuntimeDiagnostic(scope, error);
+      }
+    };
+    const abortFromSignal = () => runAbort("delegation-signal-abort", () => abortTarget({ actor: callerActor }));
     callbacks.signal?.addEventListener?.("abort", abortFromSignal, {
       once: true,
     });
     const run = async (operationSignal?: AbortSignal) => {
-      const abortFromOperation = () => void abortAgentCall(activeCall.id, { actor: abortActor(ctx) });
+      const abortFromOperation = () =>
+        runAbort("delegation-operation-abort", () => abortAgentCall(activeCall.id, { actor: callerActor }));
       operationSignal?.addEventListener("abort", abortFromOperation, {
         once: true,
       });
@@ -1639,7 +1703,7 @@ export class PiGenticOrchestrator {
             target,
             monitor.finish({
               answer,
-              activities: completeSessionActivities(monitor, target.session),
+              activities: completeSessionActivities(target.session),
             }),
           );
 
@@ -1652,11 +1716,11 @@ export class PiGenticOrchestrator {
           outcome.status === "done"
             ? monitor.finish({
                 answer: outcome.text,
-                activities: completeSessionActivities(monitor, target.session),
+                activities: completeSessionActivities(target.session),
               })
             : monitor.stop(outcome.status, {
                 error: outcome.text,
-                activities: completeSessionActivities(monitor, target.session),
+                activities: completeSessionActivities(target.session),
               }),
         );
         const returnText =
@@ -1686,7 +1750,7 @@ export class PiGenticOrchestrator {
           target,
           monitor.stop(outcome.status, {
             error: outcome.text,
-            activities: completeSessionActivities(monitor, target.session),
+            activities: completeSessionActivities(target.session),
           }),
         );
         if (returnDelivery.kind === "callerMessage")
@@ -1983,7 +2047,7 @@ export class PiGenticOrchestrator {
   async applyAgentlessPolicyToNewSession(
     session: PiAgentSession,
     config: Configuration,
-    inheritedModel: PiModel | undefined,
+    inheritedModel: NonNullable<PiContext["model"]> | undefined,
   ) {
     const policy = await this.applyPolicyToAgentSession(session, config);
     await applyInheritedModel(session, policy, inheritedModel);

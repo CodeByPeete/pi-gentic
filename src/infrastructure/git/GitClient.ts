@@ -1,15 +1,12 @@
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Context, Effect, Layer, Metric, Redacted, Stream } from "effect";
+import { Context, Effect, Layer, Metric, Redacted } from "effect";
+import { ChildProcessSpawner } from "effect/unstable/process";
 import { GitCommandFailed } from "../../domain/errors.js";
+import { runProcess, type ProcessResult } from "../process/ProcessRunner.js";
 
 const gitCommands = Metric.counter("pi_gentic_git_commands", { incremental: true });
 const gitDuration = Metric.timer("pi_gentic_git_duration");
 
-export interface GitResult {
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}
+export type GitResult = ProcessResult;
 
 export class GitClient extends Context.Service<
   GitClient,
@@ -24,30 +21,9 @@ export class GitClient extends Context.Service<
 
       return {
         run: Effect.fn("GitClient.run")(function* (cwd: string, args: ReadonlyArray<string>) {
-          const command = ChildProcess.make("git", args, {
-            cwd,
-            forceKillAfter: "2 seconds",
-          });
-          const operation = Effect.scoped(
-            Effect.gen(function* () {
-              const handle = yield* command.pipe(
-                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-              );
-              const [stdout, stderr, exitCode] = yield* Effect.all(
-                [Stream.runCollect(handle.stdout), Stream.runCollect(handle.stderr), handle.exitCode],
-                { concurrency: "unbounded" },
-              );
-
-              return {
-                exitCode: Number(exitCode),
-                stdout: decodeBytes(stdout).trim(),
-                stderr: decodeBytes(stderr).trim(),
-              };
-            }),
-          ).pipe(Effect.timeout("30 seconds"));
-
           yield* Metric.update(gitCommands, 1);
-          const [duration, result] = yield* operation.pipe(
+          const [duration, result] = yield* runProcess("git", args, { cwd, timeout: "30 seconds" }).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
             Effect.withSpan("GitClient.run", {
               attributes: { args: args.join(" "), cwd: Redacted.make(cwd) },
             }),
@@ -68,19 +44,4 @@ export class GitClient extends Context.Service<
       };
     }),
   );
-}
-
-function decodeBytes(chunks: Iterable<Uint8Array>): string {
-  let length = 0;
-
-  for (const chunk of chunks) length += chunk.length;
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return new TextDecoder().decode(bytes);
 }

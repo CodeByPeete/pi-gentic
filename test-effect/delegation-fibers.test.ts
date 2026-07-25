@@ -20,5 +20,23 @@ describe("DelegationFibers", () => {
         assert.isFalse(yield* delegations.abort("missing"));
       }),
     );
+
+    it.effect("supervises high-volume concurrent delegations without identity collisions", () =>
+      Effect.gen(function* () {
+        const delegations = yield* DelegationFibers;
+        const identities = Array.from({ length: 100 }, (_, index) => `delegation-${index}`);
+        const fibers = yield* Effect.forEach(identities, (identity) => delegations.run(identity, Effect.never), {
+          concurrency: "unbounded",
+        });
+
+        assert.strictEqual(yield* delegations.size, identities.length);
+        const aborted = yield* Effect.forEach(identities, delegations.abort, { concurrency: "unbounded" });
+        const exits = yield* Effect.forEach(fibers, Fiber.await, { concurrency: "unbounded" });
+
+        assert.isTrue(aborted.every(Boolean));
+        assert.isTrue(exits.every((exit) => exit._tag === "Failure"));
+        assert.strictEqual(yield* delegations.size, 0);
+      }),
+    );
   });
 });

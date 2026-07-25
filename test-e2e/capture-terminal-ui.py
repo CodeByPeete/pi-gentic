@@ -8,21 +8,31 @@ import threading
 import time
 
 import pyte
-import winpty
 from PIL import Image, ImageDraw, ImageFont
 
-PI_HOME = pathlib.Path(__file__).resolve().parents[3]
+if os.name == "nt":
+    import winpty
+else:
+    import pexpect
+
 PACKAGE = pathlib.Path(__file__).resolve().parents[1]
 OUTPUT = PACKAGE / "test-e2e" / "output"
 SESSION_DIR = OUTPUT / "sessions"
 WORK_DIR = OUTPUT / "default-agent-work"
 INTERACTIVE_WORK_DIR = OUTPUT / "interactive-work"
-LAG_SESSION_SOURCE = PI_HOME / "agent" / "sessions" / "--C--Users-petro-Documents-Bewerbungen--" / "2026-06-11T19-02-42-430Z_019eb810-b1fe-7c14-b1f6-f78fbbfaed52.jsonl"
+LAG_SESSION_SOURCE = (
+    pathlib.Path(os.environ["PI_E2E_LAG_SESSION"])
+    if os.environ.get("PI_E2E_LAG_SESSION")
+    else None
+)
 LAG_SESSION_FILE = OUTPUT / "lag-session-019eb810.jsonl"
 RAW_LOG = OUTPUT / "terminal.raw.log"
 LAG_TIMING = OUTPUT / "lag-regression-tree-019eb810-timing.txt"
 NODE = shutil.which("node") or "node"
-PI_CLI = os.environ.get("PI_CLI", r"C:\Users\petro\AppData\Local\pi-managed\node_modules\@earendil-works\pi-coding-agent\dist\cli.js")
+PI_CLI = os.environ.get(
+    "PI_CLI",
+    str(PACKAGE / "node_modules" / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"),
+)
 COLS = int(os.environ.get("PI_E2E_COLS", "140"))
 ROWS = int(os.environ.get("PI_E2E_ROWS", "42"))
 
@@ -30,6 +40,25 @@ screen = pyte.Screen(COLS, ROWS)
 stream = pyte.ByteStream(screen)
 raw_chunks = []
 stop_reader = False
+
+
+def write_test_agents(root):
+    agents_dir = root / ".pi" / "extensions" / "pi-gentic" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    for name, skills in {
+        "researcher": "html, playwright-cli, report",
+        "reviewer": "report",
+    }.items():
+        (agents_dir / f"{name}.md").write_text(
+            "---\n"
+            f"name: {name}\n"
+            f"description: Deterministic {name} agent for terminal validation.\n"
+            "model: openai-codex/gpt-5.6-luna\n"
+            "thinking: high\n"
+            f"skills: {skills}\n"
+            "---\n",
+            encoding="utf-8",
+        )
 
 
 def reset_output():
@@ -42,9 +71,12 @@ def reset_output():
         shutil.rmtree(INTERACTIVE_WORK_DIR)
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
     INTERACTIVE_WORK_DIR.mkdir(parents=True, exist_ok=True)
+    LAG_SESSION_FILE.unlink(missing_ok=True)
     (WORK_DIR / ".pi" / "extensions" / "pi-gentic").mkdir(parents=True, exist_ok=True)
     (WORK_DIR / ".pi" / "extensions" / "pi-gentic" / "settings.json").write_text('{"defaultAgent":"reviewer"}', encoding="utf-8")
-    if LAG_SESSION_SOURCE.exists():
+    write_test_agents(WORK_DIR)
+    write_test_agents(INTERACTIVE_WORK_DIR)
+    if LAG_SESSION_SOURCE is not None and LAG_SESSION_SOURCE.exists():
         shutil.copyfile(LAG_SESSION_SOURCE, LAG_SESSION_FILE)
     for path in OUTPUT.glob("*.png"):
         path.unlink()
@@ -97,7 +129,16 @@ def color(name):
 
 
 def render_png(name):
-    font = ImageFont.truetype("C:/Windows/Fonts/consola.ttf", 16)
+    font_candidates = [
+        os.environ.get("PI_E2E_FONT"),
+        "C:/Windows/Fonts/consola.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    ]
+    font_path = next(
+        (path for path in font_candidates if path and pathlib.Path(path).exists()),
+        None,
+    )
+    font = ImageFont.truetype(font_path, 16) if font_path else ImageFont.load_default()
     cell_w = 9
     cell_h = 20
     margin = 8
@@ -125,10 +166,29 @@ def spawn(extra_args=None, cwd=INTERACTIVE_WORK_DIR):
         "COLORTERM": "truecolor",
         "PI_TUI_WRITE_LOG": str(OUTPUT / "pi-tui-write.log"),
     })
-    extension = os.environ.get("PI_E2E_EXTENSION")
-    extension_args = ["--no-extensions", "--extension", extension] if extension else []
+    extension = os.environ.get(
+        "PI_E2E_EXTENSION",
+        str(PACKAGE / "dist" / "extension.js"),
+    )
+    extension_args = ["--no-extensions", "--extension", extension]
     args = [NODE, PI_CLI, "--session-dir", str(SESSION_DIR), *extension_args, *(extra_args or [])]
-    proc = winpty.PtyProcess.spawn(args, cwd=str(cwd), env=env, dimensions=(ROWS, COLS))
+    if os.name == "nt":
+        proc = winpty.PtyProcess.spawn(
+            args,
+            cwd=str(cwd),
+            env=env,
+            dimensions=(ROWS, COLS),
+        )
+    else:
+        proc = pexpect.spawn(
+            args[0],
+            args[1:],
+            cwd=str(cwd),
+            env=env,
+            dimensions=(ROWS, COLS),
+            encoding="utf-8",
+            codec_errors="replace",
+        )
     thread = threading.Thread(target=reader, args=(proc,), daemon=True)
     thread.start()
     time.sleep(0.4)
@@ -171,6 +231,22 @@ def newest_child_session_file_containing(needle):
         except OSError:
             pass
     raise RuntimeError(f"No child session file contains {needle!r}")
+
+
+def completed_card_state(needle):
+    files = sorted(SESSION_DIR.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in files:
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                entry = json.loads(line)
+                if entry.get("customType") != "pi-gentic:card-state":
+                    continue
+                state = entry.get("data", {})
+                if needle in str(state.get("message", "")) and state.get("status") == "done":
+                    return state
+        except (OSError, json.JSONDecodeError):
+            pass
+    return None
 
 
 def child_session_has_assistant_text(needle):
@@ -313,7 +389,7 @@ def capture_unified_resume():
 
         proc.write("\x1b")
         time.sleep(0.8)
-        proc.write('/send resume-live-session use the bash tool to run python -c "import time; time.sleep(30)" before replying FINAL-resume-live-session --agent researcher --bg --no-invoke\r')
+        proc.write('/send resume-live-session use the bash tool to run python -c "import time; time.sleep(30)" before replying FINAL-resume-live-session --agent researcher --model openai-codex/gpt-5.6-luna --bg --no-invoke\r')
         wait_for("live child started", lambda text: "resume-live-session" in text and "Sent a message" in text, timeout=45)
         initial_inactivity = re.search(r"Inactive:\s+(\d+)s", screen_line("Inactive:"))
         if not initial_inactivity or int(initial_inactivity.group(1)) > 5:
@@ -394,7 +470,7 @@ def capture_scroll_safe_live_panel():
     try:
         token = "scroll-safe-live-panel"
         proc.write(
-            f'/send {token} use the bash tool to run python -c "import time; time.sleep(8)" before replying {token}-done --agent researcher --bg --no-invoke\r'
+            f'/send {token} use the bash tool to run python -c "import time; time.sleep(8)" before replying {token}-done --agent researcher --model openai-codex/gpt-5.6-luna --bg --no-invoke\r'
         )
         wait_for(
             "compact live panel",
@@ -492,7 +568,7 @@ def capture_completion_deduplication():
     try:
         proc.write("/agent researcher\r")
         wait_for("researcher loaded", lambda text: "Loaded researcher" in text, timeout=30)
-        proc.write(f"/send {request} --no-invoke\r")
+        proc.write(f"/send {request} --model openai-codex/gpt-5.6-luna --no-invoke\r")
         wait_for("single completion card", lambda text: "Agent answered." in text and receipt in text, timeout=180)
         child, _ = newest_child_session_file_containing(receipt)
         parent = parent_session_file(child)
@@ -520,7 +596,7 @@ def capture_abort_after_session_switch():
         proc.write("/agent researcher\r")
         wait_for("researcher loaded", lambda text: "Loaded researcher" in text, timeout=30)
         proc.write(
-            f'/send {token} use the bash tool to run python -c "import time; time.sleep(60)" before replying {token}-done --bg --no-invoke\r'
+            f'/send {token} use the bash tool to run python -c "import time; time.sleep(60)" before replying {token}-done --model openai-codex/gpt-5.6-luna --bg --no-invoke\r'
         )
         wait_for(
             "async child starts",
@@ -578,6 +654,9 @@ def capture_abort_after_session_switch():
 
 def main():
     global stop_reader, screen, stream
+    if "--deterministic" in sys.argv:
+        capture_completed_card_answer()
+        return
     if os.environ.get("PI_E2E_ABORT_ONLY") == "1":
         capture_abort_after_session_switch()
         return
@@ -600,11 +679,36 @@ def main():
         wait_for("researcher loaded", lambda text: "Loaded researcher" in text and "skills:" in text and "playwright-cli" in text, timeout=20)
         researcher_card = render_png("loaded-agent-skills-terminal.png")
         proc.write("\x0f")
-        wait_for("expanded researcher prompt resources", lambda text: "Available skills" in text and "playwright-cli" in text and "Path:" in text and "<available_skills" not in text, timeout=20)
+        wait_for(
+            "expanded researcher prompt resources",
+            lambda text: "Available agents" in text
+            and "</pi-gentic-context>" in text
+            and "<available_skills" not in text,
+            timeout=20,
+        )
         researcher_prompt = render_png("expanded-agent-resolved-prompt-terminal.png")
+        proc.write("\x0f")
+        wait_for(
+            "researcher prompt collapse",
+            lambda text: "Ctrl+O to expand" in text,
+            timeout=20,
+        )
 
         proc.write("/agent clear\r")
-        wait_for("expanded agentless configuration", lambda text: "Available skills" in text and "Path:" in text and "<active-agent" not in text and "<available_skills" not in text, timeout=20)
+        wait_for(
+            "agent cleared",
+            lambda text: "Cleared active agent" in text,
+            timeout=20,
+        )
+        proc.write("\x0f")
+        wait_for(
+            "expanded agentless configuration",
+            lambda text: "Available agents" in text
+            and "</pi-gentic-context>" in text
+            and "<active-agent" not in text
+            and "<available_skills" not in text,
+            timeout=20,
+        )
         clear_prompt = render_png("agentless-clear-configuration-terminal.png")
         proc.write("\x0f")
         time.sleep(0.4)
@@ -616,7 +720,7 @@ def main():
         wait_for("invalid agent error card", lambda text: "Agent call failed." in text and 'Unknown agent "missing"' in text, timeout=30)
         invalid_agent_error = render_png("invalid-agent-error-card-terminal.png")
 
-        proc.write("/send reply with the exact text no invoke receipt --no-invoke\r")
+        proc.write("/send reply with the exact text no invoke receipt --model openai-codex/gpt-5.6-luna --no-invoke\r")
         wait_for("single no-invoke completion card", lambda text: "Agent answered." in text and "no invoke receipt" in text, timeout=180)
         no_invoke_child, no_invoke_child_text = newest_child_session_file_containing("reply with the exact text no invoke receipt")
         parent_session = parent_session_file(no_invoke_child)
@@ -632,19 +736,38 @@ def main():
         no_invoke = render_png("send-no-invoke-returned-without-caller-run-terminal.png")
 
         existing_session_id = json.loads(no_invoke_child_text.splitlines()[0])["id"]
-        proc.write(f"/send existing-session-live-activity use the bash tool to run python -c \"import time; time.sleep(10)\" before replying with existing-session-live-activity --session {existing_session_id} --bg --no-invoke\r")
-        wait_for("existing session card shows live tool activity", lambda text: "existing-session-live-activity" in text and "[bash]" in text and "Inactive:" in text, timeout=90)
+        proc.write(f"/send existing-session-live-activity use the bash tool to run python -c \"import time; time.sleep(10)\" before replying with existing-session-live-activity --session {existing_session_id} --model openai-codex/gpt-5.6-luna --bg --no-invoke\r")
+        wait_for(
+            "existing session card shows tool activity",
+            lambda text: "existing-session-live-activity" in text
+            and "[bash]" in text
+            and "(done)" in text,
+            timeout=90,
+        )
         existing_session_activity = render_png("existing-session-live-activity-terminal.png")
         wait_for("existing session activity completes", lambda text: "Agent answered." in text and "existing-session-live-activity" in text, timeout=180)
 
-        proc.write("/send escape-abort-receipt use the bash tool to run python -c \"import time; time.sleep(60)\" before replying with escape-abort-receipt --bg --no-invoke\r")
-        wait_for("escape abort send running", lambda text: "escape-abort-receipt" in text and "Sent a message" in text, timeout=45)
+        proc.write("/send escape-abort-receipt use the bash tool to run python -c \"import time; time.sleep(60)\" before replying with escape-abort-receipt --model openai-codex/gpt-5.6-luna --bg --no-invoke\r")
+        wait_for(
+            "escape abort send running",
+            lambda text: "[ASYNC]" in text and "[bash] (running)" in text,
+            timeout=45,
+        )
         proc.write("\x1b")
         wait_for("escape abort stops target", lambda text: "Agent got aborted" in text or "was aborted while handling your request" in text, timeout=60)
         escape_abort = render_png("escape-abort-target-terminal.png")
 
-        proc.write("/send ask one short random question --agent reviewer --bg --no-invoke\r")
-        wait_for("reviewer async answer", lambda text: "Agent answered" in text and "reviewer" in text, timeout=180)
+        proc.write("/send ask one short random question --agent reviewer --model openai-codex/gpt-5.6-luna --bg --no-invoke\r")
+        wait_for(
+            "reviewer async answer",
+            lambda text: "Agent answered" in text
+            and completed_card_state("ask one short random question") is not None,
+            timeout=180,
+        )
+        reviewer_state = completed_card_state("ask one short random question")
+        reviewer_answer = str(reviewer_state.get("answer", "")).strip()
+        if not reviewer_answer:
+            raise AssertionError("The reviewer completion card has no answer")
         reviewer_card = render_png("send-reviewer-completed-terminal.png")
 
         proc.write("/resume\r")
@@ -665,7 +788,13 @@ def main():
         screen = pyte.Screen(COLS, ROWS)
         stream = pyte.ByteStream(screen)
         proc = spawn(["--session", str(parent_session)])
-        restored_text = wait_for("restored completed session card", lambda text: "Agent answered." in text and "ask one short random question" in text, timeout=30)
+        restored_answer_fragment = reviewer_answer.splitlines()[0][:30]
+        restored_text = wait_for(
+            "restored completed session card",
+            lambda text: "Agent answered." in text
+            and restored_answer_fragment in text,
+            timeout=30,
+        )
         if "Inactive:" in restored_text:
             raise AssertionError("Restored completed agents card still shows an inactivity timer")
         restored_card = render_png("restart-restored-agents-card-no-inactive-terminal.png")
@@ -696,13 +825,17 @@ def main():
         screen = pyte.Screen(COLS, ROWS)
         stream = pyte.ByteStream(screen)
         proc = spawn()
-        proc.write("/send tree-refresh-receipt This deliberately long prompt should keep only its first two wrapped lines visible while recent activities fill the remaining collapsed card rows. Use the bash tool to run python -c \"import time; time.sleep(10)\" before replying with the exact text tree-refresh-receipt --bg --no-invoke\r")
-        wait_for("agents card timer starts", lambda text: "tree-refresh-receipt" in text and "Sent a message to" in text and "Inactive:" in text, timeout=45)
-        timer_before = screen_line("Inactive:")
-        total_before = screen_line("Ctrl+O to expand")
+        proc.write("/send tree-refresh-receipt This deliberately long prompt should keep only its first two wrapped lines visible while recent activities fill the remaining collapsed card rows. Use the bash tool to run python -c \"import time; time.sleep(10)\" before replying with the exact text tree-refresh-receipt --model openai-codex/gpt-5.6-luna --bg --no-invoke\r")
+        wait_for(
+            "agents card timer starts",
+            lambda text: "[ASYNC]" in text and "[bash] (running)" in text and "total" in text,
+            timeout=45,
+        )
+        timer_before = screen_line("idle")
+        total_before = screen_line("total")
         time.sleep(2.2)
-        timer_after = screen_line("Inactive:")
-        total_after = screen_line("Ctrl+O to expand")
+        timer_after = screen_line("idle")
+        total_after = screen_line("total")
         if total_before == total_after:
             raise AssertionError(
                 f"Agents card total timer did not repaint without input: {total_before!r} -> {total_after!r}"
@@ -712,7 +845,11 @@ def main():
             f"inactive_before={timer_before}\ninactive_after={timer_after}\ntotal_before={total_before}\ntotal_after={total_after}\n",
             encoding="utf-8",
         )
-        wait_for("collapsed agents card shows recent activity", lambda text: "tree-refresh-receipt" in text and "[bash]" in text and "Inactive:" in text, timeout=45)
+        wait_for(
+            "live agents panel shows recent activity",
+            lambda text: "[bash] (running)" in text and "idle" in text,
+            timeout=45,
+        )
         autonomous_timer_card = render_png("agents-card-autonomous-timer-terminal.png")
         proc.write("/resume\r")
         wait_for("tree refresh child is initially active", lambda text: "Resume Session" in text and "●" in tree_session_line("tree-refresh-receipt") and "Inactive:" in tree_session_line("tree-refresh-receipt"), timeout=45)

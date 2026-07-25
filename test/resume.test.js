@@ -224,6 +224,32 @@ test("resume decorator searches agent metadata and selects a live runtime path",
   }
 });
 
+test("resume decorator rejects an inaccessible native theme", () => {
+  const { component } = nativeSelector();
+
+  assert.throws(
+    () => decorateResumeSelector(component, undefined, undefined),
+    /active theme is inaccessible/,
+  );
+});
+
+test("resume decorator disposal is idempotent and restores native methods", () => {
+  const { component, list, calls } = nativeSelector();
+  const nativeSetSessions = list.setSessions;
+  let nativeDisposals = 0;
+  component.dispose = () => nativeDisposals++;
+  const dispose = decorateResumeSelector(component, () => {}, testTheme);
+
+  assert.notEqual(list.setSessions, nativeSetSessions);
+  dispose();
+  dispose();
+
+  assert.equal(typeof list.setSessions, "function");
+  list.setSessions([], false);
+  assert.equal(calls.setSessions, 1);
+  assert.equal(nativeDisposals, 1);
+});
+
 test("resume decorator rejects incompatible selectors without mutating them", () => {
   const component = { getSessionList: () => ({ render() {} }) };
 

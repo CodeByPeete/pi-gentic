@@ -8,14 +8,16 @@ import { applyFilterList } from "../dist/catalog.js";
 import {
   availableAgentLines,
   filterSkillPrompt,
-  parseSkillEntries,
 } from "../dist/catalog.js";
 import {
   abortActor,
   createSessionActivityMonitor,
+  contextStillActive,
   deliverCardToCaller,
   deliverReturnToCaller,
+  deliverSendContextToCaller,
   lastRuntimeActivities,
+  persistAgentCardState,
 } from "../dist/orchestration.js";
 import {
   isTargetSlashCommand,
@@ -23,6 +25,8 @@ import {
   resolveReturnDelivery,
   sendConfirmationText,
   sendPendingText,
+  sendStatusText,
+  sendUserMessageOptions,
   shouldDeferSendCompletion,
   slashCommandDeliveryText,
   promptSessionAndWaitForTurnEnd,
@@ -48,7 +52,146 @@ function createGitRepo(prefix = path.join(tmpdir(), "pi-gentic-worktree-repo-"))
   return repo;
 }
 
-test("resolved agent prompt only exposes configured skills and includes available agent descriptions", () => {
+test("terminal card persistence validates snapshots and copies activities", () => {
+  assert.equal(persistAgentCardState({}, { status: "done" }), false);
+  assert.equal(
+    persistAgentCardState({}, { cardId: "card", status: "running" }),
+    false,
+  );
+  assert.equal(
+    persistAgentCardState({}, { cardId: "card", status: "done" }),
+    false,
+  );
+  assert.equal(
+    persistAgentCardState(
+      { appendCustomEntry() {} },
+      { cardId: "invalid", status: "done", invalid: () => undefined },
+    ),
+    false,
+  );
+
+  const entries = [];
+  const activities = [{ type: "tool", name: "read" }];
+  let persisted = 0;
+  assert.equal(
+    persistAgentCardState(
+      { appendCustomEntry: (...args) => entries.push(args) },
+      { cardId: "valid", status: "done", activities },
+      () => persisted++,
+    ),
+    true,
+  );
+  assert.equal(persisted, 1);
+  assert.notEqual(entries[0][1].activities, activities);
+  assert.deepEqual(entries[0][1].activities, activities);
+});
+
+test("send status text classifies every terminal and active state", () => {
+  assert.equal(
+    sendStatusText({ status: "done", agentName: "reviewer" }),
+    "Agent reviewer answered.",
+  );
+  assert.equal(sendStatusText({ status: "queued" }), "Queued message for agent.");
+  assert.equal(
+    sendStatusText({ status: "stopped" }),
+    "Agent stopped before answering.",
+  );
+  assert.equal(
+    sendStatusText({ status: "stopped", error: "limit" }),
+    "limit",
+  );
+  assert.equal(sendStatusText({ status: "error" }), "Agent call failed.");
+  assert.equal(sendStatusText({}), "Sending message to agent...");
+});
+
+test("send pending text handles foreground and agentless background deliveries", () => {
+  assert.equal(
+    sendPendingText({ async: false, details: { status: "done" } }),
+    "Agent answered.",
+  );
+  const background = sendConfirmationText(
+    undefined,
+    undefined,
+    "delegate",
+  );
+  assert.match(background, /^Sent message to agent in session \./);
+  assert.match(background, /full answer/);
+  assert.deepEqual(resolveReturnDelivery({ awaitCompletion: true }), {
+    kind: "toolResult",
+  });
+  assert.deepEqual(resolveReturnDelivery({ awaitCompletion: false }), {
+    kind: "callerMessage",
+    queue: "steer",
+  });
+});
+
+test("send context delivery respects caller liveness and absorbs stale APIs", () => {
+  let sent;
+  const target = {
+    agentName: "reviewer",
+    session: { sessionManager: { getSessionId: () => "target" } },
+  };
+
+  deliverSendContextToCaller({
+    pi: { sendMessage: (message, options) => (sent = { message, options }) },
+    ctx: { isIdle: () => true },
+    target,
+    message: "review",
+    async: true,
+    fork: false,
+  });
+  assert.equal(sent.message.details.sessionId, "target");
+  assert.deepEqual(sent.options, { triggerTurn: false });
+
+  sent = undefined;
+  deliverSendContextToCaller({
+    pi: { sendMessage: () => assert.fail("busy caller received context") },
+    ctx: { isIdle: () => false },
+    target,
+  });
+  assert.equal(sent, undefined);
+  assert.doesNotThrow(() =>
+    deliverSendContextToCaller({
+      pi: { sendMessage: () => { throw new Error("stale"); } },
+      ctx: { isIdle: () => true },
+      target,
+    }),
+  );
+});
+
+test("message options and context liveness tolerate stale native contexts", () => {
+  assert.deepEqual(sendUserMessageOptions({ isIdle: () => false }), {
+    deliverAs: "followUp",
+  });
+  assert.equal(sendUserMessageOptions({ isIdle: () => true }), undefined);
+  assert.equal(
+    sendUserMessageOptions({ isIdle: () => { throw new Error("stale"); } }),
+    undefined,
+  );
+  assert.equal(
+    contextStillActive(
+      { cwd: process.cwd(), sessionManager: { getSessionId: () => "caller" } },
+      "caller",
+    ),
+    true,
+  );
+  assert.equal(
+    contextStillActive(
+      { cwd: process.cwd(), sessionManager: { getSessionId: () => "other" } },
+      "caller",
+    ),
+    false,
+  );
+  assert.equal(
+    contextStillActive({
+      get cwd() { throw new Error("stale"); },
+      sessionManager: { getSessionId: () => "caller" },
+    }),
+    false,
+  );
+});
+
+test("prompt skill content stays native while agent descriptions remain policy-scoped", () => {
   const basePrompt = [
     "Base prompt",
     "",
@@ -68,11 +211,7 @@ test("resolved agent prompt only exposes configured skills and includes availabl
     "  </skill>",
     "</available_skills>",
   ].join("\n");
-  const allowedSkills = applyFilterList(
-    parseSkillEntries(basePrompt).map((skill) => skill.name),
-    ["tdd"],
-  );
-  const prompt = `${filterSkillPrompt(basePrompt, parseSkillEntries(basePrompt), allowedSkills)}\n${availableAgentLines(
+  const prompt = `${filterSkillPrompt(basePrompt, [], ["tdd"])}\n${availableAgentLines(
     [
       { name: "researcher", description: "Finds reliable context" },
       { name: "builder", description: "Builds patches" },
@@ -86,7 +225,7 @@ test("resolved agent prompt only exposes configured skills and includes availabl
 
   assert.match(prompt, /<location>C:\/skills\/tdd\/SKILL\.md<\/location>/);
 
-  assert.doesNotMatch(prompt, /frontend-design/);
+  assert.match(prompt, /frontend-design/);
 
   assert.match(prompt, /researcher: Finds reliable context/);
 });
@@ -788,16 +927,17 @@ test("prompt append ignores stale extension contexts during session replacement"
 
 test("worktree preparation uses cwd as folder and empty worktree as branch from folder", async () => {
   const repo = createGitRepo();
-  const worktree = path.join(
-    mkdtempSync(path.join(tmpdir(), "pi-gentic-worktree-parent-")),
-    "task-branch",
+  const worktreeParent = mkdtempSync(
+    path.join(tmpdir(), "pi-gentic-worktree-parent-"),
   );
+  const worktree = path.join(worktreeParent, "task-branch");
 
   const resolved = await prepareWorktree({
     repoCwd: repo,
     message: "Implement task",
     cwd: worktree,
     worktree: "",
+    allowedWorktreeRoots: [worktreeParent],
   });
 
   assert.equal(resolved, worktree);

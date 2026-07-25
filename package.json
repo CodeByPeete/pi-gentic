@@ -36,9 +36,19 @@
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/*.test.js",
+    "check:effect": "effect-tsgo diagnostics --project tsconfig.json --strict --format pretty",
+    "check": "npm run typecheck && npm run check:effect && npm test && npm run pack:dry",
+    "test": "npm run test:unit && npm run test:effect",
+    "test:unit": "npm run build && node --test test/*.test.js",
+    "test:effect": "vitest run",
+    "test:integration": "npm run build && node --test test/config-trust.test.js test/worktree-security.test.js",
+    "test:compat": "npm run build && node --test test/active-agent-calls.test.js test/live-runtime.test.js test/resume.test.js",
+    "test:coverage": "npm run build && node --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=75 --test-coverage-include=dist/**/*.js --test-coverage-exclude=dist/domain/** --test-coverage-exclude=dist/infrastructure/runtime/** --test-coverage-exclude=dist/runtime/** --test test/*.test.js",
+    "test:coverage:effect": "vitest run --coverage",
     "test:ui": "npm run build && node test-ui/capture-ui.mjs",
-    "test:e2e": "npm run build && python test-e2e/capture-terminal-ui.py",
+    "test:e2e": "npm run build && python test-e2e/capture-terminal-ui.py --deterministic",
+    "test:e2e:live": "npm run build && python test-e2e/capture-terminal-ui.py",
+    "prepare": "sh ./scripts/prepare-effect.sh",
     "prepack": "npm run build",
     "pack:dry": "npm pack --dry-run"
   },
@@ -46,16 +56,28 @@
     "@earendil-works/pi-ai": "0.82.0",
     "@earendil-works/pi-coding-agent": "0.82.0",
     "@earendil-works/pi-tui": "0.82.0",
+    "@effect/tsgo": "0.24.3",
+    "@effect/vitest": "4.0.0-beta.101",
     "@types/node": "25.9.3",
-    "typescript": "6.0.3"
+    "@vitest/coverage-v8": "4.1.10",
+    "fast-check": "4.5.3",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-ai": "0.82.0",
+    "@earendil-works/pi-coding-agent": "0.82.0",
+    "@earendil-works/pi-tui": "0.82.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
   },
   "license": "MIT",
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-beta.101",
+    "effect": "4.0.0-beta.101"
   }
 }

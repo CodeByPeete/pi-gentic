@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.repos/effect
 test-ui/output/
 test-e2e/output/
 .agentfiles/

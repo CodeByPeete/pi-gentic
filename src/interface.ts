@@ -1,4 +1,9 @@
 import {
+  agentsActionName,
+  normalizeAgentsToolInputSync,
+} from "./domain/agents-tool.js";
+import type { UnknownRecord } from "./pi-types.js";
+import {
   loadAvailableSkills,
   loadConfiguration,
   isRecord,
@@ -21,8 +26,6 @@ const SEND_VALUE_FLAGS = new Set([
   "max-subagent-depth",
 ]);
 
-const SEND_BOOLEAN_FLAGS = ["fork", "bg", "fg", "no-invoke"];
-
 const SEND_FLAGS = [
   "agent",
   "session",
@@ -44,6 +47,12 @@ const SEND_FLAGS = [
 ].map((flag) => `--${flag}`);
 
 const THINKING_LEVELS = ["low", "medium", "high"];
+
+type CompletionItem = {
+  value: string;
+  label: string;
+  description?: string;
+};
 
 export function tokenizeCommandLine(input: string) {
   const tokens: string[] = [];
@@ -91,7 +100,7 @@ export function tokenizeCommandLine(input: string) {
   return tokens;
 }
 
-function unescapeQuotedCharacter(char) {
+function unescapeQuotedCharacter(char: string) {
   if (char === "n") return "\n";
 
   if (char === "r") return "\r";
@@ -101,7 +110,11 @@ function unescapeQuotedCharacter(char) {
   return char;
 }
 
-function readFlagValue(tokens, index, inlineValue) {
+function readFlagValue(
+  tokens: ReadonlyArray<string>,
+  index: number,
+  inlineValue: string | undefined,
+) {
   if (inlineValue !== undefined)
     return { value: inlineValue, nextIndex: index };
   const next = tokens[index + 1];
@@ -111,13 +124,14 @@ function readFlagValue(tokens, index, inlineValue) {
   return { value: next, nextIndex: index + 1 };
 }
 
-export function parseAgentCommand(input) {
+export function parseAgentCommand(input: string) {
   const tokens = tokenizeCommandLine(input.trim());
   let sessionId;
   const words: string[] = [];
 
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index];
+    if (token === undefined) continue;
     const match = token.match(/^--session(?:=(.*))?$/);
 
     if (match) {
@@ -141,7 +155,7 @@ export function parseSkillCommand(input: string) {
   return { name, message };
 }
 
-export function buildManualSkillMessage(skill: AnyRecord, message = "") {
+export function buildManualSkillMessage(skill: UnknownRecord, message = "") {
   const allowedTools = Array.isArray(skill.allowedTools)
     ? skill.allowedTools.filter((tool) => typeof tool === "string")
     : [];
@@ -162,7 +176,7 @@ export function buildManualSkillMessage(skill: AnyRecord, message = "") {
 export function parseSendCommand(input: string) {
   const tokens = tokenizeCommandLine(input.trim());
   const messageTokens: string[] = [];
-  const result: AnyRecord = {
+  const result: UnknownRecord = {
     message: "",
     agent: undefined,
     sessionId: undefined,
@@ -177,6 +191,7 @@ export function parseSendCommand(input: string) {
 
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index];
+    if (token === undefined) continue;
     const keyValue = token.match(/^--([A-Za-z][\w-]*)(?:=(.*))?$/);
 
     if (!keyValue) {
@@ -186,6 +201,11 @@ export function parseSendCommand(input: string) {
 
     const key = keyValue[1];
     const inlineValue = keyValue[2];
+
+    if (key === undefined) {
+      messageTokens.push(token);
+      continue;
+    }
 
     if (SEND_VALUE_FLAGS.has(key)) {
       const value = readFlagValue(tokens, index, inlineValue);
@@ -222,7 +242,7 @@ export function parseSendCommand(input: string) {
   return result;
 }
 
-function applySendFlagValue(result: AnyRecord, key: string, value: unknown) {
+function applySendFlagValue(result: UnknownRecord, key: string, value: unknown) {
   const text = typeof value === "string" ? value : undefined;
 
   if (key === "agent" && text) result.agent = text;
@@ -246,9 +266,13 @@ function applySendFlagValue(result: AnyRecord, key: string, value: unknown) {
   }
 }
 
-function setOverride(result: AnyRecord, key: string, value: unknown) {
-  result.overrides = { ...(isRecord(result.overrides) ? result.overrides : {}) };
-  result.overrides[key] = value;
+function setOverride(result: UnknownRecord, key: string, value: unknown) {
+  const overrides = {
+    ...(isRecord(result.overrides) ? result.overrides : {}),
+    [key]: value,
+  };
+
+  result.overrides = overrides;
 }
 
 function splitList(value: string) {
@@ -258,17 +282,17 @@ function splitList(value: string) {
     .filter(Boolean);
 }
 
-export function normalizeToolInput(input) {
-  if (!isRecord(input)) throw new Error("Tool input must be a JSON object.");
+export function normalizeToolInput(input: unknown) {
+  const normalized = normalizeAgentsToolInputSync(input);
 
-  if (typeof input.action !== "string" || !input.action.trim())
-    throw new Error('Missing required field "action".');
-  const action = input.action.trim();
-
-  return { ...input, action };
+  return { ...normalized, action: agentsActionName(normalized) };
 }
 
-export function completeAgents(prefix, activeAgentName, cwd = process.cwd()) {
+export function completeAgents(
+  prefix: string,
+  activeAgentName: string | undefined,
+  cwd = process.cwd(),
+) {
   const config = loadConfiguration({ cwd });
   const query = prefix.trim().toLowerCase();
 
@@ -286,13 +310,13 @@ type CompletionOptions =
   | string
   | {
       cwd?: string;
-      sessions?: AnyRecord[];
+      sessions?: UnknownRecord[];
       currentSessionId?: string;
-      agents?: AnyRecord[];
-      models?: AnyRecord[];
+      agents?: UnknownRecord[];
+      models?: UnknownRecord[];
       tools?: string[];
       skills?: string[];
-      commands?: AnyRecord[];
+      commands?: UnknownRecord[];
       themes?: string[];
       systemPromptFiles?: string[];
     };
@@ -375,7 +399,7 @@ export function isCompletingSendSession(prefix: string) {
 function completeSlashSendCommand(
   token: string,
   replaceToken: (value: string) => string,
-  options: AnyRecord,
+  options: UnknownRecord,
 ) {
   if (!token.startsWith("/")) return undefined;
   const query = token.toLowerCase();
@@ -385,7 +409,7 @@ function completeSlashSendCommand(
     .map((command) => ({ ...command, value: replaceToken(command.value) }));
 }
 
-function sendSlashCommandValues(options: AnyRecord) {
+function sendSlashCommandValues(options: UnknownRecord) {
   const commands = recordArray(options.commands)
     .filter((command) => stringValue(command.name))
     .map((command) => commandCompletion(String(command.name), command));
@@ -407,7 +431,7 @@ function sendSlashCommandValues(options: AnyRecord) {
   return [...byValue.values()];
 }
 
-function commandCompletion(name: string, command: AnyRecord = {}) {
+function commandCompletion(name: string, command: UnknownRecord = {}) {
   const value = `/${name}`;
 
   return {
@@ -417,7 +441,7 @@ function commandCompletion(name: string, command: AnyRecord = {}) {
   };
 }
 
-function completionItemMatches(item: AnyRecord, query: string) {
+function completionItemMatches(item: UnknownRecord, query: string) {
   return Boolean(
     !query ||
       [item.value, item.label, item.description].some((text) =>
@@ -428,7 +452,7 @@ function completionItemMatches(item: AnyRecord, query: string) {
   );
 }
 
-function completeSendFlagValue(prefix: string, options: AnyRecord) {
+function completeSendFlagValue(prefix: string, options: UnknownRecord) {
   const descriptors = [
     {
       flag: "model",
@@ -491,7 +515,7 @@ function suggestedWorktreeName(prefix: string) {
   return slug || "agent-worktree";
 }
 
-function recordArray(value: unknown): AnyRecord[] {
+function recordArray(value: unknown): UnknownRecord[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
 
@@ -501,7 +525,10 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-function listValueCompletion(values, token: string) {
+function listValueCompletion(
+  values: ReadonlyArray<CompletionItem>,
+  token: string,
+) {
   const comma = token.lastIndexOf(",");
   const prefix = comma === -1 ? "" : token.slice(0, comma + 1);
   const query = comma === -1 ? token : token.slice(comma + 1);
@@ -512,31 +539,36 @@ function listValueCompletion(values, token: string) {
   };
 }
 
-function modelCompletionValues(models: AnyRecord[] = []) {
-  return models.map((model) => {
+function modelCompletionValues(models: UnknownRecord[] = []): CompletionItem[] {
+  return models.flatMap((model) => {
     const provider = stringValue(model.provider);
     const id = stringValue(model.id) ?? stringValue(model.value);
     const value = provider && id ? `${provider}/${id}` : id;
 
-    return {
-      value,
-      label: value,
-      description: stringValue(model.label) ?? stringValue(model.name),
-    };
-  }).filter((item) => item.value);
+    return value
+      ? [
+          {
+            value,
+            label: value,
+            description:
+              stringValue(model.label) ?? stringValue(model.name),
+          },
+        ]
+      : [];
+  });
 }
 
-function simpleValue(value: string) {
+function simpleValue(value: string): CompletionItem {
   return { value, label: value };
 }
 
-function filterValue(value: unknown) {
+function filterValue(value: unknown): CompletionItem {
   const text = String(value ?? "");
 
   return { value: text, label: text };
 }
 
-function completeRecords(token: string, records: AnyRecord[], key: string) {
+function completeRecords(token: string, records: UnknownRecord[], key: string) {
   const query = token.trim().toLowerCase();
 
   return records
@@ -584,7 +616,7 @@ function flagValueCompletion(prefix: string, flag: string) {
 
 function completeSessions(
   token: string,
-  sessions: AnyRecord[],
+  sessions: UnknownRecord[],
   currentSessionId?: string,
 ) {
   const query = token.trim().toLowerCase();
@@ -606,7 +638,7 @@ function completeSessions(
     );
 }
 
-function sessionCompletion(session: AnyRecord, sessionIds: string[]) {
+function sessionCompletion(session: UnknownRecord, sessionIds: string[]) {
   const id = sessionIdentifier(session) ?? "";
   const visibleId = shortestUniqueSessionId(id, sessionIds);
   const agentName = stringValue(session.agentName);
@@ -624,7 +656,7 @@ function sessionCompletion(session: AnyRecord, sessionIds: string[]) {
   };
 }
 
-function sessionIdentifier(session: AnyRecord) {
+function sessionIdentifier(session: UnknownRecord) {
   return stringValue(session.sessionId) ?? stringValue(session.id);
 }
 

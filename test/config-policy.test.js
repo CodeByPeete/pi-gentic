@@ -170,6 +170,7 @@ test("project agents override global agents", () => {
     const config = loadConfiguration({
       agentDir: path.join(dir, "agent"),
       cwd: path.join(dir, "work"),
+      projectTrusted: true,
     });
     assert.equal(config.agents.length, 1);
     assert.equal(config.agents[0].description, "project");
@@ -310,7 +311,7 @@ test("settings skills and package skills are discovered", () => {
       JSON.stringify({ skills: [explicit], packages: [packageRoot] }),
     );
 
-    const skills = loadAvailableSkills({ cwd });
+    const skills = loadAvailableSkills({ cwd, projectTrusted: true });
 
     assert.equal(
       skills.some((skill) => skill.name === "explicit-skill"),

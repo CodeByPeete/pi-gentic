@@ -1,11 +1,31 @@
 import {
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+  type Component,
+  type TUI,
+} from "@earendil-works/pi-tui";
+import { Exit, Schema } from "effect";
+import {
   formatDuration,
   isRecord,
   shortestUniqueSessionId,
   shortSessionId,
 } from "./catalog.js";
+import { reportRuntimeDiagnostic } from "./diagnostics.js";
+import type {
+  PiApi,
+  PiContext,
+  PiSessionManager,
+  PiTheme,
+  UnknownRecord,
+} from "./pi-types.js";
 
 const COMPLETED_CARD_TTL_MS = 60_000;
+export const PersistedCardDetailsSchema = Schema.Record(
+  Schema.String,
+  Schema.UndefinedOr(Schema.Json),
+);
 
 const ACTIVE_CARD_STATUSES = new Set(["queued", "running"]);
 const TERMINAL_CARD_STATUSES = new Set([
@@ -14,27 +34,111 @@ const TERMINAL_CARD_STATUSES = new Set([
   "aborted",
   "stopped",
 ]);
-const liveCards = new Map();
-const persistedCards = new Map();
-const liveCardRefreshers = new Set<(details?: AnyRecord) => void>();
-
-export function isActiveCard(details) {
-  return ACTIVE_CARD_STATUSES.has(details?.status);
+interface CardDetails extends UnknownRecord {
+  status?: string;
+  kind?: string;
+  cardId?: string;
+  sessionId?: string;
+  agentName?: string;
+  message?: string;
+  answer?: string;
+  async?: boolean;
+  live?: boolean;
+  livePanel?: boolean;
+  startedAt?: number;
+  updatedAt?: number;
+  completedAt?: number;
+  inactiveMs?: number;
+  activities?: UnknownRecord[];
+  configuration?: UnknownRecord;
+  sessions?: UnknownRecord[];
+  systemPrompt?: string;
+  error?: string;
+  restored?: boolean;
 }
 
-export function isTerminalCard(details) {
-  return TERMINAL_CARD_STATUSES.has(details?.status);
+interface LiveRefreshOptions extends UnknownRecord {
+  placement?: "aboveEditor" | "belowEditor";
+  intervalMs?: number;
+  pulseIntervalMs?: number;
+  ttlMs?: number;
+  trackLiveCards?: boolean;
+  autoPulse?: boolean;
+  resolveContext?: () => PiContext | undefined;
+  createComponent?: (tui: TUI, theme: PiTheme) => Component;
+  acceptsDetails?: (details?: UnknownRecord) => boolean;
+  shouldPulse?: () => boolean;
 }
 
-export function liveCardKey(details) {
-  if (!details || typeof details !== "object") return undefined;
+function normalizeCardDetails(value: unknown): CardDetails {
+  if (!isRecord(value)) return {};
+
+  return {
+    ...value,
+    status: stringField(value.status),
+    kind: stringField(value.kind),
+    cardId: stringField(value.cardId),
+    sessionId: stringField(value.sessionId),
+    agentName: stringField(value.agentName),
+    message: stringField(value.message),
+    answer: stringField(value.answer),
+    async: booleanField(value.async),
+    live: booleanField(value.live),
+    livePanel: booleanField(value.livePanel),
+    startedAt: numberField(value.startedAt),
+    updatedAt: numberField(value.updatedAt),
+    completedAt: numberField(value.completedAt),
+    inactiveMs: numberField(value.inactiveMs),
+    activities: Array.isArray(value.activities)
+      ? value.activities.filter(isRecord)
+      : undefined,
+    configuration: isRecord(value.configuration)
+      ? value.configuration
+      : undefined,
+    sessions: Array.isArray(value.sessions)
+      ? value.sessions.filter(isRecord)
+      : undefined,
+    systemPrompt: stringField(value.systemPrompt),
+    error: stringField(value.error),
+    restored: booleanField(value.restored),
+  };
+}
+
+function stringField(value: unknown) {
+  return typeof value === "string" ? value : undefined;
+}
+
+function booleanField(value: unknown) {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function numberField(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+const liveCards = new Map<string, { details: CardDetails; timer?: NodeJS.Timeout }>();
+const persistedCards = new Map<string, CardDetails>();
+const liveCardRefreshers = new Set<(details?: UnknownRecord) => void>();
+
+export function isActiveCard(details: CardDetails | undefined) {
+  return typeof details?.status === "string" && ACTIVE_CARD_STATUSES.has(details.status);
+}
+
+export function isTerminalCard(details: CardDetails | undefined) {
+  return typeof details?.status === "string" && TERMINAL_CARD_STATUSES.has(details.status);
+}
+
+export function liveCardKey(details: CardDetails | undefined) {
+  if (!details) return undefined;
 
   return details.cardId ?? details.sessionId;
 }
 
 export function setLiveCardDetails(
-  details: AnyRecord,
-  options: AnyRecord = {},
+  details: CardDetails,
+  options: { ttlMs?: number } = {},
 ) {
   const key = liveCardKey(details);
 
@@ -57,13 +161,13 @@ export function setLiveCardDetails(
   return nextDetails;
 }
 
-export function getLiveCardDetails(details) {
+export function getLiveCardDetails(details: CardDetails) {
   const key = liveCardKey(details);
 
   return key ? liveCards.get(key)?.details : undefined;
 }
 
-export function setPersistedCardDetails(details) {
+export function setPersistedCardDetails(details: CardDetails) {
   const key = liveCardKey(details);
 
   if (!key) return undefined;
@@ -75,25 +179,37 @@ export function setPersistedCardDetails(details) {
   return nextDetails;
 }
 
-export function restorePersistedCardDetails(sessionManager) {
+export function restorePersistedCardDetails(
+  sessionManager: PiSessionManager,
+) {
   const entries =
     sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
 
   for (const entry of entries) {
-    if (entry?.customType !== CARD_STATE_ENTRY_TYPE) continue;
-    if (!entry.data || typeof entry.data !== "object") continue;
+    if (!isRecord(entry) || entry.customType !== CARD_STATE_ENTRY_TYPE)
+      continue;
+    const decoded = Schema.decodeUnknownExit(PersistedCardDetailsSchema)(
+      entry.data,
+    );
 
-    setPersistedCardDetails(entry.data);
+    if (Exit.isSuccess(decoded))
+      setPersistedCardDetails(normalizeCardDetails(decoded.value));
+    else
+      reportRuntimeDiagnostic(
+        "persisted-card-state",
+        decoded.cause,
+        "warning",
+      );
   }
 }
 
-function getPersistedCardDetails(details) {
+function getPersistedCardDetails(details: CardDetails) {
   const key = liveCardKey(details);
 
   return key ? persistedCards.get(key) : undefined;
 }
 
-function resolveCardDetails(details) {
+function resolveCardDetails(details: CardDetails) {
   const persistedDetails = getPersistedCardDetails(details);
   const liveDetails = getLiveCardDetails(details);
 
@@ -105,7 +221,7 @@ function resolveCardDetails(details) {
   };
 }
 
-export function clearLiveCardDetails(details) {
+export function clearLiveCardDetails(details: CardDetails) {
   const key = liveCardKey(details);
   const entry = key ? liveCards.get(key) : undefined;
 
@@ -116,29 +232,17 @@ export function clearLiveCardDetails(details) {
   notifyLiveCardRefreshers(entry?.details ?? details);
 }
 
-function notifyLiveCardRefreshers(details?: AnyRecord) {
+function notifyLiveCardRefreshers(details?: UnknownRecord) {
   for (const refresh of liveCardRefreshers) refresh(details);
 }
 
-function liveCardTtl(details, requestedTtl) {
+function liveCardTtl(details: CardDetails, requestedTtl: unknown) {
   if (!details.completedAt && !isTerminalCard(details)) return undefined;
 
   return Math.max(100, Number(requestedTtl ?? COMPLETED_CARD_TTL_MS));
 }
 
-const COMBINING_MARK = /\p{Mark}/u;
-
-const EMOJI_MODIFIER = /\p{Emoji_Modifier}/u;
-
-const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
-
-const EXTENDED_PICTOGRAPHIC = /\p{Extended_Pictographic}/u;
-
-const REGIONAL_INDICATOR_START = 0x1f1e6;
-
-const REGIONAL_INDICATOR_END = 0x1f1ff;
-
-export function center(text, width) {
+export function center(text: string, width: number) {
   const padding = Math.max(0, Math.floor((width - visibleLength(text)) / 2));
 
   return fit(`${" ".repeat(padding)}${text}`, width);
@@ -160,7 +264,7 @@ function renderBordered(
   ];
 }
 
-export function joinWithRight(left, right, width) {
+export function joinWithRight(left: string, right: string, width: number) {
   if (!right) return fit(left, width);
   const rightWidth = visibleLength(right);
   const leftWidth = Math.max(0, width - rightWidth - 1);
@@ -169,7 +273,12 @@ export function joinWithRight(left, right, width) {
   return `${fittedLeft}${" ".repeat(Math.max(1, width - visibleLength(fittedLeft) - rightWidth))}${right}`;
 }
 
-export function joinWithMiddle(left, middle, right, width) {
+export function joinWithMiddle(
+  left: string,
+  middle: string,
+  right: string,
+  width: number,
+) {
   const rightWidth = visibleLength(right);
   const leftAreaWidth = Math.max(0, width - rightWidth - 1);
   const middleWidth = Math.max(0, leftAreaWidth - visibleLength(left));
@@ -181,260 +290,26 @@ export function joinWithMiddle(left, middle, right, width) {
   return `${fittedLeft}${" ".repeat(Math.max(1, width - visibleLength(fittedLeft) - rightWidth))}${right}`;
 }
 
-export function normalizeInline(text) {
+export function normalizeInline(text: unknown) {
   return String(text ?? "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-export function wrap(text, width) {
+export function wrap(text: unknown, width: number) {
   const clean = String(text ?? "");
 
-  if (!clean) return [];
-  const lines: string[] = [];
-
-  for (const rawLine of clean.split(/\r?\n/)) {
-    if (!rawLine) {
-      lines.push("");
-      continue;
-    }
-
-    let line = rawLine;
-
-    while (line.length > 0) {
-      const chunk = takeVisiblePrefix(line, width);
-
-      if (!chunk.text || chunk.end >= line.length) {
-        lines.push(line);
-        break;
-      }
-      lines.push(chunk.text);
-      line = line.slice(chunk.end);
-    }
-  }
-
-  return lines;
+  return clean.length === 0 ? [] : wrapTextWithAnsi(clean, width);
 }
 
-export function fit(text, width) {
-  if (width <= 0) return "";
-  const value = String(text ?? "");
-  const fitted = takeVisiblePrefix(value, width);
-
-  if (fitted.end >= value.length)
-    return value + " ".repeat(width - fitted.width);
-  return `${takeVisiblePrefix(value, Math.max(0, width - 1), true).text}…`;
+export function fit(text: unknown, width: number) {
+  return width <= 0
+    ? ""
+    : truncateToWidth(String(text ?? ""), width, "…", true);
 }
 
-export function visibleLength(text) {
-  const value = String(text ?? "");
-  let width = 0;
-  let index = 0;
-
-  while (index < value.length) {
-    const unit = readDisplayUnit(value, index, width);
-    width += unit.width;
-    index = unit.end;
-  }
-
-  return width;
-}
-
-function takeVisiblePrefix(text, maxWidth, closeAnsi = false) {
-  const value = String(text ?? "");
-  let output = "";
-  let width = 0;
-  let index = 0;
-  let sawAnsi = false;
-
-  while (index < value.length) {
-    const unit = readDisplayUnit(value, index, width);
-
-    if (unit.control) {
-      output += value.slice(index, unit.end);
-      sawAnsi = true;
-      index = unit.end;
-      continue;
-    }
-
-    if (width >= maxWidth || width + unit.width > maxWidth) break;
-    output += value.slice(index, unit.end);
-    width += unit.width;
-    index = unit.end;
-  }
-
-  while (index < value.length) {
-    const sequence = controlSequenceAt(value, index);
-
-    if (!sequence) break;
-    output += sequence;
-    sawAnsi = true;
-    index += sequence.length;
-  }
-
-  return {
-    text: closeAnsi && sawAnsi ? `${output}\x1b[0m` : output,
-    width,
-    end: index,
-  };
-}
-
-function readDisplayUnit(text, index, column) {
-  const sequence = controlSequenceAt(text, index);
-
-  if (sequence)
-    return { end: index + sequence.length, width: 0, control: true };
-  const codePoint = text.codePointAt(index);
-
-  if (codePoint === undefined)
-    return { end: index + 1, width: 0, control: false };
-  let end = index + codePointSize(codePoint);
-
-  if (codePoint === 9) return { end, width: 4 - (column % 4), control: false };
-
-  if (isControlCodePoint(codePoint)) return { end, width: 0, control: false };
-
-  if (isRegionalIndicator(codePoint)) {
-    const next = text.codePointAt(end);
-
-    if (next !== undefined && isRegionalIndicator(next))
-      end += codePointSize(next);
-
-    return { end, width: 2, control: false };
-  }
-
-  const keycapBase = isKeycapBase(codePoint);
-  let width = baseDisplayWidth(codePoint, text.codePointAt(end));
-
-  while (end < text.length) {
-    const next = text.codePointAt(end);
-
-    if (next === undefined) break;
-    const nextSize = codePointSize(next);
-
-    if (
-      isVariationSelector(next) ||
-      isCombiningCodePoint(next) ||
-      isEmojiModifierCodePoint(next)
-    ) {
-      end += nextSize;
-      continue;
-    }
-
-    if (keycapBase && next === 0x20e3) {
-      end += nextSize;
-      width = 2;
-      continue;
-    }
-
-    if (next !== 0x200d) break;
-    end += nextSize;
-    const joined = text.codePointAt(end);
-
-    if (joined === undefined) break;
-    end += codePointSize(joined);
-    width = 2;
-  }
-
-  return { end, width, control: false };
-}
-
-function controlSequenceAt(text, index) {
-  if (text[index] !== "\x1b") return "";
-  const rest = text.slice(index);
-
-  return (
-    rest.match(/^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/)?.[0] ??
-    rest.match(/^\x1b\[[0-9;?]*[ -/]*[@-~]/)?.[0] ??
-    ""
-  );
-}
-
-function codePointSize(codePoint) {
-  return codePoint > 0xffff ? 2 : 1;
-}
-
-function baseDisplayWidth(codePoint, nextCodePoint) {
-  if (isTextVariationSelector(nextCodePoint)) return 1;
-
-  if (isEmojiVariationSelector(nextCodePoint)) return 2;
-
-  if (isWideCodePoint(codePoint)) return 2;
-
-  if (isEmojiCodePoint(codePoint))
-    return isEmojiPresentationCodePoint(codePoint) ? 2 : 1;
-  return 1;
-}
-
-function isControlCodePoint(codePoint) {
-  return (
-    (codePoint >= 0 && codePoint < 0x20) ||
-    (codePoint >= 0x7f && codePoint < 0xa0)
-  );
-}
-
-function isCombiningCodePoint(codePoint) {
-  return COMBINING_MARK.test(String.fromCodePoint(codePoint));
-}
-
-function isEmojiCodePoint(codePoint) {
-  return EXTENDED_PICTOGRAPHIC.test(String.fromCodePoint(codePoint));
-}
-
-function isEmojiPresentationCodePoint(codePoint) {
-  return EMOJI_PRESENTATION.test(String.fromCodePoint(codePoint));
-}
-
-function isTextVariationSelector(codePoint) {
-  return codePoint === 0xfe0e;
-}
-
-function isEmojiVariationSelector(codePoint) {
-  return codePoint === 0xfe0f;
-}
-
-function isEmojiModifierCodePoint(codePoint) {
-  return EMOJI_MODIFIER.test(String.fromCodePoint(codePoint));
-}
-
-function isKeycapBase(codePoint) {
-  return (
-    (codePoint >= 0x30 && codePoint <= 0x39) ||
-    codePoint === 0x23 ||
-    codePoint === 0x2a
-  );
-}
-
-function isRegionalIndicator(codePoint) {
-  return (
-    codePoint >= REGIONAL_INDICATOR_START && codePoint <= REGIONAL_INDICATOR_END
-  );
-}
-
-function isVariationSelector(codePoint) {
-  return (
-    (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
-    (codePoint >= 0xe0100 && codePoint <= 0xe01ef)
-  );
-}
-
-function isWideCodePoint(codePoint) {
-  return (
-    codePoint >= 0x1100 &&
-    (codePoint <= 0x115f ||
-      codePoint === 0x2329 ||
-      codePoint === 0x232a ||
-      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
-      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
-      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
-      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
-      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
-      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
-      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-      (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
-      (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
-      (codePoint >= 0x20000 && codePoint <= 0x3fffd))
-  );
+export function visibleLength(text: unknown) {
+  return visibleWidth(String(text ?? ""));
 }
 
 export const AGENT_WIDGET_KEY = "pi-gentic-agent";
@@ -447,14 +322,18 @@ export const LIVE_REFRESH_WIDGET_KEY = "pi-gentic-live-refresh";
 
 const AGENT_COLORS = [36, 92, 95, 93, 91, 94, 96, 33];
 
-export function setAgentLabel(ctx, agentName) {
+export function setAgentLabel(ctx: PiContext, agentName: unknown) {
   if (ctx.mode !== "tui" || typeof ctx.ui?.setWidget !== "function") return;
   const content = agentName ? () => createAgentLabel(agentName) : undefined;
 
   ctx.ui.setWidget(AGENT_WIDGET_KEY, content, { placement: "belowEditor" });
 }
 
-export function showCard(pi, text, details) {
+export function showCard(
+  pi: PiApi,
+  text: string,
+  details: UnknownRecord,
+) {
   pi.sendMessage({
     customType: CARD_MESSAGE_TYPE,
     content: text,
@@ -466,13 +345,11 @@ export function showCard(pi, text, details) {
 export function startLiveRefresh(
   ctx: PiContext,
   key = "default",
-  options: AnyRecord = {},
+  options: LiveRefreshOptions = {},
 ) {
-  const noop = (() => {}) as (() => void) & {
-    refresh?: (details?: AnyRecord) => void;
-  };
-
-  noop.refresh = () => {};
+  const noop = Object.assign(() => {}, {
+    refresh: (_details?: UnknownRecord) => {},
+  });
 
   if (ctx.mode !== "tui" || typeof ctx.ui?.setWidget !== "function")
     return noop;
@@ -483,7 +360,7 @@ export function startLiveRefresh(
   let stopped = false;
   let pending = false;
   let mountedContext: PiContext | undefined;
-  let tui: AnyRecord | undefined;
+  let tui: TUI | undefined;
   let lastRefreshAt = 0;
   let refreshTimer: NodeJS.Timeout | undefined;
   let pulseTimer: NodeJS.Timeout | undefined;
@@ -504,7 +381,8 @@ export function startLiveRefresh(
 
     try {
       mountedContext?.ui?.setWidget?.(widgetKey, undefined, { placement });
-    } catch {
+    } catch (error) {
+      reportRuntimeDiagnostic("live-widget-unmount", error);
     }
   };
   const renderPulse = () => {
@@ -525,7 +403,7 @@ export function startLiveRefresh(
       mountedContext = currentContext;
       currentContext.ui?.setWidget?.(
         widgetKey,
-        (nextTui, theme) => {
+        (nextTui: TUI, theme: PiTheme) => {
           tui = nextTui;
 
           return (
@@ -534,12 +412,13 @@ export function startLiveRefresh(
         },
         { placement },
       );
-    } catch {
+    } catch (error) {
+      reportRuntimeDiagnostic("live-widget-render", error);
       if (resolveContext() === ctx) stop();
     }
   };
 
-  stop.refresh = (details?: AnyRecord) => {
+  stop.refresh = (details?: UnknownRecord) => {
     if (stopped || pending || options.acceptsDetails?.(details) === false)
       return;
     const delay = Math.max(0, minIntervalMs - (Date.now() - lastRefreshAt));
@@ -571,9 +450,10 @@ export function startLiveRefresh(
 
 export function startSessionLiveCardRefresh(ctx: PiContext) {
   const stop = startLiveRefresh(ctx, "session-live-cards", {
-    acceptsDetails: (details) =>
+    acceptsDetails: (details: UnknownRecord | undefined) =>
       !details || cardBelongsToSession(ctx, details),
-    createComponent: (tui, theme) => new LiveCardsPanel(ctx, tui, theme),
+    createComponent: (tui: TUI, theme: PiTheme) =>
+      new LiveCardsPanel(ctx, tui, theme),
     shouldPulse: () => sessionLiveCardDetails(ctx).length > 0,
   });
 
@@ -605,7 +485,7 @@ function sessionLiveCardDetails(ctx: PiContext) {
   ];
 }
 
-function cardBelongsToSession(ctx: PiContext, details: AnyRecord) {
+function cardBelongsToSession(ctx: PiContext, details: UnknownRecord) {
   const sessionId = currentSessionId(ctx);
 
   if (details?.callerSessionId)
@@ -618,34 +498,40 @@ function cardBelongsToSession(ctx: PiContext, details: AnyRecord) {
 function currentSessionId(ctx: PiContext) {
   try {
     return ctx.sessionManager?.getSessionId?.();
-  } catch {
+  } catch (error) {
+    reportRuntimeDiagnostic("current-session-id", error);
     return undefined;
   }
 }
 
 function sessionCardKeys(ctx: PiContext) {
   const keys = new Set();
-  let entries: AnyRecord[] = [];
+  let entries: UnknownRecord[] = [];
 
   try {
-    entries = [
+    const sessionEntries = [
       ...(ctx.sessionManager?.getEntries?.() ?? []),
       ...(ctx.sessionManager?.getBranch?.() ?? []),
     ];
-  } catch {
+    entries = sessionEntries.flatMap((entry) =>
+      isRecord(entry) ? [entry] : [],
+    );
+  } catch (error) {
+    reportRuntimeDiagnostic("session-card-keys", error);
     return keys;
   }
 
   for (const entry of entries) {
+    const message = isRecord(entry.message) ? entry.message : undefined;
     const details =
       entry?.type === "custom_message" &&
       entry.customType === CARD_MESSAGE_TYPE &&
       entry.display !== false
-        ? entry.details
+        ? normalizeCardDetails(entry.details)
         : entry?.type === "message" &&
-            entry.message?.role === "toolResult" &&
-            entry.message?.toolName === "agents"
-          ? entry.message.details
+            message?.role === "toolResult" &&
+            message.toolName === "agents"
+          ? normalizeCardDetails(message.details)
           : undefined;
     const key = liveCardKey(details);
 
@@ -657,10 +543,10 @@ function sessionCardKeys(ctx: PiContext) {
 
 class LiveCardsPanel {
   ctx: PiContext;
-  tui: AnyRecord;
+  tui: TUI;
   theme: PiTheme;
 
-  constructor(ctx: PiContext, tui: AnyRecord, theme: PiTheme) {
+  constructor(ctx: PiContext, tui: TUI, theme: PiTheme) {
     this.ctx = ctx;
     this.tui = tui;
     this.theme = theme;
@@ -692,7 +578,7 @@ class LiveCardsPanel {
     );
   }
 
-  cardRow(details: AnyRecord, width: number) {
+  cardRow(details: UnknownRecord, width: number) {
     const queued = details.status === "queued";
     const indicator = queued ? this.accent("○") : this.success("●");
     const mode = this.accent(details.async ? "[ASYNC]" : "[SYNC]");
@@ -752,23 +638,23 @@ class LiveCardsPanel {
 
 export function styleAgentName(
   agentName: unknown,
-  { bracketed = false }: AnyRecord = {},
+  { bracketed = false }: UnknownRecord = {},
 ) {
   const text = bracketed ? `[${agentName}]` : agentName;
 
   return `\x1b[${agentColorCode(agentName)}m${text}\x1b[39m`;
 }
 
-export function agentColorCode(agentName) {
+export function agentColorCode(agentName: unknown) {
   return AGENT_COLORS[
     hashString(String(agentName ?? "")) % AGENT_COLORS.length
   ];
 }
 
-function createAgentLabel(agentName) {
+function createAgentLabel(agentName: unknown) {
   return {
     invalidate() {},
-    render(width) {
+    render(width: number) {
       return [rightAlign(styleAgentName(agentName), width)];
     },
   };
@@ -783,15 +669,15 @@ function invisibleComponent() {
   };
 }
 
-function rightAlign(text, width) {
+function rightAlign(text: string, width: number) {
   return `${" ".repeat(Math.max(0, width - ansiVisibleLength(text)))}${text}`;
 }
 
-function ansiVisibleLength(text) {
+function ansiVisibleLength(text: string) {
   return String(text).replace(/\x1b\[[0-9;]*m/g, "").length;
 }
 
-function hashString(text) {
+function hashString(text: string) {
   let hash = 0;
 
   for (const char of text) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
@@ -801,7 +687,7 @@ function hashString(text) {
 
 export const SESSION_TREE_VISIBLE_ITEMS = 12;
 
-function sessionTreeConnector(session: AnyRecord) {
+function sessionTreeConnector(session: UnknownRecord) {
   const depth = Math.max(0, Number(session.depth ?? 0));
 
   return depth === 0
@@ -809,7 +695,7 @@ function sessionTreeConnector(session: AnyRecord) {
     : `${"│  ".repeat(Math.max(0, depth - 1))}${session.isLast === true ? "└─" : "├─"} `;
 }
 
-function sessionMessage(session: AnyRecord) {
+function sessionMessage(session: UnknownRecord) {
   return normalizeInline(
     session.lastMessage ??
       session.firstMessage ??
@@ -818,7 +704,7 @@ function sessionMessage(session: AnyRecord) {
   );
 }
 
-function visibleSessionId(session: AnyRecord, sessions: AnyRecord[]) {
+function visibleSessionId(session: UnknownRecord, sessions: UnknownRecord[]) {
   return shortestUniqueSessionId(
     session.sessionId ?? session.id,
     sessions.map((item) => item.sessionId ?? item.id),
@@ -830,16 +716,19 @@ export function renderAgentsCall() {
 }
 
 export function renderAgentsResult(
-  result: AnyRecord,
-  options: AnyRecord,
+  resultValue: unknown,
+  optionsValue: unknown,
   theme: PiTheme,
-  context: AnyRecord,
+  contextValue: unknown,
 ) {
+  const result = isRecord(resultValue) ? resultValue : {};
+  const options = isRecord(optionsValue) ? optionsValue : {};
+  const context = isRecord(contextValue) ? contextValue : {};
   const previous = context.lastComponent;
   const previousCard = previous instanceof AgentsCard ? previous : undefined;
   const card = previousCard ?? new AgentsCard(theme);
-  const originalDetails =
-    result.details && typeof result.details === "object" ? result.details : {};
+  const originalDetails = normalizeCardDetails(result.details);
+  const args = isRecord(context.args) ? context.args : {};
   const { details, liveDetails, live } = resolveCardDetails(originalDetails);
 
   if (isActiveCard(originalDetails) && details.livePanel === true)
@@ -850,7 +739,9 @@ export function renderAgentsResult(
   card.update(
     {
       cardId: details.cardId,
-      kind: details.kind ?? context.args.action ?? "agents",
+      kind:
+        details.kind ??
+        (typeof args.action === "string" ? args.action : "agents"),
       live,
       restored: restoredRunning,
       status: restoredRunning
@@ -858,11 +749,17 @@ export function renderAgentsResult(
         : options.isPartial
           ? (details.status ?? "running")
           : (details.status ?? (context.isError ? "error" : "done")),
-      async: details.async ?? context.args.async === true,
-      agentName: details.agentName ?? context.args.agent,
-      sessionId: details.sessionId ?? context.args.sessionId,
+      async: details.async ?? args.async === true,
+      agentName:
+        details.agentName ??
+        (typeof args.agent === "string" ? args.agent : undefined),
+      sessionId:
+        details.sessionId ??
+        (typeof args.sessionId === "string" ? args.sessionId : undefined),
       message:
-        details.message ?? context.args.message ?? firstText(result.content),
+        details.message ??
+        (typeof args.message === "string" ? args.message : undefined) ??
+        firstText(result.content),
       answer:
         details.answer ??
         (details.kind === "send" && details.status === "done"
@@ -881,10 +778,14 @@ export function renderAgentsResult(
         : details.completedAt,
       error: details.error,
       configuration: details.configuration,
-      sessions: details.sessions ?? details.configuration?.sessions,
+      sessions:
+        details.sessions ??
+        (Array.isArray(details.configuration?.sessions)
+          ? details.configuration.sessions.filter(isRecord)
+          : undefined),
       systemPrompt: details.systemPrompt,
     },
-    options.expanded,
+    options.expanded === true,
   );
 
   return card;
@@ -906,16 +807,16 @@ class InvisibleComponent {
 
 class AgentsCard {
   theme: PiTheme;
-  data: AnyRecord;
+  data: CardDetails;
   expanded: boolean;
 
-  constructor(theme) {
+  constructor(theme: PiTheme) {
     this.theme = theme;
     this.data = {};
     this.expanded = false;
   }
 
-  update(data: AnyRecord, expanded: boolean) {
+  update(data: CardDetails, expanded: boolean) {
     this.data = data;
     this.expanded = expanded;
   }
@@ -1077,12 +978,13 @@ class AgentsCard {
     ];
   }
 
-  sessionTreeLine(session: AnyRecord, width: number) {
+  sessionTreeLine(session: UnknownRecord, width: number) {
     const connector = sessionTreeConnector(session);
     const indicator = session.running ? this.green("●") : this.dim("○");
-    const agent = session.agentName
-      ? `${this.agentName(session.agentName)} `
-      : "";
+    const agent =
+      typeof session.agentName === "string" && session.agentName
+        ? `${this.agentName(session.agentName)} `
+        : "";
     const message = sessionMessage(session);
     const id = this.dim(`(${visibleSessionId(session, this.data.sessions ?? [])})`);
     const left = `${this.dim(connector)}${indicator} ${agent}`;
@@ -1164,7 +1066,10 @@ class AgentsCard {
 
     if (this.data.status === "done") return this.green("✓");
 
-    if (["error", "aborted", "stopped"].includes(this.data.status))
+    if (
+      typeof this.data.status === "string" &&
+      ["error", "aborted", "stopped"].includes(this.data.status)
+    )
       return this.red("!");
 
     if (this.data.status === "queued") return this.pink("○");

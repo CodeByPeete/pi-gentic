@@ -1,41 +1,57 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 import {
   loadSkills,
   parseFrontmatter,
-  type AgentSession,
-  type AgentSessionRuntime,
-  type ExtensionAPI,
-  type ExtensionCommandContext,
-  type ExtensionContext,
-  type SessionManager,
-  type Theme,
 } from "@earendil-works/pi-coding-agent";
+import { Exit, Schema } from "effect";
+import { applyCapabilityFilter } from "./domain/capabilities.js";
+import type {
+  PiContext,
+  PiSessionManager,
+  UnknownRecord,
+} from "./pi-types.js";
 
-declare global {
-  type AnyRecord = Record<string, any>;
-  type PiApi = ExtensionAPI;
-  type PiSessionManager = AnyRecord;
-  type PiContext = Omit<ExtensionContext, "sessionManager"> &
-    Partial<Omit<ExtensionCommandContext, keyof ExtensionContext>> & {
-      sessionManager: PiSessionManager;
-    } & AnyRecord;
-  type PiRuntimeSession = AnyRecord;
-  type PiAgentRuntimeHost = AgentSessionRuntime & AnyRecord;
-  type PiAgentSession = AgentSession & AnyRecord;
-  type PiTheme = Theme;
+export interface AgentDefinition extends UnknownRecord {
+  readonly name: string;
+  readonly description: string;
+  readonly instructions: string;
+  readonly disabled: boolean;
+  readonly agents?: string[];
+  readonly tools?: string[];
+  readonly skills?: string[];
+  readonly model?: string;
+  readonly thinking?: string;
+  readonly theme?: string;
+  readonly systemPromptFiles?: string[];
+  readonly maxSubagentDepth?: number;
+  readonly agentsTool?: UnknownRecord;
+  readonly sourcePath: string;
 }
 
+export interface SkillDefinition extends UnknownRecord {
+  readonly name: string;
+  readonly description: string;
+  readonly location: string;
+  readonly allowedTools?: string[];
+  readonly disableModelInvocation: boolean;
+  readonly instructions: string;
+}
 
 const FILTER_ALL = ["*"];
 
-export function isRecord(value: unknown): value is AnyRecord {
+export function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function toStringArray(value) {
+export function toStringArray(value: unknown) {
   if (Array.isArray(value))
     return value.filter((item) => typeof item === "string");
 
@@ -48,11 +64,15 @@ export function toStringArray(value) {
   return undefined;
 }
 
-export function getErrorMessage(error) {
+export function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function parseIntegerRadius(value, fieldName, fallback = 0) {
+export function parseIntegerRadius(
+  value: unknown,
+  fieldName: string,
+  fallback = 0,
+) {
   if (value === undefined || value === null) return fallback;
   const number = typeof value === "number" ? value : Number(value);
 
@@ -61,11 +81,11 @@ export function parseIntegerRadius(value, fieldName, fallback = 0) {
   return Math.floor(number);
 }
 
-export function chooseBoolean(value, fallback) {
+export function chooseBoolean(value: unknown, fallback: boolean) {
   return typeof value === "boolean" ? value : fallback;
 }
 
-export function formatDuration(milliseconds) {
+export function formatDuration(milliseconds: number) {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -79,64 +99,16 @@ export function formatDuration(milliseconds) {
   return `${seconds}s`;
 }
 
-function wildcardToRegExp(pattern) {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, ".*")
-    .replace(/\?/g, ".");
-
-  return new RegExp(`^${escaped}$`, "i");
-}
-
-function matchesPattern(name, pattern) {
-  if (pattern === "*") return true;
-
-  if (pattern.includes("*") || pattern.includes("?"))
-    return wildcardToRegExp(pattern).test(name);
-  return name.toLowerCase().includes(pattern.toLowerCase());
-}
-
-export function applyFilterList(allNames: string[], filters = FILTER_ALL) {
+export function applyFilterList(
+  allNames: string[],
+  filters: unknown = FILTER_ALL,
+) {
   if (!Array.isArray(filters)) return [...allNames];
 
-  if (filters.length === 0) return [];
-  const includes: string[] = [];
-  const excludes: string[] = [];
-  const forceIncludes: string[] = [];
-  const forceExcludes: string[] = [];
-
-  for (const raw of filters) {
-    if (typeof raw !== "string" || !raw) continue;
-
-    if (raw.startsWith("+")) forceIncludes.push(raw.slice(1));
-    else if (raw.startsWith("-")) forceExcludes.push(raw.slice(1));
-    else if (raw.startsWith("!")) excludes.push(raw.slice(1));
-    else includes.push(raw);
-  }
-
-  const selected = new Set(
-    includes.length === 0
-      ? allNames
-      : allNames.filter((name) =>
-          includes.some((p) => matchesPattern(name, p)),
-        ),
+  return applyCapabilityFilter(
+    allNames,
+    filters.filter((filter): filter is string => typeof filter === "string"),
   );
-
-  for (const name of [...selected]) {
-    if (excludes.some((p) => matchesPattern(name, p))) selected.delete(name);
-  }
-
-  for (const name of allNames) {
-    if (forceIncludes.some((p) => p.toLowerCase() === name.toLowerCase()))
-      selected.add(name);
-  }
-
-  for (const name of allNames) {
-    if (forceExcludes.some((p) => p.toLowerCase() === name.toLowerCase()))
-      selected.delete(name);
-  }
-
-  return allNames.filter((name) => selected.has(name));
 }
 
 export function mergeFilterLayers(...layers: unknown[]) {
@@ -154,15 +126,18 @@ export function mergeFilterLayers(...layers: unknown[]) {
   return result.length === 0 ? undefined : result;
 }
 
-export function coalesce(value, fallback) {
+export function coalesce<T, U>(value: T | undefined, fallback: U): T | U {
   return value === undefined ? fallback : value;
 }
 
-export function shortSessionId(sessionId) {
+export function shortSessionId(sessionId: unknown) {
   return String(sessionId ?? "").slice(0, 8);
 }
 
-export function shortestUniqueSessionId(sessionId, sessionIds: unknown[] = []) {
+export function shortestUniqueSessionId(
+  sessionId: unknown,
+  sessionIds: unknown[] = [],
+) {
   const full = String(sessionId ?? "");
   let length = Math.min(8, full.length);
 
@@ -179,13 +154,21 @@ export function shortestUniqueSessionId(sessionId, sessionIds: unknown[] = []) {
   return full.slice(0, length);
 }
 
-export function buildReceiptText(callerAgent, callerSessionId, message) {
+export function buildReceiptText(
+  callerAgent: unknown,
+  callerSessionId: unknown,
+  message: string,
+) {
   const agentText = callerAgent ? `[${callerAgent}] agent` : "agent";
 
   return `Message from ${agentText} from session ${String(callerSessionId ?? "")}:\n${message}\nOnly your final answer will be returned.`;
 }
 
-export function buildReturnText(agent, sessionId, finalAnswer) {
+export function buildReturnText(
+  agent: unknown,
+  sessionId: unknown,
+  finalAnswer: string,
+) {
   const agentText = agent ? `[${agent}] agent` : "agent";
 
   return `Message from ${agentText} from session ${String(sessionId ?? "")}:\n${finalAnswer}`;
@@ -193,6 +176,7 @@ export function buildReturnText(agent, sessionId, finalAnswer) {
 
 
 const EXTENSION_DIR = path.join("extensions", "pi-gentic");
+const JsonObjectSchema = Schema.Record(Schema.String, Schema.Json);
 
 export function defaultAgentDir() {
   return (
@@ -202,18 +186,21 @@ export function defaultAgentDir() {
 
 export function getConfigRoots(
   cwd = process.cwd(),
-
   agentDir = defaultAgentDir(),
+  projectTrusted = false,
 ) {
   const roots = [path.join(agentDir, EXTENSION_DIR)];
-  const projectRoot = findNearestProjectConfigRoot(cwd);
 
-  if (projectRoot) roots.push(projectRoot);
+  if (projectTrusted) {
+    const projectRoot = findNearestProjectConfigRoot(cwd);
+
+    if (projectRoot) roots.push(projectRoot);
+  }
 
   return roots;
 }
 
-function findNearestProjectConfigRoot(cwd) {
+function findNearestProjectConfigRoot(cwd: string) {
   let current = path.resolve(cwd);
 
   while (true) {
@@ -230,12 +217,15 @@ function findNearestProjectConfigRoot(cwd) {
 export function loadPiSettings(
   agentDir = defaultAgentDir(),
   cwd = process.cwd(),
-  diagnostics: AnyRecord[] = [],
+  diagnostics: UnknownRecord[] = [],
+  projectTrusted = false,
 ) {
-  const settings: AnyRecord = {};
+  const settings: UnknownRecord = {};
   const paths = [
     path.join(agentDir, "settings.json"),
-    ...ancestorDirs(cwd, ".pi", "settings.json"),
+    ...(projectTrusted
+      ? ancestorDirs(cwd, ".pi", "settings.json")
+      : []),
   ];
 
   for (const settingsPath of dedupePaths(paths)) {
@@ -253,16 +243,16 @@ export function enabledModelPatterns(agentDir = defaultAgentDir()) {
   return toStringArray(settings.enabledModels);
 }
 
-export function loadConfiguration(options: AnyRecord = {}) {
+export function loadConfiguration(options: UnknownRecord = {}) {
   const cwd = typeof options.cwd === "string" ? options.cwd : undefined;
   const agentDir =
     typeof options.agentDir === "string" ? options.agentDir : undefined;
   const roots = Array.isArray(options.roots)
     ? options.roots.filter((root): root is string => typeof root === "string")
-    : getConfigRoots(cwd, agentDir);
+    : getConfigRoots(cwd, agentDir, options.projectTrusted === true);
   const settings = createDefaultSettings();
-  const agentsByName = new Map<string, AnyRecord>();
-  const diagnostics: AnyRecord[] = [];
+  const agentsByName = new Map<string, AgentDefinition>();
+  const diagnostics: UnknownRecord[] = [];
 
   for (const root of roots) {
     const settingsPath = path.join(root, "settings.json");
@@ -310,13 +300,13 @@ function createDefaultSettings() {
   };
 }
 
-function readJson(filePath: string, diagnostics: AnyRecord[]): AnyRecord | undefined {
+function readJson(filePath: string, diagnostics: UnknownRecord[]): UnknownRecord | undefined {
   if (!existsSync(filePath)) return undefined;
 
   try {
     const parsed: unknown = JSON.parse(readFileSync(filePath, "utf8"));
 
-    return isRecord(parsed) ? parsed : undefined;
+    return Schema.decodeUnknownSync(JsonObjectSchema)(parsed);
   } catch (error) {
     diagnostics.push({
       severity: "error",
@@ -328,18 +318,18 @@ function readJson(filePath: string, diagnostics: AnyRecord[]): AnyRecord | undef
   }
 }
 
-function mergeRootSettings(target, source) {
+function mergeRootSettings(target: UnknownRecord, source: unknown) {
   if (!isRecord(source)) return;
 
   if (isRecord(source.agentlessSession))
     target.agentlessSession = mergeObjects(
-      target.agentlessSession,
+      isRecord(target.agentlessSession) ? target.agentlessSession : {},
       source.agentlessSession,
     );
 
   if (isRecord(source.agentDefaults))
     target.agentDefaults = mergeObjects(
-      target.agentDefaults,
+      isRecord(target.agentDefaults) ? target.agentDefaults : {},
       source.agentDefaults,
     );
 
@@ -352,11 +342,14 @@ function mergeRootSettings(target, source) {
     );
   }
 
-  if (["tree", "all"].includes(source.sessionMessagingScope))
+  if (
+    typeof source.sessionMessagingScope === "string" &&
+    ["tree", "all"].includes(source.sessionMessagingScope)
+  )
     target.sessionMessagingScope = source.sessionMessagingScope;
 }
 
-function mergeObjects(base, patch) {
+function mergeObjects(base: UnknownRecord, patch: UnknownRecord) {
   const result = { ...base };
 
   for (const [key, value] of Object.entries(patch)) {
@@ -369,7 +362,7 @@ function mergeObjects(base, patch) {
   return result;
 }
 
-function loadMarkdownAgents(dir: string, diagnostics: AnyRecord[]) {
+function loadMarkdownAgents(dir: string, diagnostics: UnknownRecord[]) {
   if (!existsSync(dir)) return [];
   let entries: import("node:fs").Dirent[] = [];
 
@@ -392,11 +385,11 @@ function loadMarkdownAgents(dir: string, diagnostics: AnyRecord[]) {
     );
 }
 
-function loadMarkdownAgent(filePath: string, diagnostics: AnyRecord[]) {
+function loadMarkdownAgent(filePath: string, diagnostics: UnknownRecord[]) {
   try {
     const content = readFileSync(filePath, "utf8");
     const { frontmatter, body } = parseMarkdownDefinition(content);
-    const metadata = frontmatter as AnyRecord;
+    const metadata = frontmatter;
     const definition = normalizeAgentDefinition(
       { ...metadata, instructions: body.trim() || metadata.instructions },
       filePath,
@@ -415,7 +408,7 @@ function loadMarkdownAgent(filePath: string, diagnostics: AnyRecord[]) {
   }
 }
 
-function normalizeAgentDefinitions(value: unknown, sourcePath: string, diagnostics: AnyRecord[]) {
+function normalizeAgentDefinitions(value: unknown, sourcePath: string, diagnostics: UnknownRecord[]) {
   if (!Array.isArray(value)) return [];
 
   return value.flatMap((item, index) => {
@@ -430,10 +423,10 @@ function normalizeAgentDefinitions(value: unknown, sourcePath: string, diagnosti
 }
 
 export function normalizeAgentDefinition(
-  value,
+  value: unknown,
   sourcePath = "inline",
-  diagnostics: AnyRecord[] = [],
-) {
+  diagnostics: UnknownRecord[] = [],
+): AgentDefinition | undefined {
   if (!isRecord(value)) return undefined;
   const name = typeof value.name === "string" ? value.name.trim() : "";
 
@@ -454,7 +447,7 @@ export function normalizeAgentDefinition(
         ? value.models.find((item) => typeof item === "string")
         : undefined;
 
-  return removeUndefined({
+  return removeUndefined<AgentDefinition>({
     name,
     description: typeof value.description === "string" ? value.description : "",
     instructions:
@@ -473,7 +466,7 @@ export function normalizeAgentDefinition(
   });
 }
 
-function normalizeAgentsTool(value) {
+function normalizeAgentsTool(value: unknown) {
   if (!isRecord(value)) return undefined;
 
   return removeUndefined({
@@ -492,32 +485,36 @@ function normalizeAgentsTool(value) {
   });
 }
 
-function booleanOrUndefined(value) {
+function booleanOrUndefined(value: unknown) {
   return typeof value === "boolean" ? value : undefined;
 }
 
-function numberOrUndefined(value) {
+function numberOrUndefined(value: unknown) {
   const number = Number(value);
 
   return Number.isFinite(number) ? Math.floor(number) : undefined;
 }
 
-function removeUndefined(object) {
-  return Object.fromEntries(
-    Object.entries(object).filter(([, value]) => value !== undefined),
-  );
+function removeUndefined<T extends UnknownRecord>(object: T): T {
+  for (const key of Object.keys(object))
+    if (object[key] === undefined) delete object[key];
+
+  return object;
 }
 
 export function parseMarkdownDefinition(content: string): {
-  frontmatter: AnyRecord;
+  frontmatter: UnknownRecord;
   body: string;
 } {
   const { frontmatter, body } = parseFrontmatter(content);
 
-  return { frontmatter: isRecord(frontmatter) ? frontmatter : {}, body };
+  return {
+    frontmatter: Schema.decodeUnknownSync(JsonObjectSchema)(frontmatter ?? {}),
+    body,
+  };
 }
 
-function mergePiSettings(target: AnyRecord, source: AnyRecord) {
+function mergePiSettings(target: UnknownRecord, source: UnknownRecord) {
   for (const [key, value] of Object.entries(source))
     target[key] = isRecord(value) && isRecord(target[key])
       ? mergeObjects(target[key], value)
@@ -539,19 +536,21 @@ function dedupePaths(paths: string[]) {
 
 const SKILL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
-export function loadAvailableSkills(options: AnyRecord = {}) {
+export function loadAvailableSkills(options: UnknownRecord = {}) {
   const cwd = path.resolve(text(options.cwd) ?? process.cwd());
   const agentDir = path.resolve(text(options.agentDir) ?? defaultAgentDir());
   const diagnostics = Array.isArray(options.diagnostics)
-    ? (options.diagnostics as AnyRecord[])
+    ? options.diagnostics
     : [];
+  const projectTrusted = options.projectTrusted === true;
   const settings = isRecord(options.settings)
     ? options.settings
-    : loadPiSettings(agentDir, cwd, diagnostics);
+    : loadPiSettings(agentDir, cwd, diagnostics, projectTrusted);
   const configuredRoots = strings(options.skillRoots)?.map((root) => path.resolve(root));
   const roots = options.noSkills
     ? []
-    : configuredRoots ?? skillRoots(cwd, agentDir, settings, diagnostics);
+    : configuredRoots ??
+      skillRoots(cwd, agentDir, settings, diagnostics, projectTrusted);
   const skillPaths = uniquePaths([
     ...roots,
     ...explicitSkillPaths(
@@ -585,7 +584,7 @@ export function loadAvailableSkills(options: AnyRecord = {}) {
   );
 }
 
-export function findAvailableSkill(name: unknown, options: AnyRecord = {}) {
+export function findAvailableSkill(name: unknown, options: UnknownRecord = {}) {
   const query = String(name ?? "").toLowerCase();
 
   return loadAvailableSkills(options).find(
@@ -609,15 +608,20 @@ export function systemPromptSkillEntries(ctx: PiContext) {
 function skillRoots(
   cwd: string,
   agentDir: string,
-  settings: AnyRecord,
-  diagnostics: AnyRecord[],
+  settings: UnknownRecord,
+  diagnostics: UnknownRecord[],
+  projectTrusted: boolean,
 ) {
   return uniquePaths([
     path.join(agentDir, "skills"),
     path.join(homedir(), ".agents", "skills"),
-    ...ancestorDirs(cwd, ".agents", "skills"),
-    ...ancestorDirs(cwd, ".pi", "skills"),
-    ...packageSkillRoots(cwd, settings, diagnostics),
+    ...(projectTrusted
+      ? [
+          ...ancestorDirs(cwd, ".agents", "skills"),
+          ...ancestorDirs(cwd, ".pi", "skills"),
+          ...packageSkillRoots(cwd, settings, diagnostics),
+        ]
+      : []),
   ]);
 }
 
@@ -625,7 +629,7 @@ function explicitSkillPaths(
   entries: unknown[],
   cwd: string,
   agentDir: string,
-  diagnostics: AnyRecord[],
+  diagnostics: UnknownRecord[],
 ) {
   return entries.flatMap((entry) => {
     const ref = refPath(entry);
@@ -649,8 +653,8 @@ function explicitSkillPaths(
 
 function packageSkillRoots(
   cwd: string,
-  settings: AnyRecord,
-  diagnostics: AnyRecord[],
+  settings: UnknownRecord,
+  diagnostics: UnknownRecord[],
 ) {
   return [
     ...nearestPackageRoots(cwd),
@@ -665,7 +669,7 @@ function nearestPackageRoots(cwd: string) {
   }
 }
 
-function packageSkillRootsFromManifest(root: string, diagnostics: AnyRecord[]) {
+function packageSkillRootsFromManifest(root: string, diagnostics: UnknownRecord[]) {
   const manifest = readSkillJson(path.join(root, "package.json"), diagnostics);
   const declared = isRecord(manifest?.pi) ? refs(manifest.pi.skills) : [];
   const skillRoots = declared.length
@@ -675,7 +679,7 @@ function packageSkillRootsFromManifest(root: string, diagnostics: AnyRecord[]) {
   return skillRoots.filter((item): item is string => Boolean(item && existsSync(item)));
 }
 
-function resolvePackageRoot(entry: unknown, cwd: string, _diagnostics: AnyRecord[]) {
+function resolvePackageRoot(entry: unknown, cwd: string, diagnostics: UnknownRecord[]) {
   const ref = refPath(entry);
   if (!ref) return undefined;
 
@@ -687,7 +691,11 @@ function resolvePackageRoot(entry: unknown, cwd: string, _diagnostics: AnyRecord
     return path.dirname(
       createRequire(path.join(cwd, "package.json")).resolve(`${packageName}/package.json`),
     );
-  } catch {
+  } catch (error) {
+    diagnostics.push({
+      severity: "debug",
+      message: `Could not resolve skill package ${packageName}: ${getErrorMessage(error)}`,
+    });
     return undefined;
   }
 }
@@ -698,10 +706,13 @@ function resolvePackageSkillRef(entry: unknown, root: string) {
   return ref ? (path.isAbsolute(ref) ? ref : path.resolve(root, ref)) : undefined;
 }
 
-function loadSkillEntry(filePath: string, diagnostics: AnyRecord[]) {
+function loadSkillEntry(
+  filePath: string,
+  diagnostics: UnknownRecord[],
+): SkillDefinition[] {
   try {
     const { frontmatter, body } = parseMarkdownDefinition(readFileSync(filePath, "utf8"));
-    const metadata = frontmatter as AnyRecord;
+    const metadata = frontmatter;
     const name = text(metadata.name)?.trim() ?? "";
     const description = text(metadata.description)?.trim() ?? "";
 
@@ -723,7 +734,7 @@ function loadSkillEntry(filePath: string, diagnostics: AnyRecord[]) {
       return [];
     }
 
-    return [compact({
+    return [compact<SkillDefinition>({
       name,
       description,
       location: filePath,
@@ -743,8 +754,11 @@ function loadSkillEntry(filePath: string, diagnostics: AnyRecord[]) {
   }
 }
 
-function dedupeSkills(skills: AnyRecord[], diagnostics: AnyRecord[]) {
-  const byName = new Map<string, AnyRecord>();
+function dedupeSkills(
+  skills: SkillDefinition[],
+  diagnostics: UnknownRecord[],
+) {
+  const byName = new Map<string, SkillDefinition>();
 
   for (const skill of skills) {
     const key = String(skill.name).toLowerCase();
@@ -762,7 +776,7 @@ function dedupeSkills(skills: AnyRecord[], diagnostics: AnyRecord[]) {
   return [...byName.values()];
 }
 
-function readSkillJson(filePath: string, diagnostics: AnyRecord[]) {
+function readSkillJson(filePath: string, diagnostics: UnknownRecord[]) {
   if (!existsSync(filePath)) return undefined;
 
   try {
@@ -810,8 +824,11 @@ function text(value: unknown) {
   return typeof value === "string" ? value : undefined;
 }
 
-function compact(object: AnyRecord) {
-  return Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
+function compact<T extends UnknownRecord>(object: T): T {
+  for (const key of Object.keys(object))
+    if (object[key] === undefined) delete object[key];
+
+  return object;
 }
 
 function diag(severity: string, filePath: string, message: string, error: unknown) {
@@ -832,9 +849,20 @@ export function resolveSessionPolicy({
   allAgents,
   allTools,
   allSkills,
+}: {
+  settings: UnknownRecord;
+  activeAgent?: AgentDefinition;
+  overrides?: UnknownRecord;
+  allAgents: string[];
+  allTools: string[];
+  allSkills: string[];
 }) {
-  const defaults = settings.agentDefaults ?? {};
-  const agentless = settings.agentlessSession ?? {};
+  const defaults = isRecord(settings.agentDefaults)
+    ? settings.agentDefaults
+    : {};
+  const agentless = isRecord(settings.agentlessSession)
+    ? settings.agentlessSession
+    : {};
   const base = activeAgent ? defaults : agentless;
   const merged = mergePolicyObjects(base, activeAgent ?? {});
   const resolved = mergePolicyObjects(merged, overrides ?? {});
@@ -873,15 +901,28 @@ export function resolveSessionPolicy({
 
   return {
     agentName: activeAgent?.name,
-    description: resolved.description,
-    instructions: resolved.instructions,
-    model: resolved.model,
-    thinking: resolved.thinking,
-    theme: resolved.theme,
-    maxSubagentDepth: coalesce(resolved.maxSubagentDepth, 1),
+    description:
+      typeof resolved.description === "string"
+        ? resolved.description
+        : undefined,
+    instructions:
+      typeof resolved.instructions === "string"
+        ? resolved.instructions
+        : undefined,
+    model: typeof resolved.model === "string" ? resolved.model : undefined,
+    thinking:
+      typeof resolved.thinking === "string" ? resolved.thinking : undefined,
+    theme: typeof resolved.theme === "string" ? resolved.theme : undefined,
+    maxSubagentDepth:
+      typeof resolved.maxSubagentDepth === "number"
+        ? resolved.maxSubagentDepth
+        : 1,
     agentsTool: mergePolicyObjects(
-      defaults.agentsTool ?? {},
-      mergePolicyObjects(activeAgent?.agentsTool ?? {}, overrides?.agentsTool ?? {}),
+      isRecord(defaults.agentsTool) ? defaults.agentsTool : {},
+      mergePolicyObjects(
+        isRecord(activeAgent?.agentsTool) ? activeAgent.agentsTool : {},
+        isRecord(overrides?.agentsTool) ? overrides.agentsTool : {},
+      ),
     ),
     systemPromptFiles: systemPromptFilesFilter,
     resources: {
@@ -896,40 +937,69 @@ export function resolveSessionPolicy({
   };
 }
 
-export function getActiveState(sessionManager) {
+const persistedStateDiagnostics = new Set<string>();
+
+const ActiveStateSchema = Schema.Struct({
+  agentName: Schema.optional(
+    Schema.String.check(Schema.isPattern(/\S/)),
+  ),
+  overrides: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
+});
+
+export function getActiveState(sessionManager: PiSessionManager) {
   const entries = sessionManager.getEntries?.() ?? [];
 
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
 
-    if (entry.type === "custom" && entry.customType === "pi-gentic:state") {
-      return sanitizeState(entry.data);
+    if (
+      isRecord(entry) &&
+      entry.type === "custom" &&
+      entry.customType === "pi-gentic:state"
+    ) {
+      const decoded = decodeActiveState(entry.data);
+
+      if (decoded) return decoded;
+      persistedStateDiagnostics.add(
+        "Ignored an invalid persisted active-agent state.",
+      );
     }
   }
 
+  return emptyActiveState();
+}
+
+export function appendActiveState(
+  sessionManager: PiSessionManager,
+  state: unknown,
+) {
+  if (typeof sessionManager.appendCustomEntry !== "function")
+    throw new Error("The active Pi session does not support custom state entries.");
+
+  sessionManager.appendCustomEntry(
+    "pi-gentic:state",
+    decodeActiveState(state) ?? {},
+  );
+}
+
+function decodeActiveState(value: unknown) {
+  const decoded = Schema.decodeUnknownExit(ActiveStateSchema)(value);
+
+  return Exit.isSuccess(decoded) ? decoded.value : undefined;
+}
+
+export function activeStateDiagnostics() {
+  return [...persistedStateDiagnostics];
+}
+
+function emptyActiveState() {
   return { agentName: undefined, overrides: undefined };
 }
 
-export function appendActiveState(sessionManager, state) {
-  sessionManager.appendCustomEntry("pi-gentic:state", sanitizeState(state));
-}
-
-function sanitizeState(value) {
-  if (!value || typeof value !== "object")
-    return { agentName: undefined, overrides: undefined };
-  return {
-    agentName:
-      typeof value.agentName === "string" && value.agentName
-        ? value.agentName
-        : undefined,
-    overrides:
-      value.overrides && typeof value.overrides === "object"
-        ? value.overrides
-        : undefined,
-  };
-}
-
-function mergePolicyObjects(base, patch) {
+function mergePolicyObjects(
+  base: UnknownRecord | undefined,
+  patch: UnknownRecord | undefined,
+) {
   const result = { ...(base ?? {}) };
 
   for (const [key, value] of Object.entries(patch ?? {})) {
@@ -942,7 +1012,7 @@ function mergePolicyObjects(base, patch) {
   return result;
 }
 
-function isPlainObject(value) {
+function isPlainObject(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -950,6 +1020,10 @@ export function assertCanCreateSubagent({
   currentDepth,
   maxSubagentDepth,
   globalMaxSubagentDepth,
+}: {
+  currentDepth: unknown;
+  maxSubagentDepth: unknown;
+  globalMaxSubagentDepth: unknown;
 }) {
   const depth = Math.max(0, integer(currentDepth));
   const localLimit = integer(maxSubagentDepth);
@@ -967,7 +1041,7 @@ export function assertCanCreateSubagent({
     );
 }
 
-function integer(value) {
+function integer(value: unknown) {
   const number = Number(value);
 
   return Number.isFinite(number) ? Math.floor(number) : 0;
@@ -975,63 +1049,69 @@ function integer(value) {
 
 export const AGENT_CYCLE_SHORTCUT = "f7";
 
-export function nextAgentName(currentAgentName, agents) {
-  const cycle = [undefined, ...agents.map((agent) => agent.name)];
+export function nextAgentName(
+  currentAgentName: string | undefined,
+  agents: UnknownRecord[],
+) {
+  const cycle = [undefined, ...agents.map((agent) => String(agent.name))];
   const index = cycle.findIndex((name) => name === currentAgentName);
 
   return cycle[index === -1 ? 1 : (index + 1) % cycle.length];
 }
 
-export function hasPersistedAgentState(sessionManager) {
+export function hasPersistedAgentState(sessionManager: PiSessionManager) {
   return (sessionManager.getEntries?.() ?? []).some(
     (entry) =>
-      entry.type === "custom" && entry.customType === "pi-gentic:state",
+      isRecord(entry) &&
+      entry.type === "custom" &&
+      entry.customType === "pi-gentic:state",
   );
 }
 
-export function shouldApplyDefaultAgent(event, sessionManager) {
+export function shouldApplyDefaultAgent(
+  event: { reason?: unknown },
+  sessionManager: PiSessionManager,
+) {
   return (
-    ["new", "startup"].includes(event?.reason) &&
+    typeof event.reason === "string" &&
+    ["new", "startup"].includes(event.reason) &&
     isBlankSession(sessionManager) &&
     !hasPersistedAgentState(sessionManager)
   );
 }
 
-function isBlankSession(sessionManager) {
-  const context = sessionManager.buildSessionContext?.();
-
-  if (context) return (context.messages ?? []).length === 0;
-
+function isBlankSession(sessionManager: PiSessionManager) {
   return !(sessionManager.getEntries?.() ?? []).some(
-    (entry) => entry.type === "message" || entry.type === "custom_message",
+    (entry) =>
+      isRecord(entry) &&
+      (entry.type === "message" || entry.type === "custom_message"),
   );
 }
 
-export function configuredDefaultAgent(settings) {
+export function configuredDefaultAgent(settings: UnknownRecord) {
   return typeof settings?.defaultAgent === "string" &&
     settings.defaultAgent.trim()
     ? settings.defaultAgent.trim()
     : undefined;
 }
 
-export function activeAgentName(sessionManager) {
+export function activeAgentName(sessionManager: PiSessionManager) {
   return getActiveState(sessionManager).agentName;
 }
 
-export function filterAvailableAgents(config: AnyRecord, policy: AnyRecord) {
-  const resources = policy.resources;
-  const allowedAgents = Array.isArray(resources?.agents)
-    ? resources.agents.map(String)
-    : [];
-  const allowed = new Set(allowedAgents);
-  const agents = Array.isArray(config.agents)
-    ? config.agents.filter(isRecord)
-    : [];
+export function filterAvailableAgents(
+  config: { agents: AgentDefinition[] },
+  policy: { resources: { agents: string[] } },
+) {
+  const allowed = new Set(policy.resources.agents);
 
-  return agents.filter((agent) => allowed.has(String(agent.name)));
+  return config.agents.filter((agent) => allowed.has(agent.name));
 }
 
-export function assertAvailableAgent(agentName: unknown, agents: AnyRecord[]) {
+export function assertAvailableAgent(
+  agentName: unknown,
+  agents: AgentDefinition[],
+) {
   const agent = agents.find(
     (item) => String(item.name).toLowerCase() === String(agentName ?? "").toLowerCase(),
   );
@@ -1045,344 +1125,219 @@ export function assertAvailableAgent(agentName: unknown, agents: AnyRecord[]) {
 }
 
 
-const AGENT_SYSTEM_PROMPT = "@agent/SYSTEM.md";
-
-const DELEGATION_PROMPT = "@agent/extensions/pi-gentic/DELEGATION.md";
-
 export function buildResolvedSystemPrompt({
   baseSystemPrompt,
   config,
   policy,
-  skillEntries,
+}: {
+  baseSystemPrompt: string;
+  config: UnknownRecord;
+  policy: UnknownRecord;
+  skillEntries?: UnknownRecord[];
 }) {
-  const resolvedSkillEntries = mergeSkillEntries(
-    skillEntries,
-    parseSkillEntries(baseSystemPrompt),
-  );
-  const sources = promptSources({ baseSystemPrompt, config, policy });
-  const sections = [
-    ...sources
-      .filter((source) => source.slot === "native")
-      .map((source) => source.content),
+  const extensionSections = [
     policy.instructions,
-    ...sources
-      .filter((source) => source.slot !== "native")
-      .map((source) => source.content),
+    ...delegationSections(config, policy),
+    ...promptFileSections(config, policy.systemPromptFiles),
     agentsSection(config, policy),
     namingSection(policy),
-    skillsSection(resolvedSkillEntries, policy),
   ]
     .map((section) => String(section ?? "").trim())
     .filter(Boolean);
 
-  return sections.join("\n\n");
+  if (extensionSections.length === 0) return baseSystemPrompt;
+  const extensionContext = [
+    "<pi-gentic-context>",
+    ...extensionSections,
+    "</pi-gentic-context>",
+  ].join("\n\n");
+
+  return baseSystemPrompt.length > 0
+    ? `${baseSystemPrompt}\n\n${extensionContext}`
+    : extensionContext;
 }
 
 export function mergeSkillEntries(
-  primary: AnyRecord[] = [],
-  secondary: AnyRecord[] = [],
+  primary: UnknownRecord[] = [],
+  secondary: UnknownRecord[] = [],
 ) {
-  const merged = new Map();
+  const merged = new Map<string, UnknownRecord>();
 
   for (const entry of [...primary, ...secondary]) {
-    if (!entry?.name) continue;
-    const current = merged.get(entry.name);
+    const name = typeof entry.name === "string" ? entry.name : undefined;
 
-    if (current) {
-      merged.set(entry.name, {
-        ...entry,
-        ...current,
-        block: current.block ?? entry.block,
-      });
-      continue;
-    }
-    merged.set(entry.name, entry);
+    if (!name) continue;
+    const current = merged.get(name);
+    merged.set(name, current ? { ...entry, ...current } : entry);
   }
 
   return [...merged.values()];
 }
 
-export function availableAgentLines(agents, allowedNames) {
+export function availableAgentLines(
+  agents: UnknownRecord[],
+  allowedNames: string[],
+) {
   const allowed = new Set(allowedNames);
   const lines = agents
-    .filter((agent) => allowed.has(agent.name))
-    .map((agent) => `- ${agent.name}: ${agent.description ?? ""}`.trim());
+    .filter((agent) => allowed.has(String(agent.name)))
+    .map((agent) =>
+      `- ${String(agent.name)}: ${String(agent.description ?? "")}`.trim(),
+    );
 
   return lines.join("\n") || "none";
 }
 
-export function parseSkillEntries(systemPrompt) {
-  const entries: AnyRecord[] = [];
-  const block = String(systemPrompt ?? "").match(
-    /<available_skills>[\s\S]*?<\/available_skills>/,
-  )?.[0];
-
-  if (!block) return entries;
-
-  for (const match of block.matchAll(/<skill>[\s\S]*?<\/skill>/g)) {
-    const skillBlock = match[0];
-    const name = xmlValue(skillBlock, "name");
-
-    if (name)
-      entries.push({
-        name,
-        description: xmlValue(skillBlock, "description") ?? "",
-        location: xmlValue(skillBlock, "location") ?? "",
-        allowedTools: splitXmlList(xmlValue(skillBlock, "allowed-tools")),
-        disableModelInvocation:
-          xmlValue(skillBlock, "disable-model-invocation") === "true",
-        block: skillBlock,
-      });
-  }
-
-  return entries;
+export function parseSkillEntries(_systemPrompt: unknown): UnknownRecord[] {
+  return [];
 }
 
-export function filterSkillPrompt(systemPrompt, skillEntries, allowedSkills) {
-  const prompt = removeNativeSkillSection(systemPrompt);
-  const skills = skillsSection(skillEntries, { resources: { skills: allowedSkills } });
-
-  return [prompt.trim(), skills].filter(Boolean).join("\n\n");
+export function filterSkillPrompt(
+  systemPrompt: unknown,
+  _skillEntries: UnknownRecord[],
+  _allowedSkills: string[],
+) {
+  return String(systemPrompt ?? "");
 }
 
-function promptSources({ baseSystemPrompt, config, policy }) {
-  const filters = Array.isArray(policy.systemPromptFiles)
-    ? policy.systemPromptFiles
-    : undefined;
-  const sources = [
-    ...nativePromptSources(baseSystemPrompt),
-    ...delegationSources(config, policy),
-    ...promptFileSources(config, filters),
-  ].filter((source) => source.content);
+function delegationSections(config: UnknownRecord, policy: UnknownRecord) {
+  if (!canUseAgentsTool(policy)) return [];
 
-  if (!filters) return sources;
-  const allowed = new Set(
-    applyFilterList(
-      sources.map((source) => source.id),
-      filters,
-    ),
-  );
-
-  return sources.filter((source) => allowed.has(source.id));
+  return configurationRoots(config)
+    .map((root) => readPromptFile(path.join(root, "DELEGATION.md"), config))
+    .filter((content) => content.length > 0);
 }
 
-function nativePromptSources(systemPrompt) {
-  const prompt = removeNativeSkillSection(systemPrompt);
-  const projectSources: AnyRecord[] = [];
-  const withoutProjectInstructions = prompt.replace(
-    /<project_instructions\b([^>]*)>([\s\S]*?)<\/project_instructions>/g,
-    (full, attributes, body) => {
-      const sourcePath =
-        attributes.match(/\bpath=["']([^"']+)["']/)?.[1] ?? "AGENTS.md";
-      projectSources.push({
-        id: sourcePath,
-        content: stripXmlTags(body).trim(),
-      });
-
-      return "";
-    },
-  );
-
-  return [
-    {
-      id: AGENT_SYSTEM_PROMPT,
-      slot: "native",
-      content: stripXmlTags(withoutProjectInstructions).trim(),
-    },
-    ...projectSources.map((source) => ({ ...source, slot: "native" })),
-  ];
-}
-
-function delegationSources(config, policy) {
-  if (
-    !canUseAgentsTool(policy) ||
-    (policy.resources?.agents ?? []).length === 0
-  )
-    return [];
-  return (config.roots ?? [])
-    .map((root) => {
-      const filePath = path.join(root, "DELEGATION.md");
-
-      return existsSync(filePath)
-        ? {
-            id: DELEGATION_PROMPT,
-            slot: "delegation",
-            content: readFileSync(filePath, "utf8").trim(),
-          }
-        : undefined;
-    })
-    .filter(Boolean);
-}
-
-function promptFileSources(config, filters) {
+function promptFileSections(config: UnknownRecord, filters: unknown) {
   return promptFileRefs(filters)
-    .map((filePath) => ({
-      id: filePath,
-      slot: "file",
-      content: readPromptFile(filePath, config),
-    }))
-    .filter((source) => source.content);
+    .map((filePath) => readPromptFile(filePath, config))
+    .filter((content) => content.length > 0);
 }
 
-function promptFileRefs(filters) {
+function promptFileRefs(filters: unknown): string[] {
   if (!Array.isArray(filters)) return [];
 
-  return filters
-    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-    .filter(Boolean)
-    .flatMap((entry) =>
-      entry.startsWith("+")
-        ? [entry.slice(1)]
-        : entry.startsWith("!") || entry.startsWith("-") || entry === "*"
-          ? []
-          : [entry],
-    )
-    .filter((entry) => entry && !entry.includes("*") && !entry.includes("?"));
+  return filters.flatMap((entry) => {
+    if (typeof entry !== "string") return [];
+    const value = entry.trim();
+
+    if (value.startsWith("+")) return [value.slice(1)];
+    if (
+      value.length === 0 ||
+      value === "*" ||
+      value.startsWith("!") ||
+      value.startsWith("-") ||
+      value.includes("*") ||
+      value.includes("?")
+    ) {
+      return [];
+    }
+
+    return [value];
+  });
 }
 
-function agentsSection(config, policy) {
+function agentsSection(config: UnknownRecord, policy: UnknownRecord) {
   if (!canUseAgentsTool(policy)) return "";
-  const lines = availableAgentLines(
-    config.agents ?? [],
-    policy.resources?.agents ?? [],
-  );
+  const resources = isRecord(policy.resources) ? policy.resources : {};
+  const agents = Array.isArray(config.agents)
+    ? config.agents.filter(isRecord)
+    : [];
+  const allowed = Array.isArray(resources.agents)
+    ? resources.agents.filter((name): name is string => typeof name === "string")
+    : [];
+  const lines = availableAgentLines(agents, allowed);
 
   return lines === "none" ? "" : `Available agents\n${lines}`;
 }
 
-function namingSection(policy) {
+function namingSection(policy: UnknownRecord) {
   return canUseAgentsTool(policy)
     ? "When generating a session or worktree name, it must be 3 words long max."
     : "";
 }
 
-function skillsSection(skillEntries, policy) {
-  const allowed = new Set(policy.resources?.skills ?? []);
-  const skills = skillEntries.filter(
-    (skill) => allowed.has(skill.name) && skill.disableModelInvocation !== true,
-  );
+function canUseAgentsTool(policy: UnknownRecord) {
+  const resources = isRecord(policy.resources) ? policy.resources : {};
+  const tools = Array.isArray(resources.tools) ? resources.tools : [];
+  const agents = Array.isArray(resources.agents) ? resources.agents : [];
 
-  return skills.length ? renderAvailableSkillsBlock(skills) : "";
+  return tools.includes("agents") && agents.length > 0;
 }
 
-function canUseAgentsTool(policy) {
-  return (
-    (policy.resources?.tools ?? []).includes("agents") &&
-    (policy.resources?.agents ?? []).length > 0
-  );
-}
-
-function readPromptFile(filePath, config) {
+function readPromptFile(filePath: string, config: UnknownRecord) {
   const resolved = resolvePromptFile(filePath, config);
 
   if (!resolved) return "";
 
   try {
     return readFileSync(resolved, "utf8").trim();
-  } catch {
+  } catch (error) {
+    recordPromptDiagnostic(config, resolved, "Could not read prompt file", error);
     return "";
   }
 }
 
-function resolvePromptFile(filePath: string, config: AnyRecord) {
-  if (!filePath || typeof filePath !== "string") return undefined;
-  const candidates: string[] = [];
+function resolvePromptFile(filePath: string, config: UnknownRecord) {
+  if (filePath.length === 0) return undefined;
+  const roots = configurationRoots(config);
+  const candidates = path.isAbsolute(filePath)
+    ? [filePath]
+    : roots.map((root) => path.resolve(root, filePath));
 
-  if (path.isAbsolute(filePath)) candidates.push(filePath);
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
 
-  const roots = Array.isArray(config.roots) ? config.roots : [];
+    try {
+      const canonicalCandidate = realpathSync(candidate);
+      const allowed = roots.some((root) => {
+        const canonicalRoot = realpathSync(root);
+        const relative = path.relative(canonicalRoot, canonicalCandidate);
 
-  for (const root of roots) {
-    if (typeof root === "string") candidates.push(path.resolve(root, filePath));
+        return (
+          relative.length > 0 &&
+          relative !== ".." &&
+          !relative.startsWith(`..${path.sep}`) &&
+          !path.isAbsolute(relative)
+        );
+      });
+
+      if (allowed) return canonicalCandidate;
+      recordPromptDiagnostic(
+        config,
+        candidate,
+        "Ignored prompt file outside trusted configuration roots",
+      );
+    } catch (error) {
+      recordPromptDiagnostic(
+        config,
+        candidate,
+        "Could not validate prompt file",
+        error,
+      );
+    }
   }
-  const activeAgent = config.activeAgent;
-  const sourcePath =
-    isRecord(activeAgent) && typeof activeAgent.sourcePath === "string"
-      ? activeAgent.sourcePath
-      : undefined;
 
-  if (sourcePath && !path.isAbsolute(filePath))
-    candidates.push(
-      path.resolve(path.dirname(sourcePath.split("#")[0]), filePath),
-    );
-
-  candidates.push(path.resolve(filePath));
-
-  return candidates.find((candidate) => existsSync(candidate));
+  return undefined;
 }
 
-function removeNativeSkillSection(systemPrompt) {
-  return String(systemPrompt ?? "")
-    .replace(
-      /\n*The following skills provide specialized instructions for specific tasks\.[\s\S]*?<\/available_skills>/,
-      "",
-    )
-    .trim();
+function configurationRoots(config: UnknownRecord): string[] {
+  return Array.isArray(config.roots)
+    ? config.roots.filter((root): root is string => typeof root === "string")
+    : [];
 }
 
-function stripXmlTags(text) {
-  return String(text ?? "")
-    .replace(
-      /<\/?(?:project_context|project_instructions|active-agent|available_skills|skill|name|description|location)(?:\s+[^>]*)?>/g,
-      "",
-    )
-    .replace(/^[ \t]+$/gm, "")
-    .replace(/\n{3,}/g, "\n\n");
-}
-
-function renderAvailableSkillsBlock(skills) {
-  return [
-    "The following skills provide specialized instructions for specific tasks.",
-    "Use the read tool to load a skill's file when the task matches its description.",
-    "",
-    "<available_skills>",
-    ...skills.map((skill) => renderSkillBlock(skill)),
-    "</available_skills>",
-  ].join("\n");
-}
-
-function renderSkillBlock(skill) {
-  if (skill.block) return normalizeSkillBlock(skill.block);
-
-  return [
-    "  <skill>",
-    `    <name>${escapeXml(skill.name)}</name>`,
-    `    <description>${escapeXml(skill.description ?? "")}</description>`,
-    skill.location ? `    <location>${escapeXml(skill.location)}</location>` : "",
-    "  </skill>",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
-function normalizeSkillBlock(block) {
-  return String(block ?? "")
-    .trim()
-    .split(/\r?\n/)
-    .map((line) => `  ${line.trim()}`)
-    .join("\n");
-}
-
-function escapeXml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function splitXmlList(value) {
-  return value
-    ? value
-        .split(/[\s,]+/)
-        .map((item) => item.trim())
-        .filter(Boolean)
-    : undefined;
-}
-
-function xmlValue(block, tag) {
-  return block
-    .match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`))?.[1]
-    ?.trim();
+function recordPromptDiagnostic(
+  config: UnknownRecord,
+  filePath: string,
+  message: string,
+  error?: unknown,
+) {
+  if (!Array.isArray(config.diagnostics)) return;
+  config.diagnostics.push({
+    severity: "warning",
+    path: filePath,
+    message:
+      error === undefined ? message : `${message}: ${getErrorMessage(error)}`,
+  });
 }

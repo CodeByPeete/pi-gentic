@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+      - run: npm ci
+      - run: npm run prepare
+      - run: npm run check
+      - run: npm audit --omit=dev
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+      - run: npm ci
+      - run: npm run test:coverage
+      - run: npm run test:coverage:effect
+      - name: Verify installed package
+        shell: bash
+        run: |
+          tarball="$(npm pack --silent)"
+          mkdir -p .agentfiles/package-smoke
+          cd .agentfiles/package-smoke
+          npm init --yes >/dev/null
+          npm install "../../${tarball}" --ignore-scripts
+          node --input-type=module -e "await import('pi-gentic'); await import('effect')"
+          test ! -e node_modules/vitest
+          test ! -e node_modules/typescript
+
+  visual-and-terminal:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: python -m pip install --disable-pip-version-check pillow pyte pexpect
+      - if: runner.os == 'Windows'
+        run: python -m pip install --disable-pip-version-check pywinpty
+      - run: npm run test:ui
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-evidence-${{ runner.os }}
+          path: |
+            test-ui/output/
+            test-e2e/output/

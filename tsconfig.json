@@ -9,12 +9,76 @@
     "outDir": "dist",
     "declaration": true,
     "strict": true,
-    "noImplicitAny": false,
+    "noImplicitAny": true,
+    "useUnknownInCatchVariables": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noImplicitOverride": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "refactors": true,
+        "diagnostics": true,
+        "includeSuggestionsInTsc": true,
+        "ignoreEffectSuggestionsInTscExitCode": true,
+        "ignoreEffectWarningsInTscExitCode": false,
+        "ignoreEffectErrorsInTscExitCode": false,
+        "diagnosticSeverity": {
+          "anyUnknownInErrorContext": "error",
+          "floatingEffect": "error",
+          "strictEffectProvide": "warning",
+          "tryCatchInEffectGen": "warning",
+          "unsafeEffectTypeAssertion": "error"
+        },
+        "overrides": [
+          {
+            "include": [
+              "src/application/**/*.ts",
+              "src/domain/**/*.ts",
+              "src/infrastructure/**/*.ts",
+              "src/runtime/**/*.ts"
+            ],
+            "exclude": [
+              "src/infrastructure/pi/legacy-v0_82/**/*.ts"
+            ],
+            "options": {
+              "diagnosticSeverity": {
+                "asyncFunction": "warning",
+                "cryptoRandomUUID": "warning",
+                "cryptoRandomUUIDInEffect": "warning",
+                "extendsNativeError": "warning",
+                "globalConsole": "warning",
+                "globalConsoleInEffect": "warning",
+                "globalDate": "warning",
+                "globalDateInEffect": "warning",
+                "globalFetch": "warning",
+                "globalFetchInEffect": "warning",
+                "globalRandom": "warning",
+                "globalRandomInEffect": "warning",
+                "globalTimers": "warning",
+                "globalTimersInEffect": "warning",
+                "instanceOfSchema": "warning",
+                "newPromise": "warning",
+                "nodeBuiltinImport": "warning",
+                "preferSchemaOverJson": "warning",
+                "processEnv": "warning",
+                "processEnvInEffect": "warning",
+                "unsafeEffectTypeAssertion": "error"
+              }
+            }
+          }
+        ]
+      }
+    ]
   },
   "include": ["src/**/*.ts"]
 }

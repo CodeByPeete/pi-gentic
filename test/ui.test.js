@@ -68,6 +68,42 @@ function terminalTextWidth(text) {
   }, 0);
 }
 
+test("agents result renderer tolerates malformed native boundary values", () => {
+  const emptyComponent = renderAgentsResult(null, null, theme, null);
+  const malformedComponent = renderAgentsResult(
+    {
+      details: {
+        status: 1,
+        kind: false,
+        cardId: {},
+        sessionId: [],
+        agentName: 2,
+        message: null,
+        answer: {},
+        async: "yes",
+        live: "yes",
+        livePanel: "yes",
+        startedAt: "now",
+        updatedAt: Number.NaN,
+        completedAt: "later",
+        inactiveMs: "none",
+        activities: {},
+        configuration: [],
+        sessions: {},
+        systemPrompt: 1,
+        error: false,
+        restored: "yes",
+      },
+    },
+    { expanded: "yes" },
+    theme,
+    { args: "invalid" },
+  );
+
+  assert.match(text(emptyComponent.render(80)), /✓ agents/i);
+  assert.match(text(malformedComponent.render(80)), /✓ agents/i);
+});
+
 test("agents tool call shell stays invisible so only the result card is shown", () => {
   const output = renderAgentsCall({ action: "send", message: "hello" }, theme, {
     executionStarted: true,

@@ -6,12 +6,14 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import {
   activeVisibleContext,
+  activeVisibleExtension,
   deleteRuntimeSession,
   getLiveRuntimeState,
   getRuntimeSession,
   installLiveSessionBridge,
   parkCurrentLiveRuntimeForSwitch,
   renderVisibleLiveSessionState,
+  setActiveVisibleExtension,
   setRuntimeSession,
   shouldPromptVisibleSessionNow,
   shouldRunVisibleExtensionCommandNow,
@@ -136,6 +138,16 @@ test("runtime activity tracking follows session replacement without leaking list
   }
 
   assert.deepEqual(unsubscribed, ["first", "second"]);
+});
+
+test("the current extension API follows native session replacement", () => {
+  const api = { sendMessage() {} };
+  const ctx = { sessionManager: { getSessionId: () => "current-api" } };
+
+  setActiveVisibleExtension(api, ctx);
+
+  assert.equal(activeVisibleExtension(), api);
+  assert.equal(activeVisibleContext(), ctx);
 });
 
 test("active visible context is shared through live runtime state", () => {

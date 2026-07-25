@@ -281,48 +281,27 @@ Generated session or worktree names are told to stay 3 words long max.
 
 ---
 
-## Codebase architecture
+## Runtime architecture
 
-The extension is organized around one main entrypoint and a small set of focused modules.
+Pi owns sessions, resources, trust decisions, prompts, models, providers, commands, and terminal semantics. Pi-gentic adds typed policy and delegation services without replacing those native capabilities.
 
 ```mermaid
 flowchart TD
-    Pi[Pi runtime] --> Extension[src/extension.ts]
-
-    Extension --> Interface[src/interface.ts]
-    Extension --> Orchestration[src/orchestration.ts]
-    Extension --> UI[src/ui.ts]
-
-    Orchestration --> Catalog[src/catalog.ts]
-    Orchestration --> Sessions[src/sessions.ts]
-    Orchestration --> Host[src/pi-host.ts]
-    Orchestration --> Worktrees[src/worktrees.ts]
-
-    Interface --> Orchestration
-    Sessions --> UI
-    Host --> Sessions
-
-    classDef edge fill:#101820,stroke:#79ffe1,color:#ffffff;
-    classDef core fill:#251a3f,stroke:#b991ff,color:#ffffff;
-    classDef ui fill:#1c2f4a,stroke:#8cc8ff,color:#ffffff;
-    classDef data fill:#23351f,stroke:#a6e875,color:#ffffff;
-
-    class Pi,Extension edge;
-    class Orchestration core;
-    class UI ui;
-    class Interface,Catalog,Sessions,Host,Worktrees data;
+    Pi[Pi 0.82 host] --> Boundary[Extension boundary]
+    Boundary --> Runtime[Effect ManagedRuntime]
+    Runtime --> Coordinator[Delegation coordinator]
+    Runtime --> Registry[Runtime registry]
+    Runtime --> Fibers[Delegation FiberMap]
+    Coordinator --> Policy[Capability and trust policy]
+    Coordinator --> Sessions[Native Pi sessions]
+    Coordinator --> Worktrees[Secure Worktree Manager]
+    Worktrees --> Git[Effect Git client]
+    Sessions --> UI[Pi TUI presentation]
+    Boundary --> Legacy[legacy-v0_82 adapter]
+    Legacy --> Pi
 ```
 
-In plain English:
-
-- `extension.ts` connects `pi-gentic` to Pi.
-- `interface.ts` parses commands and tool input.
-- `orchestration.ts` decides what should happen.
-- `catalog.ts` loads configuration, skills, prompts, policies, and worktrees.
-- `sessions.ts` finds and organizes related sessions.
-- `pi-host.ts` bridges Pi runtime behavior.
-- `worktrees.ts` creates isolated Git worktrees.
-- `ui.ts` renders cards and trees.
+The extension host owns one scoped `ManagedRuntime`. Runtime metadata is observable through `SubscriptionRef`, and background delegations are owned by `FiberMap`. Shutdown interrupts owned fibers and releases runtime entries. The exact-version adapter under `src/infrastructure/pi/legacy-v0_82/` contains every private Pi 0.82 integration.
 
 ---
 
@@ -337,7 +316,9 @@ In plain English:
 | 3 | `<workspace>/.pi/extensions/pi-gentic/settings.json` | Settings for one project. |
 | 4 | `<workspace>/.pi/extensions/pi-gentic/agents/*.md` | Agents for one project. |
 
-Project settings override user settings.
+Project settings override user settings only after Pi returns an affirmative project-trust decision. Untrusted projects cannot contribute pi-gentic settings, agents, skills, or prompt files. User-level configuration remains available.
+
+Prompt files must remain inside their trusted configuration root. Generated worktrees stay under `<repository>/.agentfiles/worktrees`. An explicit worktree folder must remain inside an approved worktree root, resolve without a symlink or junction escape, and be registered by Git as a worktree for the selected repository.
 
 ---
 
@@ -474,8 +455,28 @@ pi install pi-gentic
 Or install from a Git repository:
 
 ```bash
-pi install git+https://github.com/CodeByPeete/pi-gentic.git#v0.2.0
+pi install git+https://github.com/CodeByPeete/pi-gentic.git#v0.3.0
 ```
+
+Pi-gentic 0.3 supports the exact Pi peer version `0.82.0`. Startup fails with a compatibility diagnostic when the installed host version or required host capability differs. Recoverable compatibility, persistence, and stale-context failures are retained in a bounded structured diagnostic history.
+
+Diagnostics never intentionally include raw prompts, returned answers, credentials, environment values, or full user paths. Pi-gentic does not send telemetry to an external service.
+
+---
+
+## Development
+
+Requires Node.js 22.19 or later, Git, and a POSIX shell. `npm ci` runs `scripts/prepare-effect.sh`, which creates the ignored `.repos/effect` source checkout and idempotently prepares Effect TSGO.
+
+```bash
+npm run check
+npm run test:coverage
+npm run test:coverage:effect
+npm run test:ui
+npm run test:e2e
+```
+
+`npm run test:e2e` is deterministic and does not call a live model. `npm run test:e2e:live` is an optional live-model compatibility exercise. UI and terminal screenshots are written under `test-ui/output` and `test-e2e/output`.
 
 ---
 

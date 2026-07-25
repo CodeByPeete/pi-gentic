@@ -1,6 +1,16 @@
 import { existsSync, openSync, readSync, closeSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { getActiveState, shortSessionId } from "./catalog.js";
+import {
+  getActiveState,
+  isRecord,
+  shortSessionId,
+} from "./catalog.js";
+import { reportRuntimeDiagnostic } from "./diagnostics.js";
+import type {
+  PiContext,
+  PiRuntimeSession,
+  UnknownRecord,
+} from "./pi-types.js";
 import {
   findRuntimeSession,
   listRuntimeSessions,
@@ -8,7 +18,10 @@ import {
   registerLiveRuntime,
 } from "./pi-host.js";
 
-export function assertDifferentSession(callerSessionId, targetSessionId) {
+export function assertDifferentSession(
+  callerSessionId: unknown,
+  targetSessionId: unknown,
+) {
   if (!callerSessionId || !targetSessionId || callerSessionId !== targetSessionId)
     return;
 
@@ -18,10 +31,10 @@ export function assertDifferentSession(callerSessionId, targetSessionId) {
 }
 
 export function assertSessionMessagingScope(
-  callerSession: AnyRecord | undefined,
-  targetSession: AnyRecord | undefined,
-  sessions: AnyRecord[],
-  options: AnyRecord = {},
+  callerSession: UnknownRecord | undefined,
+  targetSession: UnknownRecord | undefined,
+  sessions: UnknownRecord[],
+  options: UnknownRecord = {},
 ) {
   if (options.scope === "all") return;
   const tree = mergeSessionSummaries([
@@ -41,8 +54,8 @@ export function assertSessionMessagingScope(
 }
 
 export function sessionTreeRoot(
-  session: AnyRecord | undefined,
-  sessions: AnyRecord[],
+  session: UnknownRecord | undefined,
+  sessions: UnknownRecord[],
 ) {
   if (!session) return undefined;
   const byKey = sessionKeyMap(sessions);
@@ -62,13 +75,18 @@ export function sessionTreeRoot(
         : current;
     }
 
-    current = byKey.get(parentKey);
+    const parent = byKey.get(parentKey);
+    if (!parent) return current;
+    current = parent;
   }
 
   return current;
 }
 
-export function resolveSessionReference(sessions: AnyRecord[], reference) {
+export function resolveSessionReference(
+  sessions: UnknownRecord[],
+  reference: unknown,
+) {
   if (!reference) throw new Error("sessionId is required.");
   const query = String(reference).toLowerCase();
   const matches = sessions.filter((session) =>
@@ -94,13 +112,13 @@ export function resolveSessionReference(sessions: AnyRecord[], reference) {
 const persistedSummaryCache = new Map();
 const persistedSessionListCache = new Map();
 
-export function listSessionSummariesFast(sessionDir: string | undefined): AnyRecord[] {
+export function listSessionSummariesFast(sessionDir: string | undefined): UnknownRecord[] {
   if (!sessionDir || !existsSync(sessionDir)) return [];
 
   return readdirSync(sessionDir)
     .filter((name) => name.endsWith(".jsonl"))
     .map((name) => fastSessionSummary(path.join(sessionDir, name)))
-    .filter((summary): summary is AnyRecord => Boolean(summary))
+    .filter((summary): summary is UnknownRecord => Boolean(summary))
     .sort((a, b) => modifiedTime(b) - modifiedTime(a));
 }
 
@@ -108,10 +126,10 @@ function fastSessionSummary(filePath: string) {
   try {
     const stat = statSync(filePath);
     const lines = readFileHead(filePath).split(/\r?\n/);
-    const header = parseLine(lines[0]);
+    const header = parseLine(lines[0] ?? "");
 
     if (header?.type !== "session") return undefined;
-    const details: AnyRecord = {
+    const details: UnknownRecord = {
       id: header.id,
       path: filePath,
       cwd: header.cwd,
@@ -139,7 +157,8 @@ function fastSessionSummary(filePath: string) {
     }
 
     return details;
-  } catch {
+  } catch (error) {
+    reportRuntimeDiagnostic("session-header", error);
     return undefined;
   }
 }
@@ -160,14 +179,15 @@ function readFileHead(filePath: string, bytes = 64 * 1024) {
 function parseLine(line: string) {
   try {
     return line?.trim() ? JSON.parse(line) : undefined;
-  } catch {
+  } catch (error) {
+    reportRuntimeDiagnostic("session-entry-json", error);
     return undefined;
   }
 }
 
 export async function cachedPersistedSessions(
   key: string,
-  load: () => Promise<AnyRecord[]>,
+  load: () => Promise<UnknownRecord[]>,
   maxAgeMs = 15_000,
 ) {
   const now = Date.now();
@@ -204,16 +224,23 @@ export async function cachedPersistedSessions(
 
 export function warmPersistedSessions(
   key: string,
-  load: () => Promise<AnyRecord[]>,
+  load: () => Promise<UnknownRecord[]>,
 ) {
-  void cachedPersistedSessions(key, load).catch(() => undefined);
+  void cachedPersistedSessions(key, load).catch((error) => {
+    reportRuntimeDiagnostic("session-prefetch", error, "debug");
+  });
 }
 
-export function summarizeSession(session, options: AnyRecord = {}) {
-  const persisted =
-    options.enrich === true
-      ? readPersistedSessionSummary(session.path, session.modified)
-      : cachedPersistedSessionSummary(session.path, session.modified);
+export function summarizeSession(
+  session: UnknownRecord,
+  options: UnknownRecord = {},
+) {
+  const sessionPath = typeof session.path === "string" ? session.path : "";
+  const modified =
+    typeof session.modified === "string" ? session.modified : undefined;
+  const persisted = options.enrich === true
+    ? readPersistedSessionSummary(sessionPath, modified)
+    : cachedPersistedSessionSummary(sessionPath, modified);
 
   return {
     id: session.id,
@@ -230,22 +257,22 @@ export function summarizeSession(session, options: AnyRecord = {}) {
   };
 }
 
-export function enrichSessionSummary(session) {
+export function enrichSessionSummary(session: UnknownRecord) {
   return session?.path
     ? { ...session, ...summarizeSession(session, { enrich: true }) }
     : session;
 }
 
-export function enrichSessionSummaries(sessions: AnyRecord[], limit = sessions.length) {
+export function enrichSessionSummaries(sessions: UnknownRecord[], limit = sessions.length) {
   return sessions.map((session, index) =>
     index < limit ? enrichSessionSummary(session) : session,
   );
 }
 
-export function orderSessionTree(sessions) {
+export function orderSessionTree(sessions: UnknownRecord[]) {
   const byKey = sessionKeyMap(sessions);
-  const children = new Map();
-  const roots: AnyRecord[] = [];
+  const children = new Map<string, UnknownRecord[]>();
+  const roots: UnknownRecord[] = [];
 
   for (const session of sessions) {
     const parent = parentSession(session, byKey);
@@ -257,17 +284,41 @@ export function orderSessionTree(sessions) {
     }
   }
 
-  const ordered: AnyRecord[] = [];
-  const subtreeModified = (session) =>
-    Math.max(
+  const activity = new Map<string, number>();
+  const subtreeModified = (
+    session: UnknownRecord,
+    visiting = new Set<string>(),
+  ): number => {
+    const key = primarySessionKey(session);
+    const cached = activity.get(key);
+
+    if (cached !== undefined) return cached;
+    if (visiting.has(key)) return modifiedTime(session);
+    const nestedVisiting = new Set(visiting).add(key);
+    const value = Math.max(
       modifiedTime(session),
-      ...(children.get(primarySessionKey(session)) ?? []).map(subtreeModified),
+      ...(children.get(key) ?? []).map((child) =>
+        subtreeModified(child, nestedVisiting),
+      ),
     );
-  const sortByTreeActivity = (items) => sortSessions(items, subtreeModified);
-  const visit = (session, depth = 0, siblingIndex = 0, siblingCount = 1) => {
-    const nested = sortByTreeActivity(
-      children.get(primarySessionKey(session)) ?? [],
-    );
+    activity.set(key, value);
+    return value;
+  };
+  const sortByTreeActivity = (items: UnknownRecord[]) =>
+    sortSessions(items, subtreeModified);
+  const ordered: UnknownRecord[] = [];
+  const visited = new Set<string>();
+  const visit = (
+    session: UnknownRecord,
+    depth = 0,
+    siblingIndex = 0,
+    siblingCount = 1,
+  ) => {
+    const key = primarySessionKey(session);
+
+    if (visited.has(key)) return;
+    visited.add(key);
+    const nested = sortByTreeActivity(children.get(key) ?? []);
     ordered.push({
       ...session,
       depth,
@@ -278,23 +329,30 @@ export function orderSessionTree(sessions) {
     );
   };
 
-  sortByTreeActivity(roots).forEach((root, index, sortedRoots) =>
+  const sortedRoots = sortByTreeActivity(roots);
+  sortedRoots.forEach((root, index) =>
     visit(root, 0, index, sortedRoots.length),
+  );
+  const cyclicOrphans = sortByTreeActivity(
+    sessions.filter((session) => !visited.has(primarySessionKey(session))),
+  );
+  cyclicOrphans.forEach((session, index) =>
+    visit(session, 0, index, cyclicOrphans.length),
   );
 
   return ordered;
 }
 
-export function treeSwitchPath(session) {
+export function treeSwitchPath(session: UnknownRecord) {
   return session.running === true
     ? (session.livePath ?? session.path)
     : (session.path ?? session.livePath);
 }
 
 export function sessionDiscoveryScope(
-  sessions: AnyRecord[],
-  currentSession: AnyRecord,
-  options: AnyRecord = {},
+  sessions: UnknownRecord[],
+  currentSession: UnknownRecord,
+  options: UnknownRecord = {},
 ) {
   return options.all === true
     ? sessions
@@ -302,10 +360,10 @@ export function sessionDiscoveryScope(
 }
 
 export function buildSessionTree(
-  currentSession: AnyRecord | undefined,
-  persistedSessions: AnyRecord[],
+  currentSession: UnknownRecord | undefined,
+  persistedSessions: UnknownRecord[],
   runtimeSessions: PiRuntimeSession[] = listRuntimeSessions(),
-  options: AnyRecord = {},
+  options: UnknownRecord = {},
 ) {
   return orderSessionTree(
     mergeSessionSummaries([
@@ -317,8 +375,8 @@ export function buildSessionTree(
 }
 
 export function resolveCurrentSessionDepth(
-  currentSession: AnyRecord | undefined,
-  persistedSessions: AnyRecord[],
+  currentSession: UnknownRecord | undefined,
+  persistedSessions: UnknownRecord[],
   runtimeSessions: PiRuntimeSession[] = listRuntimeSessions(),
 ) {
   if (!currentSession) return 0;
@@ -331,9 +389,9 @@ export function resolveCurrentSessionDepth(
 }
 
 export function sessionCompletionScope(
-  sessions: AnyRecord[],
-  currentSession: AnyRecord | undefined,
-  options: AnyRecord = {},
+  sessions: UnknownRecord[],
+  currentSession: UnknownRecord | undefined,
+  options: UnknownRecord = {},
 ) {
   const scoped = assignTreeDepths(
     sessionDiscoveryScope(sessions, currentSession ?? {}, options),
@@ -343,8 +401,8 @@ export function sessionCompletionScope(
 }
 
 export function findSessionSummary(
-  sessions: AnyRecord[],
-  identity: AnyRecord = {},
+  sessions: UnknownRecord[],
+  identity: UnknownRecord = {},
 ) {
   const keys = sessionKeys(identity).filter(Boolean);
 
@@ -355,8 +413,8 @@ export function findSessionSummary(
 }
 
 export function filterSessionNeighborhood(
-  sessions,
-  currentSession,
+  sessions: UnknownRecord[],
+  currentSession: UnknownRecord,
   { rx = 0, ry = 0 } = {},
 ) {
   if (!currentSession) return sessions;
@@ -398,13 +456,13 @@ export function filterSessionNeighborhood(
 }
 
 export function orderSessionCompletions(
-  sessions: AnyRecord[],
-  currentSession: AnyRecord | undefined,
+  sessions: UnknownRecord[],
+  currentSession: UnknownRecord | undefined,
 ) {
   if (!currentSession) return sortSessions(sessions, modifiedTime);
   const byKey = sessionKeyMap(sessions);
   const currentKeys = sessionKeys(currentSession);
-  const rank = (session: AnyRecord) => {
+  const rank = (session: UnknownRecord) => {
     const parentKey = parentSessionKey(session, byKey);
 
     return parentKey && currentKeys.includes(parentKey) ? 0 : 1;
@@ -418,20 +476,20 @@ export function orderSessionCompletions(
   );
 }
 
-export function mergeSessionSummaries(sessions) {
-  const byKey = new Map();
+export function mergeSessionSummaries(sessions: unknown[]) {
+  const byKey = new Map<string, UnknownRecord>();
 
-  for (const session of sessions.filter(Boolean)) {
+  for (const session of sessions.filter(isRecord)) {
     const key = session.path ?? session.sessionId ?? session.id;
 
-    if (!key) continue;
+    if (typeof key !== "string" || !key) continue;
     byKey.set(key, { ...(byKey.get(key) ?? {}), ...session });
   }
 
   return [...byKey.values()];
 }
 
-export function currentSessionSummary(ctx) {
+export function currentSessionSummary(ctx: PiContext) {
   const sessionId = ctx.sessionManager.getSessionId?.();
   const path = ctx.sessionManager.getSessionFile?.();
 
@@ -450,7 +508,7 @@ export function currentSessionSummary(ctx) {
   };
 }
 
-export function runtimeSessionSummary(runtime) {
+export function runtimeSessionSummary(runtime: PiRuntimeSession) {
   const sessionId = runtime.session.sessionManager.getSessionId();
 
   return {
@@ -468,7 +526,7 @@ export function runtimeSessionSummary(runtime) {
   };
 }
 
-export function withRuntimeState(session) {
+export function withRuntimeState(session: UnknownRecord) {
   const runtime = findRuntimeSession(
     (item) => item.session.sessionManager.getSessionId() === session.sessionId,
   );
@@ -501,29 +559,32 @@ export function withRuntimeState(session) {
   };
 }
 
-export function assignTreeDepths(sessions) {
+export function assignTreeDepths(sessions: UnknownRecord[]) {
   return sessions.map((session) => ({
     ...session,
     depth: Math.max(0, Number(session.depth ?? 0)),
-    inactiveMs: session.modified
-      ? Date.now() - new Date(session.modified).getTime()
-      : 0,
+    inactiveMs:
+      typeof session.modified === "string" ||
+      typeof session.modified === "number"
+        ? Date.now() - new Date(session.modified).getTime()
+        : 0,
   }));
 }
 
-function cachedPersistedSessionSummary(filePath: string, modified?: string): AnyRecord {
+function cachedPersistedSessionSummary(filePath: string, modified?: string): UnknownRecord {
   if (!filePath) return {};
 
   try {
     const cacheKey = `${filePath}:${modified ?? statSync(filePath).mtimeMs}`;
 
     return persistedSummaryCache.get(cacheKey) ?? {};
-  } catch {
+  } catch (error) {
+    reportRuntimeDiagnostic("session-summary-cache", error);
     return {};
   }
 }
 
-function readPersistedSessionSummary(filePath: string, modified?: string): AnyRecord {
+function readPersistedSessionSummary(filePath: string, modified?: string): UnknownRecord {
   if (!filePath) return {};
 
   try {
@@ -531,7 +592,7 @@ function readPersistedSessionSummary(filePath: string, modified?: string): AnyRe
     const cached = persistedSummaryCache.get(cacheKey);
 
     if (cached) return cached;
-    const summary: AnyRecord = {};
+    const summary: UnknownRecord = {};
 
     for (const line of readFileSync(filePath, "utf8").split(/\r?\n/)) {
       if (!line.trim()) continue;
@@ -558,7 +619,8 @@ function readPersistedSessionSummary(filePath: string, modified?: string): AnyRe
     prunePersistedSummaryCache();
 
     return summary;
-  } catch {
+  } catch (error) {
+    reportRuntimeDiagnostic("session-summary-read", error);
     return {};
   }
 }
@@ -572,7 +634,7 @@ function prunePersistedSummaryCache(maxEntries = 500) {
   }
 }
 
-function extractText(content) {
+function extractText(content: unknown) {
   if (typeof content === "string") return content;
 
   if (!Array.isArray(content)) return "";
@@ -584,7 +646,7 @@ function extractText(content) {
     .join("\n");
 }
 
-function cleanSessionMessage(text) {
+function cleanSessionMessage(text: string) {
   const match = String(text).match(
     /^Message from(?: \[[^\]]+\])? agent from session [^:]+:\n([\s\S]*?)(?:\nOnly your final answer will be returned\.)?$/,
   );
@@ -592,17 +654,24 @@ function cleanSessionMessage(text) {
   return (match?.[1] ?? text).trim();
 }
 
-function isAncestorOrDescendant(a, b, byKey) {
+function isAncestorOrDescendant(
+  a: UnknownRecord,
+  b: UnknownRecord,
+  byKey: Map<string, UnknownRecord>,
+) {
   return isAncestor(a, b, byKey) || isAncestor(b, a, byKey);
 }
 
-function sameSessionIdentity(a, b) {
+function sameSessionIdentity(
+  a: UnknownRecord | undefined,
+  b: UnknownRecord | undefined,
+) {
   const rightKeys = new Set(sessionKeys(b));
 
   return sessionKeys(a).some((key) => rightKeys.has(key));
 }
 
-function sessionDisplayId(session) {
+function sessionDisplayId(session: UnknownRecord | undefined) {
   return (
     shortSessionId(session?.sessionId ?? session?.id) ||
     shortSessionId(idFromPath(session?.path)) ||
@@ -611,7 +680,11 @@ function sessionDisplayId(session) {
   );
 }
 
-function isAncestor(ancestor, session, byKey) {
+function isAncestor(
+  ancestor: UnknownRecord,
+  session: UnknownRecord,
+  byKey: Map<string, UnknownRecord>,
+) {
   const ancestorKeys = new Set(sessionKeys(ancestor));
   let current = session;
 
@@ -627,8 +700,8 @@ function isAncestor(ancestor, session, byKey) {
   return false;
 }
 
-function sessionKeyMap(sessions) {
-  const byKey = new Map();
+function sessionKeyMap(sessions: UnknownRecord[]) {
+  const byKey = new Map<string, UnknownRecord>();
 
   for (const session of sessions)
     for (const key of sessionKeys(session)) byKey.set(key, session);
@@ -636,8 +709,11 @@ function sessionKeyMap(sessions) {
   return byKey;
 }
 
-function siblingGroups(sessions, byKey) {
-  const groups = new Map();
+function siblingGroups(
+  sessions: UnknownRecord[],
+  byKey: Map<string, UnknownRecord>,
+) {
+  const groups = new Map<string, UnknownRecord[]>();
 
   for (const session of sessions) {
     const key = siblingGroupKey(session, parentSessionKey(session, byKey));
@@ -647,55 +723,66 @@ function siblingGroups(sessions, byKey) {
   return groups;
 }
 
-function siblingGroupKey(session, parentKey) {
+function siblingGroupKey(
+  session: UnknownRecord,
+  parentKey: string | undefined,
+) {
   return `${parentKey ?? "root"}:${Number(session.depth ?? 0)}`;
 }
 
-function parentSession(session, byKey) {
+function parentSession(
+  session: UnknownRecord,
+  byKey: Map<string, UnknownRecord>,
+) {
   const key = parentSessionKey(session, byKey);
 
   return key ? byKey.get(key) : undefined;
 }
 
-function parentSessionKey(session, byKey) {
+function parentSessionKey(
+  session: UnknownRecord,
+  byKey: Map<string, UnknownRecord>,
+) {
   return parentKeys(session).find((key) => byKey.has(key));
 }
 
-function primarySessionKey(session) {
-  return (
+function primarySessionKey(session: UnknownRecord) {
+  return String(
     session.path ??
-    session.sessionId ??
-    session.id ??
-    shortSessionId(session.sessionId ?? session.id)
+      session.sessionId ??
+      session.id ??
+      shortSessionId(session.sessionId ?? session.id),
   );
 }
 
-function sessionLabel(session) {
+function sessionLabel(session: UnknownRecord) {
   return String(
     session.lastMessage ?? session.firstMessage ?? session.name ?? session.id ?? "",
   );
 }
 
-function sessionKeys(session) {
+function sessionKeys(session: UnknownRecord | undefined) {
+  if (!session) return [];
+
   return [
     session.path,
     session.sessionId,
     session.id,
     shortSessionId(session.sessionId ?? session.id),
     idFromPath(session.path),
-  ].filter(Boolean);
+  ].filter((key): key is string => typeof key === "string" && key.length > 0);
 }
 
-function parentKeys(session) {
+function parentKeys(session: UnknownRecord) {
   return [
     session.parentSessionPath,
     session.parentSessionId,
     idFromPath(session.parentSessionPath),
     shortSessionId(session.parentSessionId),
-  ].filter(Boolean);
+  ].filter((key): key is string => typeof key === "string" && key.length > 0);
 }
 
-function idFromPath(value) {
+function idFromPath(value: unknown) {
   const match = String(value ?? "").match(
     /([0-9a-f]{8,}(?:-[0-9a-f-]+)?)\.jsonl$/i,
   );
@@ -703,7 +790,10 @@ function idFromPath(value) {
   return match?.[1];
 }
 
-function sortSessions(sessions, score = modifiedTime) {
+function sortSessions(
+  sessions: UnknownRecord[],
+  score: (session: UnknownRecord) => number = modifiedTime,
+) {
   return [...sessions].sort(
     (a, b) =>
       score(b) - score(a) ||
@@ -712,15 +802,22 @@ function sortSessions(sessions, score = modifiedTime) {
   );
 }
 
-function modifiedTime(session) {
-  const time = new Date(session.modified ?? 0).getTime();
+function modifiedTime(session: UnknownRecord) {
+  const time = new Date(
+    typeof session.modified === "string" || typeof session.modified === "number"
+      ? session.modified
+      : 0,
+  ).getTime();
 
   return Number.isFinite(time) ? time : 0;
 }
 
-function uniqueBy(items, keyFn) {
-  const seen = new Set();
-  const result: AnyRecord[] = [];
+function uniqueBy<T>(
+  items: T[],
+  keyFn: (item: T) => unknown,
+) {
+  const seen = new Set<unknown>();
+  const result: T[] = [];
 
   for (const item of items) {
     const key = keyFn(item);

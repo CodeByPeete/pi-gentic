@@ -4,9 +4,17 @@ import {
   applyFilterList,
   buildReceiptText,
   buildReturnText,
+  chooseBoolean,
+  coalesce,
+  defaultAgentDir,
   formatDuration,
+  getErrorMessage,
+  isRecord,
+  mergeFilterLayers,
   parseIntegerRadius,
+  shortestUniqueSessionId,
   shortSessionId,
+  toStringArray,
 } from "../dist/catalog.js";
 import {
   normalizeToolInput,
@@ -171,7 +179,10 @@ test("tool input requires action", () => {
 });
 
 test("tool input trims action", () => {
-  assert.equal(normalizeToolInput({ action: " send " }).action, "send");
+  assert.equal(
+    normalizeToolInput({ action: " send ", message: "delegate" }).action,
+    "send",
+  );
 });
 
 test("radius floors decimals", () => {
@@ -184,6 +195,60 @@ test("radius rejects negatives", () => {
 
 test("radius rejects non-numbers", () => {
   assert.throws(() => parseIntegerRadius("nope", "rx"), /non-negative/);
+});
+
+test("record and radius boundaries cover absence and malformed containers", () => {
+  assert.equal(isRecord({ value: 1 }), true);
+  assert.equal(isRecord(null), false);
+  assert.equal(isRecord([]), false);
+  assert.equal(parseIntegerRadius(undefined, "rx", 3), 3);
+  assert.equal(parseIntegerRadius(null, "rx", 4), 4);
+  assert.equal(parseIntegerRadius("2", "rx"), 2);
+  assert.equal(formatDuration(-1_000), "0s");
+  assert.deepEqual(applyFilterList(names, "read"), names);
+});
+
+test("the agent directory honors its environment override and native default", () => {
+  const previous = process.env.PI_CODING_AGENT_DIR;
+
+  try {
+    process.env.PI_CODING_AGENT_DIR = "custom-agent-dir";
+    assert.equal(defaultAgentDir(), "custom-agent-dir");
+    delete process.env.PI_CODING_AGENT_DIR;
+    assert.match(defaultAgentDir(), /[\\/]\.pi[\\/]agent$/);
+  } finally {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+  }
+});
+
+test("catalog scalar helpers normalize every supported boundary shape", () => {
+  assert.deepEqual(toStringArray(["read", 1, "write"]), ["read", "write"]);
+  assert.deepEqual(toStringArray("read, write, "), ["read", "write"]);
+  assert.equal(toStringArray(42), undefined);
+  assert.equal(getErrorMessage(new Error("failed")), "failed");
+  assert.equal(getErrorMessage("failed"), "failed");
+  assert.equal(chooseBoolean(false, true), false);
+  assert.equal(chooseBoolean("false", true), true);
+  assert.equal(coalesce(undefined, "fallback"), "fallback");
+  assert.equal(coalesce("value", "fallback"), "value");
+});
+
+test("filter layers preserve omission, ignore malformed layers, and honor denial", () => {
+  assert.equal(mergeFilterLayers(undefined, "read"), undefined);
+  assert.deepEqual(mergeFilterLayers(["read"], undefined, ["write"]), [
+    "read",
+    "write",
+  ]);
+  assert.deepEqual(mergeFilterLayers(["read"], []), []);
+});
+
+test("shortest session ids expand across collisions and UUID separators", () => {
+  assert.equal(
+    shortestUniqueSessionId("12345678-abcd-final", ["12345678-abcd-other"]),
+    "12345678-abcd-fina",
+  );
+  assert.equal(shortestUniqueSessionId("short", []), "short");
 });
 
 test("filter star includes all", () => {
@@ -240,6 +305,11 @@ test("duration formats hours", () => {
 
 test("short session id takes first eight characters", () => {
   assert.equal(shortSessionId("123456789"), "12345678");
+});
+
+test("agentless receipt and return text use the generic agent label", () => {
+  assert.match(buildReceiptText(undefined, "caller", "work"), /^Message from agent/);
+  assert.match(buildReturnText(undefined, "child", "done"), /^Message from agent/);
 });
 
 test("receipt text includes the exact caller session and final-answer instruction", () => {

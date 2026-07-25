@@ -439,7 +439,7 @@ Agents can be limited to certain tools, skills, agents, and prompt files.
 
 | Pattern | Meaning |
 | --- | --- |
-| `*` | Allow everything. |
+| `*` | Preserve all resources in the current baseline. |
 | `pattern` | Allow matching resources. |
 | `!pattern` | Block matching resources. |
 | `+name` | Always allow one exact resource. |
@@ -447,6 +447,23 @@ Agents can be limited to certain tools, skills, agents, and prompt files.
 | `[]` | Allow nothing. |
 
 This keeps agents focused. A reviewer can be read-only. A builder can edit files. A researcher can get research tools.
+
+### Tool policy composition
+
+Pi-gentic treats Pi's registered tools as the catalog and Pi's active tools as the Ambient Tool Selection. Tool policy composes with that active selection as follows:
+
+- An omitted `tools` filter, `*`, exclusions, and exact additions or removals start from the ambient selection.
+- Plain patterns without `*` select matching registered tools explicitly.
+- `!pattern` removes matching ambient tools without activating inactive registered tools.
+- `+name` activates one exact registered tool.
+- `-name` wins over every inclusion.
+- `[]` activates no tools.
+
+For example, an ambient selection of `execute`, `patch`, and `agents` remains unchanged under `tools: ["*"]`. `tools: ["*", "!patch"]` produces `execute` and `agents`. `tools: ["inspect", "+agents"]` explicitly selects registered `inspect` and `agents` tools.
+
+Pi-gentic remembers the ambient selection while an explicit restriction is active. Clearing the restriction restores that selection when no later host write occurred. When Pi or another extension replaces the complete active selection, pi-gentic adopts that newer selection as the next ambient baseline before applying Session Policy.
+
+Pi exposes one shared active-tool list without ownership metadata or an atomic comparison operation. A participant cannot observe a write that recreates the same ordered selection. Pi-gentic preserves every distinct complete selection it can observe and does not infer hidden ownership.
 
 ---
 

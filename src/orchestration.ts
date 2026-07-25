@@ -43,6 +43,11 @@ import {
   type DelegationId as DelegationIdValue,
   type SessionId as SessionIdValue,
 } from "./domain/identifiers.js";
+import {
+  reconcileActiveToolSelection,
+  resolveActiveToolSelection,
+  type ToolPolicyState,
+} from "./domain/capabilities.js";
 import { DelegationFibers } from "./infrastructure/runtime/DelegationFibers.js";
 import { RuntimeMetadata, RuntimeRegistry } from "./infrastructure/runtime/RuntimeRegistry.js";
 import {
@@ -1315,6 +1320,7 @@ export class PiGenticOrchestrator {
   pi: PiApi;
   currentAgentName?: string;
   runtime: ExtensionRuntime;
+  private readonly toolPolicyStates = new WeakMap<PiSessionManager, ToolPolicyState>();
 
   constructor(pi: PiApi, runtime: ExtensionRuntime) {
     this.pi = pi;
@@ -1371,27 +1377,81 @@ export class PiGenticOrchestrator {
   }
 
   async applyCurrentPolicy(ctx: PiContext, options: { running?: boolean } = {}) {
-    const config = this.load(ctx);
-    const state = getActiveState(ctx.sessionManager);
-    const policy = this.resolvePolicy(ctx, config, state, {
+    const { config, policy: resolvedPolicy } = this.resolveCurrentPolicy(ctx, {
       skills: skillContext(ctx).names,
     });
-    this.currentAgentName = policy.agentName;
-    this.pi.setActiveTools(policy.resources.tools);
 
-    if (policy.model) {
-      const model = this.resolveModel(ctx, policy.model);
+    if (resolvedPolicy.model) {
+      const model = this.resolveModel(ctx, resolvedPolicy.model);
 
       if (model) await this.pi.setModel(model);
     }
 
-    if (isThinkingLevel(policy.thinking)) this.pi.setThinkingLevel(policy.thinking);
+    if (isThinkingLevel(resolvedPolicy.thinking)) this.pi.setThinkingLevel(resolvedPolicy.thinking);
 
-    if (policy.theme && ctx.mode === "tui") ctx.ui.setTheme(policy.theme);
+    if (resolvedPolicy.theme && ctx.mode === "tui") ctx.ui.setTheme(resolvedPolicy.theme);
+    const policy = this.reconcileVisibleToolPolicy(ctx, resolvedPolicy);
     this.setTitle(ctx, options.running === true);
     this.setAgentWidget(ctx);
 
     return { config, policy };
+  }
+
+  applyCurrentToolPolicy(ctx: PiContext, resources: { skills?: string[] } = {}) {
+    const { config, policy: resolvedPolicy, activeAgent } = this.resolveCurrentPolicy(ctx, resources);
+    const policy = this.reconcileVisibleToolPolicy(ctx, resolvedPolicy);
+
+    return { config, policy, activeAgent };
+  }
+
+  private resolveCurrentPolicy(ctx: PiContext, resources: { skills?: string[] } = {}) {
+    const config = this.load(ctx);
+    const state = getActiveState(ctx.sessionManager);
+    const activeAgent = config.agents.find((agent) => agent.name === state.agentName);
+    const policy = this.resolvePolicy(ctx, config, state, resources);
+
+    return { config, policy, activeAgent };
+  }
+
+  private reconcileVisibleToolPolicy(ctx: PiContext, policy: SessionPolicy) {
+    const tools = this.reconcileSessionTools({
+      sessionManager: ctx.sessionManager,
+      registeredToolNames: this.pi.getAllTools().map((tool) => tool.name),
+      observedToolNames: this.pi.getActiveTools(),
+      filters: policy.resourceFilters.tools,
+      apply: (selection) => this.pi.setActiveTools(selection),
+    });
+    const effectivePolicy = { ...policy, resources: { ...policy.resources, tools } };
+
+    this.currentAgentName = effectivePolicy.agentName;
+
+    return effectivePolicy;
+  }
+
+  private reconcileSessionTools({
+    sessionManager,
+    registeredToolNames,
+    observedToolNames,
+    filters,
+    apply,
+  }: {
+    sessionManager: PiSessionManager;
+    registeredToolNames: ReadonlyArray<string>;
+    observedToolNames: ReadonlyArray<string>;
+    filters: ReadonlyArray<string> | undefined;
+    apply: (selection: Array<string>) => void;
+  }) {
+    const reconciliation = reconcileActiveToolSelection({
+      registeredToolNames,
+      observedToolNames,
+      filters,
+      previousState: this.toolPolicyStates.get(sessionManager),
+    });
+
+    if (reconciliation.changed) apply(reconciliation.selection);
+    this.toolPolicyStates.set(sessionManager, reconciliation.state);
+
+    return reconciliation.selection;
   }
 
   setTitle(ctx: PiContext, running = false) {
@@ -1402,6 +1462,15 @@ export class PiGenticOrchestrator {
 
   setAgentWidget(ctx: PiContext) {
     setAgentLabel(ctx, activeAgentName(ctx.sessionManager));
+  }
+
+  prepareVisibleTurn(ctx: PiContext) {
+    try {
+      return this.applyCurrentToolPolicy(ctx);
+    } catch (error) {
+      if (isStaleExtensionContextError(error)) return undefined;
+      throw error;
+    }
   }
 
   buildPromptAppend(ctx: PiContext, event: { systemPrompt: string }) {
@@ -1425,14 +1494,26 @@ export class PiGenticOrchestrator {
     }
   }
 
-  applyPolicySnapshot(ctx: PiContext, resources: { tools?: string[]; skills?: string[] } = {}) {
+  applyPolicySnapshot(ctx: PiContext, resources: { skills?: string[] } = {}) {
     const config = this.load(ctx);
     const state = getActiveState(ctx.sessionManager);
     const activeAgent = config.agents.find((agent) => agent.name === state.agentName);
-    const policy = this.resolvePolicy(ctx, config, state, {
-      ...resources,
+    const registeredToolNames = this.pi.getAllTools().map((tool) => tool.name);
+    const resolvedPolicy = this.resolvePolicy(ctx, config, state, {
+      tools: registeredToolNames,
       skills: resources.skills ?? skillContext(ctx).names,
     });
+    const policy = {
+      ...resolvedPolicy,
+      resources: {
+        ...resolvedPolicy.resources,
+        tools: resolveActiveToolSelection({
+          registeredToolNames,
+          ambientToolNames: this.pi.getActiveTools(),
+          filters: ["*"],
+        }),
+      },
+    };
     this.currentAgentName = policy.agentName;
 
     return { config, policy, activeAgent };
@@ -2030,18 +2111,24 @@ export class PiGenticOrchestrator {
   }
 
   async applyPolicyToAgentSession(session: PiAgentSession, config: Configuration) {
-    const policy = this.resolveAgentSessionPolicy(session, config);
-    session.setActiveToolsByName(policy.resources.tools);
+    const resolvedPolicy = this.resolveAgentSessionPolicy(session, config);
 
-    if (policy.model) {
-      const model = resolveModelFromCatalog(session.modelRuntime, policy.model);
+    if (resolvedPolicy.model) {
+      const model = resolveModelFromCatalog(session.modelRuntime, resolvedPolicy.model);
 
       if (model) await session.setModel(model);
     }
 
-    if (isThinkingLevel(policy.thinking)) session.setThinkingLevel(policy.thinking);
+    if (isThinkingLevel(resolvedPolicy.thinking)) session.setThinkingLevel(resolvedPolicy.thinking);
+    const tools = this.reconcileSessionTools({
+      sessionManager: session.sessionManager,
+      registeredToolNames: session.getAllTools().map((tool) => tool.name),
+      observedToolNames: session.getActiveToolNames(),
+      filters: resolvedPolicy.resourceFilters.tools,
+      apply: (selection) => session.setActiveToolsByName(selection),
+    });
 
-    return policy;
+    return { ...resolvedPolicy, resources: { ...resolvedPolicy.resources, tools } };
   }
 
   async applyAgentlessPolicyToNewSession(

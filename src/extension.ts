@@ -131,6 +131,10 @@ export default async function piGentic(pi: ExtensionAPI) {
     orchestrator.setTitle(ctx, false);
   });
 
+  pi.on("input", (_event, ctx) => {
+    orchestrator.prepareVisibleTurn(ctx);
+  });
+
   pi.on("before_agent_start", (event, ctx) => orchestrator.buildPromptAppend(ctx, event));
 
   pi.registerCommand("agent", {

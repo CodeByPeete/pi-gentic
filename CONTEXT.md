@@ -16,6 +16,10 @@ _Avoid_: Current agent, loaded persona
 The complete set of native Pi resources that a Session is permitted to use before narrower policy is applied.
 _Avoid_: Allowlist, permissions
 
+**Ambient Tool Selection**:
+The latest complete active tool selection observed from Pi that was not produced by the current Session Policy.
+_Avoid_: Default tools, external tools
+
 **Session Policy**:
 The effective restrictions and runtime preferences for one Session.
 _Avoid_: Agent config, overrides

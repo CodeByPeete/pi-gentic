@@ -25,7 +25,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   );
   writeFileSync(
     path.join(configRoot, "agents", "fixture-reviewer.md"),
-    "---\nname: fixture-reviewer\ndescription: Deterministic extension fixture.\n---\n",
+    "---\nname: fixture-reviewer\ndescription: Deterministic extension fixture.\ntools: agents\n---\n",
   );
   const skillRoot = path.join(cwd, ".agents", "skills", "fixture-skill");
   mkdirSync(skillRoot, { recursive: true });
@@ -37,13 +37,16 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   const commands = new Map();
   const renderers = new Map();
   const shortcuts = new Map();
-  const tools = [];
+  const tools = [{ name: "native_tool" }];
+  let activeTools = ["native_tool"];
+  const activeToolWrites = [];
   const notifications = [];
   const messages = [];
   const activeEntries = [];
   const pi = {
     events: { emit: () => {} },
     getAllTools: () => tools,
+    getActiveTools: () => activeTools,
     getCommands: () => [...commands].map(([name, command]) => ({ name, ...command })),
     getShortcuts: () => [...shortcuts].map(([key, shortcut]) => ({ key, ...shortcut })),
     on: (name, handler) => {
@@ -52,10 +55,16 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     registerCommand: (name, command) => commands.set(name, command),
     registerMessageRenderer: (name, renderer) => renderers.set(name, renderer),
     registerShortcut: (key, shortcut) => shortcuts.set(key, shortcut),
-    registerTool: (tool) => tools.push(tool),
+    registerTool: (tool) => {
+      tools.push(tool);
+      activeTools.push(tool.name);
+    },
     sendMessage: (message) => messages.push(message),
     sendUserMessage: async (message) => messages.push(message),
-    setActiveTools: () => {},
+    setActiveTools: (selection) => {
+      activeTools = selection;
+      activeToolWrites.push(selection);
+    },
     setModel: async () => {},
     setThinkingLevel: () => {},
   };
@@ -94,7 +103,8 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
 
   assert.deepEqual([...commands.keys()].sort(), ["agent", "send", "skill"]);
   assert.equal(shortcuts.size, 1);
-  assert.equal(tools[0].name, "agents");
+  const agentsTool = tools.find((tool) => tool.name === "agents");
+  assert.ok(agentsTool);
   assert.equal(
     typeof renderers.get("pi-gentic:card")(
       { content: "done", details: { kind: "send", status: "done" } },
@@ -134,6 +144,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
         });
       },
       getAllTools: () => [{ name: "read" }],
+      getActiveToolNames: () => ["read"],
       modelRuntime: { getAvailable: () => [] },
       resourceLoader: { getSkills: () => ({ skills: [] }) },
       sessionManager: {
@@ -165,10 +176,16 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   await commands.get("send").handler("message --agent missing-agent", ctx);
   assert.match(notifications.flat().join("\n"), /No active agent|Usage/);
 
-  const toolResult = await tools[0].execute("tool-call", { action: "list" }, AbortSignal.timeout(1000), () => {}, ctx);
+  const toolResult = await agentsTool.execute(
+    "tool-call",
+    { action: "list" },
+    AbortSignal.timeout(1000),
+    () => {},
+    ctx,
+  );
   assert.equal(toolResult.isError, undefined);
   assert.ok(toolResult.content[0].text.length > 0);
-  const getResult = await tools[0].execute(
+  const getResult = await agentsTool.execute(
     "tool-get",
     { action: "get", agent: "fixture-reviewer" },
     AbortSignal.timeout(1000),
@@ -176,7 +193,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     ctx,
   );
   assert.match(getResult.content[0].text, /fixture-reviewer/);
-  const statusResult = await tools[0].execute(
+  const statusResult = await agentsTool.execute(
     "tool-status",
     { action: "status", sessionId: targetSessionId },
     AbortSignal.timeout(1000),
@@ -184,7 +201,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     ctx,
   );
   assert.equal(statusResult.isError, undefined);
-  const loadResult = await tools[0].execute(
+  const loadResult = await agentsTool.execute(
     "tool-load",
     { action: "load", agent: "clear" },
     AbortSignal.timeout(1000),
@@ -192,7 +209,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     ctx,
   );
   assert.equal(loadResult.isError, undefined);
-  const abortResult = await tools[0].execute(
+  const abortResult = await agentsTool.execute(
     "tool-abort",
     { action: "abort" },
     AbortSignal.timeout(1000),
@@ -201,7 +218,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   );
   assert.equal(abortResult.isError, undefined);
   assert.equal(ctx.aborted, true);
-  const discoverResult = await tools[0].execute(
+  const discoverResult = await agentsTool.execute(
     "tool-discover",
     { action: "discoverSessions", rx: 0, ry: 0 },
     AbortSignal.timeout(1000),
@@ -209,7 +226,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     ctx,
   );
   assert.equal(discoverResult.isError, undefined, discoverResult.content[0].text);
-  const toolError = await tools[0].execute(
+  const toolError = await agentsTool.execute(
     "tool-error",
     { action: "status" },
     AbortSignal.timeout(1000),
@@ -237,13 +254,23 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   };
   for (const handler of events.get("session_start") ?? []) await handler({ reason: "resume" }, ctx);
   for (const shortcut of shortcuts.values()) await shortcut.handler(ctx);
-  pi.setActiveTools = () => {};
+  pi.setActiveTools = (selection) => {
+    activeTools = selection;
+    activeToolWrites.push(selection);
+  };
 
   for (const handler of events.get("agent_start") ?? []) await handler({}, ctx);
   for (const handler of events.get("agent_end") ?? []) await handler({}, ctx);
+  await commands.get("agent").handler("fixture-reviewer", ctx);
+  activeTools = ["native_tool", "agents"];
+  for (const handler of events.get("input") ?? []) await handler({ text: "Validate policy" }, ctx);
+  const writesAfterInput = activeToolWrites.length;
+  assert.deepEqual(activeTools, ["agents"]);
   for (const handler of events.get("before_agent_start") ?? []) {
     const append = handler({ systemPrompt: "Base" }, ctx);
     assert.ok(append === undefined || typeof append === "object");
   }
+  assert.equal(activeToolWrites.length, writesAfterInput);
+  assert.deepEqual(activeToolWrites.at(-1), ["agents"]);
   assert.ok(messages.some((message) => message.customType === "pi-gentic:card"));
 });

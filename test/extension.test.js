@@ -67,9 +67,7 @@ test("send flag completion includes override and worktree flags", () => {
 
   assert.deepEqual(labels, ["--worktree"]);
 
-  assert.ok(
-    completeSend("continue --m").some((item) => item.label === "--model"),
-  );
+  assert.ok(completeSend("continue --m").some((item) => item.label === "--model"));
 
   assert.deepEqual(
     completeSend("continue --r").map((item) => item.label),
@@ -163,15 +161,10 @@ test("terminal async card state is persisted outside model context", () => {
   };
 
   assert.equal(
-    persistAgentCardState(sessionManager, details, () =>
-      entries.push(["flushed"]),
-    ),
+    persistAgentCardState(sessionManager, details, () => entries.push(["flushed"])),
     true,
   );
-  assert.deepEqual(entries, [
-    ["pi-gentic:card-state", details],
-    ["flushed"],
-  ]);
+  assert.deepEqual(entries, [["pi-gentic:card-state", details], ["flushed"]]);
 });
 
 test("running card state is not persisted as a completed snapshot", () => {

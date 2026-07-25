@@ -1,14 +1,6 @@
-import {
-  agentsActionName,
-  normalizeAgentsToolInputSync,
-} from "./domain/agents-tool.js";
+import { agentsActionName, normalizeAgentsToolInputSync } from "./domain/agents-tool.js";
 import type { UnknownRecord } from "./pi-types.js";
-import {
-  loadAvailableSkills,
-  loadConfiguration,
-  isRecord,
-  shortestUniqueSessionId,
-} from "./catalog.js";
+import { loadAvailableSkills, loadConfiguration, isRecord, shortestUniqueSessionId } from "./catalog.js";
 
 const SEND_VALUE_FLAGS = new Set([
   "agent",
@@ -110,17 +102,11 @@ function unescapeQuotedCharacter(char: string) {
   return char;
 }
 
-function readFlagValue(
-  tokens: ReadonlyArray<string>,
-  index: number,
-  inlineValue: string | undefined,
-) {
-  if (inlineValue !== undefined)
-    return { value: inlineValue, nextIndex: index };
+function readFlagValue(tokens: ReadonlyArray<string>, index: number, inlineValue: string | undefined) {
+  if (inlineValue !== undefined) return { value: inlineValue, nextIndex: index };
   const next = tokens[index + 1];
 
-  if (next === undefined || next === "" || next.startsWith("--"))
-    return { value: undefined, nextIndex: index };
+  if (next === undefined || next === "" || next.startsWith("--")) return { value: undefined, nextIndex: index };
   return { value: next, nextIndex: index + 1 };
 }
 
@@ -164,9 +150,7 @@ export function buildManualSkillMessage(skill: UnknownRecord, message = "") {
     skill.description ? `Description: ${skill.description}` : "",
     skill.location ? `Location: ${skill.location}` : "",
     allowedTools.length ? `Allowed tools: ${allowedTools.join(", ")}` : "",
-    skill.instructions
-      ? `<skill_instructions>\n${skill.instructions}\n</skill_instructions>`
-      : "",
+    skill.instructions ? `<skill_instructions>\n${skill.instructions}\n</skill_instructions>` : "",
     message ? `Request:\n${message}` : "Proceed with this skill.",
   ].filter(Boolean);
 
@@ -256,13 +240,11 @@ function applySendFlagValue(result: UnknownRecord, key: string, value: unknown) 
   else if (key === "tools" && text) setOverride(result, "tools", splitList(text));
   else if (key === "agents" && text) setOverride(result, "agents", splitList(text));
   else if (key === "skills" && text) setOverride(result, "skills", splitList(text));
-  else if (key === "system-prompt-files" && text)
-    setOverride(result, "systemPromptFiles", splitList(text));
+  else if (key === "system-prompt-files" && text) setOverride(result, "systemPromptFiles", splitList(text));
   else if (key === "max-subagent-depth" && text) {
     const number = Number(text);
 
-    if (Number.isFinite(number))
-      setOverride(result, "maxSubagentDepth", Math.floor(number));
+    if (Number.isFinite(number)) setOverride(result, "maxSubagentDepth", Math.floor(number));
   }
 }
 
@@ -288,11 +270,7 @@ export function normalizeToolInput(input: unknown) {
   return { ...normalized, action: agentsActionName(normalized) };
 }
 
-export function completeAgents(
-  prefix: string,
-  activeAgentName: string | undefined,
-  cwd = process.cwd(),
-) {
+export function completeAgents(prefix: string, activeAgentName: string | undefined, cwd = process.cwd()) {
   const config = loadConfiguration({ cwd });
   const query = prefix.trim().toLowerCase();
 
@@ -322,12 +300,10 @@ type CompletionOptions =
     };
 
 export function completeSkill(prefix: string, options: CompletionOptions = {}) {
-  const cwd =
-    typeof options === "string" ? options : (options.cwd ?? process.cwd());
+  const cwd = typeof options === "string" ? options : (options.cwd ?? process.cwd());
   const suggestionContext = typeof options === "object" ? options : {};
   const token = prefix.split(/\s/).at(-1) ?? "";
-  const replaceToken = (value: string) =>
-    `${prefix.slice(0, prefix.length - token.length)}${value}`;
+  const replaceToken = (value: string) => `${prefix.slice(0, prefix.length - token.length)}${value}`;
   const skills = suggestionContext.skills?.length
     ? suggestionContext.skills
     : loadAvailableSkills({ cwd }).map((skill) => skill.name);
@@ -339,18 +315,12 @@ export function completeSkill(prefix: string, options: CompletionOptions = {}) {
 }
 
 export function completeSend(prefix: string, options: CompletionOptions = {}) {
-  const cwd =
-    typeof options === "string" ? options : (options.cwd ?? process.cwd());
-  const sessions =
-    typeof options === "object" && Array.isArray(options.sessions)
-      ? options.sessions
-      : [];
-  const currentSessionId =
-    typeof options === "object" ? options.currentSessionId : undefined;
+  const cwd = typeof options === "string" ? options : (options.cwd ?? process.cwd());
+  const sessions = typeof options === "object" && Array.isArray(options.sessions) ? options.sessions : [];
+  const currentSessionId = typeof options === "object" ? options.currentSessionId : undefined;
   const suggestionContext = typeof options === "object" ? options : {};
   const token = prefix.split(/\s/).at(-1) ?? "";
-  const replaceToken = (value: string) =>
-    `${prefix.slice(0, prefix.length - token.length)}${value}`;
+  const replaceToken = (value: string) => `${prefix.slice(0, prefix.length - token.length)}${value}`;
   const agentValue = flagValueCompletion(prefix, "agent");
 
   if (agentValue) {
@@ -371,9 +341,10 @@ export function completeSend(prefix: string, options: CompletionOptions = {}) {
   const sessionValue = flagValueCompletion(prefix, "session");
 
   if (sessionValue) {
-    return completeSessions(sessionValue.token, sessions, currentSessionId).map(
-      (session) => ({ ...session, value: sessionValue.replace(session.value ?? "") }),
-    );
+    return completeSessions(sessionValue.token, sessions, currentSessionId).map((session) => ({
+      ...session,
+      value: sessionValue.replace(session.value ?? ""),
+    }));
   }
 
   if (token.startsWith("--")) {
@@ -383,11 +354,7 @@ export function completeSend(prefix: string, options: CompletionOptions = {}) {
     }));
   }
 
-  const commandCompletions = completeSlashSendCommand(
-    token,
-    replaceToken,
-    suggestionContext,
-  );
+  const commandCompletions = completeSlashSendCommand(token, replaceToken, suggestionContext);
 
   return commandCompletions ?? null;
 }
@@ -396,11 +363,7 @@ export function isCompletingSendSession(prefix: string) {
   return Boolean(flagValueCompletion(prefix, "session"));
 }
 
-function completeSlashSendCommand(
-  token: string,
-  replaceToken: (value: string) => string,
-  options: UnknownRecord,
-) {
+function completeSlashSendCommand(token: string, replaceToken: (value: string) => string, options: UnknownRecord) {
   if (!token.startsWith("/")) return undefined;
   const query = token.toLowerCase();
 
@@ -413,19 +376,14 @@ function sendSlashCommandValues(options: UnknownRecord) {
   const commands = recordArray(options.commands)
     .filter((command) => stringValue(command.name))
     .map((command) => commandCompletion(String(command.name), command));
-  const hasSkillCommands = commands.some((command) =>
-    command.value.startsWith("/skill:"),
-  );
+  const hasSkillCommands = commands.some((command) => command.value.startsWith("/skill:"));
   const skillFallbacks = hasSkillCommands
     ? []
-    : stringArray(options.skills).map((name) =>
-        commandCompletion(`skill:${name}`),
-      );
+    : stringArray(options.skills).map((name) => commandCompletion(`skill:${name}`));
   const byValue = new Map();
 
   for (const command of [...commands, ...skillFallbacks]) {
-    if (command.value && !byValue.has(command.value))
-      byValue.set(command.value, command);
+    if (command.value && !byValue.has(command.value)) byValue.set(command.value, command);
   }
 
   return [...byValue.values()];
@@ -444,11 +402,11 @@ function commandCompletion(name: string, command: UnknownRecord = {}) {
 function completionItemMatches(item: UnknownRecord, query: string) {
   return Boolean(
     !query ||
-      [item.value, item.label, item.description].some((text) =>
-        String(text ?? "")
-          .toLowerCase()
-          .includes(query),
-      ),
+    [item.value, item.label, item.description].some((text) =>
+      String(text ?? "")
+        .toLowerCase()
+        .includes(query),
+    ),
   );
 }
 
@@ -520,15 +478,10 @@ function recordArray(value: unknown): UnknownRecord[] {
 }
 
 function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function listValueCompletion(
-  values: ReadonlyArray<CompletionItem>,
-  token: string,
-) {
+function listValueCompletion(values: ReadonlyArray<CompletionItem>, token: string) {
   const comma = token.lastIndexOf(",");
   const prefix = comma === -1 ? "" : token.slice(0, comma + 1);
   const query = comma === -1 ? token : token.slice(comma + 1);
@@ -550,8 +503,7 @@ function modelCompletionValues(models: UnknownRecord[] = []): CompletionItem[] {
           {
             value,
             label: value,
-            description:
-              stringValue(model.label) ?? stringValue(model.name),
+            description: stringValue(model.label) ?? stringValue(model.name),
           },
         ]
       : [];
@@ -597,8 +549,7 @@ function flagValueCompletion(prefix: string, flag: string) {
 
     return {
       token,
-      replace: (value: string) =>
-        `${prefix.slice(0, prefix.length - token.length)}${value}`,
+      replace: (value: string) => `${prefix.slice(0, prefix.length - token.length)}${value}`,
     };
   }
 
@@ -609,20 +560,13 @@ function flagValueCompletion(prefix: string, flag: string) {
 
   return {
     token,
-    replace: (value: string) =>
-      `${prefix.slice(0, prefix.length - token.length)}${value}`,
+    replace: (value: string) => `${prefix.slice(0, prefix.length - token.length)}${value}`,
   };
 }
 
-function completeSessions(
-  token: string,
-  sessions: UnknownRecord[],
-  currentSessionId?: string,
-) {
+function completeSessions(token: string, sessions: UnknownRecord[], currentSessionId?: string) {
   const query = token.trim().toLowerCase();
-  const sessionIds = sessions
-    .map(sessionIdentifier)
-    .filter((id): id is string => Boolean(id));
+  const sessionIds = sessions.map(sessionIdentifier).filter((id): id is string => Boolean(id));
 
   return sessions
     .filter((session) => sessionIdentifier(session) !== currentSessionId)

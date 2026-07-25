@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  assertLegacyHostCompatible,
-  loadPiCodingAgentPeer,
-} from "../dist/pi-host.js";
+import { assertLegacyHostCompatible, loadPiCodingAgentPeer } from "../dist/pi-host.js";
 
 function compatiblePeer(version) {
   return {
@@ -32,10 +29,7 @@ function compatiblePeer(version) {
 }
 
 test("the legacy bridge rejects unknown Pi versions before installation", () => {
-  assert.throws(
-    () => assertLegacyHostCompatible(compatiblePeer("0.83.0")),
-    /supports Pi 0\.82\.0.*received 0\.83\.0/i,
-  );
+  assert.throws(() => assertLegacyHostCompatible(compatiblePeer("0.83.0")), /supports Pi 0\.82\.0.*received 0\.83\.0/i);
 });
 
 test("the legacy bridge reports every missing host capability", () => {

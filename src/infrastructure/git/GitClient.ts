@@ -1,6 +1,9 @@
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { Context, Effect, Layer, Stream } from "effect";
+import { Context, Effect, Layer, Metric, Redacted, Stream } from "effect";
 import { GitCommandFailed } from "../../domain/errors.js";
+
+const gitCommands = Metric.counter("pi_gentic_git_commands", { incremental: true });
+const gitDuration = Metric.timer("pi_gentic_git_duration");
 
 export interface GitResult {
   readonly exitCode: number;
@@ -11,10 +14,7 @@ export interface GitResult {
 export class GitClient extends Context.Service<
   GitClient,
   {
-    readonly run: (
-      cwd: string,
-      args: ReadonlyArray<string>,
-    ) => Effect.Effect<GitResult, GitCommandFailed>;
+    readonly run: (cwd: string, args: ReadonlyArray<string>) => Effect.Effect<GitResult, GitCommandFailed>;
   }
 >()("pi-gentic/GitClient") {
   static readonly layer = Layer.effect(
@@ -23,10 +23,7 @@ export class GitClient extends Context.Service<
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
       return {
-        run: Effect.fn("GitClient.run")(function* (
-          cwd: string,
-          args: ReadonlyArray<string>,
-        ) {
+        run: Effect.fn("GitClient.run")(function* (cwd: string, args: ReadonlyArray<string>) {
           const command = ChildProcess.make("git", args, {
             cwd,
             forceKillAfter: "2 seconds",
@@ -34,29 +31,27 @@ export class GitClient extends Context.Service<
           const operation = Effect.scoped(
             Effect.gen(function* () {
               const handle = yield* command.pipe(
-                Effect.provideService(
-                  ChildProcessSpawner.ChildProcessSpawner,
-                  spawner,
-                ),
+                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
               );
-          const [stdout, stderr, exitCode] = yield* Effect.all(
-            [
-              Stream.runCollect(handle.stdout),
-              Stream.runCollect(handle.stderr),
-              handle.exitCode,
-            ],
-            { concurrency: "unbounded" },
-          );
+              const [stdout, stderr, exitCode] = yield* Effect.all(
+                [Stream.runCollect(handle.stdout), Stream.runCollect(handle.stderr), handle.exitCode],
+                { concurrency: "unbounded" },
+              );
 
-          return {
-            exitCode: Number(exitCode),
-            stdout: decodeBytes(stdout).trim(),
-            stderr: decodeBytes(stderr).trim(),
-          };
-        }),
-      ).pipe(Effect.timeout("30 seconds"));
+              return {
+                exitCode: Number(exitCode),
+                stdout: decodeBytes(stdout).trim(),
+                stderr: decodeBytes(stderr).trim(),
+              };
+            }),
+          ).pipe(Effect.timeout("30 seconds"));
 
-          return yield* operation.pipe(
+          yield* Metric.update(gitCommands, 1);
+          const [duration, result] = yield* operation.pipe(
+            Effect.withSpan("GitClient.run", {
+              attributes: { args: args.join(" "), cwd: Redacted.make(cwd) },
+            }),
+            Effect.tapError((cause) => Effect.logDebug("Git command failed", cause)),
             Effect.mapError((cause) =>
               GitCommandFailed.make({
                 message: `Git command failed: git ${args.join(" ")}`,
@@ -65,7 +60,10 @@ export class GitClient extends Context.Service<
                 cause,
               }),
             ),
+            Effect.timed,
           );
+          yield* Metric.update(gitDuration, duration);
+          return result;
         }),
       };
     }),

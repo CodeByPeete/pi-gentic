@@ -11,6 +11,7 @@ import {
   getLiveRuntimeState,
   getRuntimeSession,
   installLiveSessionBridge,
+  loadPiCodingAgentPeer,
   parkCurrentLiveRuntimeForSwitch,
   renderVisibleLiveSessionState,
   setActiveVisibleExtension,
@@ -47,6 +48,113 @@ test("live runtime state is shared across duplicate module instances", async () 
   }
 });
 
+test("live session bridge switches to and cancels native runtime replacements", async () => {
+  await installLiveSessionBridge();
+  const peer = await loadPiCodingAgentPeer();
+  const state = getLiveRuntimeState();
+  const target = {
+    sessionFile: "target.jsonl",
+    sessionManager: { getSessionId: () => "target-live" },
+  };
+  state.liveRuntimes.set("target-live", {
+    runtime: {
+      session: target,
+      services: { marker: "services" },
+      diagnostics: { marker: "diagnostics" },
+      modelFallbackMessage: "fallback",
+    },
+    metadata: {},
+  });
+  const calls = [];
+  const host = {
+    emitBeforeSwitch: async () => ({ cancelled: false }),
+    teardownCurrent: async (...args) => calls.push(["teardown", ...args]),
+    apply: (value) => calls.push(["apply", value]),
+    finishSessionReplacement: async (...args) => calls.push(["finish", ...args]),
+  };
+
+  try {
+    assert.deepEqual(
+      await peer.AgentSessionRuntime.prototype.switchSession.call(host, "pi-gentic-live:target-live", {
+        withSession: true,
+      }),
+      { cancelled: false },
+    );
+    assert.deepEqual(
+      calls.map(([name]) => name),
+      ["teardown", "apply", "finish"],
+    );
+
+    host.emitBeforeSwitch = async () => ({ cancelled: true });
+    assert.deepEqual(
+      await peer.AgentSessionRuntime.prototype.switchSession.call(host, "pi-gentic-live:target-live", {}),
+      { cancelled: true },
+    );
+    await assert.rejects(
+      () => peer.AgentSessionRuntime.prototype.switchSession.call(host, "pi-gentic-live:missing-live", {}),
+      /No live pi-gentic session/,
+    );
+
+    const originalSwitch = state.hostSwitchSession;
+    state.hostSwitchSession = async (_path, options) => {
+      await options.withSession?.({ marker: "visible-context" });
+      return { cancelled: false, native: true };
+    };
+    host.session = target;
+    assert.deepEqual(
+      await peer.AgentSessionRuntime.prototype.switchSession.call(host, "native-session.jsonl", {
+        withSession: () => calls.push(["visible"]),
+      }),
+      { cancelled: false, native: true },
+    );
+    assert.equal(state.activeContext.marker, "visible-context");
+    state.hostSwitchSession = originalSwitch;
+
+    const originalAbort = state.hostAbortSession;
+    const originalPrompt = state.hostPromptSession;
+    state.hostAbortSession = async () => "native-abort";
+    state.hostPromptSession = async () => "native-prompt";
+    const bridgedSession = {
+      isStreaming: false,
+      sessionManager: {
+        getEntries: () => [],
+        getHeader: () => ({}),
+        getSessionId: () => "bridged-session",
+      },
+    };
+    assert.equal(await peer.AgentSession.prototype.abort.call(bridgedSession), "native-abort");
+    assert.equal(await peer.AgentSession.prototype.prompt.call(bridgedSession, "bridged prompt"), "native-prompt");
+    state.hostAbortSession = originalAbort;
+    state.hostPromptSession = originalPrompt;
+  } finally {
+    state.liveRuntimes.delete("target-live");
+  }
+});
+
+test("agent-call aborts cascade once through target sessions", async () => {
+  const host = await import("../dist/pi-host.js");
+  const aborted = [];
+  const parent = host.registerAgentCall({
+    callerSessionId: "root-caller",
+    targetSessionId: "nested-target",
+    abort: () => aborted.push("parent"),
+  });
+  const child = host.registerAgentCall({
+    callerSessionId: "nested-target",
+    targetSessionId: "leaf-target",
+    abort: () => aborted.push("child"),
+  });
+
+  try {
+    assert.equal(await host.abortAgentCallsForSession("root-caller"), 2);
+    assert.deepEqual(aborted.sort(), ["child", "parent"]);
+    assert.equal(await host.abortAgentCall("missing-call"), 0);
+  } finally {
+    parent.unregister();
+    child.unregister();
+  }
+});
+
 test("runtime registry preserves object identity for live activity updates", () => {
   const runtime = {
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -61,10 +169,7 @@ test("runtime registry preserves object identity for live activity updates", () 
 
   assert.equal(stored, runtime);
 
-  assert.equal(
-    getRuntimeSession("activity-session").lastActivityAt,
-    "2026-01-01T00:00:10.000Z",
-  );
+  assert.equal(getRuntimeSession("activity-session").lastActivityAt, "2026-01-01T00:00:10.000Z");
 
   deleteRuntimeSession("activity-session");
 });
@@ -191,10 +296,7 @@ test("normal visible prompts are tracked while they are running", async () => {
     "Normal prompt",
   );
 
-  assert.equal(
-    getRuntimeSession("visible-prompt-session").session.isStreaming,
-    false,
-  );
+  assert.equal(getRuntimeSession("visible-prompt-session").session.isStreaming, false);
 
   deleteRuntimeSession("visible-prompt-session");
 });
@@ -262,9 +364,7 @@ test("submit bridge prompts the visible session when another session blocks inpu
   await installBridgeForTest(state, "submitBridgeInstalled");
   const { InteractiveMode } = await import(
     pathToFileURL(
-      path.resolve(
-        "node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js",
-      ),
+      path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js"),
     ).href
   );
   const prompts = [];
@@ -315,14 +415,8 @@ test("submit bridge prompts the visible session when another session blocks inpu
     mode.editor.text = "/review opened session";
     await mode.defaultEditor.onSubmit("/review opened session");
 
-    assert.deepEqual(prompts, [
-      "message for opened session",
-      "/review opened session",
-    ]);
-    assert.deepEqual(history, [
-      "message for opened session",
-      "/review opened session",
-    ]);
+    assert.deepEqual(prompts, ["message for opened session", "/review opened session"]);
+    assert.deepEqual(history, ["message for opened session", "/review opened session"]);
     assert.equal(mode.editor.getText(), "");
   } finally {
     deleteRuntimeSession("blocked-session");
@@ -458,9 +552,7 @@ test("current InteractiveMode hydrates an active streaming message after its nat
   await installBridgeForTest(state, "liveHydrationBridgeInstalled");
   const { InteractiveMode } = await import(
     pathToFileURL(
-      path.resolve(
-        "node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js",
-      ),
+      path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js"),
     ).href
   );
   const streamingMessage = {
@@ -524,10 +616,10 @@ test("live visible session hydration preserves persisted orchestration cards whi
     mode.renderedContexts.map((context) => context.messages),
     [[user, card]],
   );
-  assert.deepEqual(events.map((event) => event.type), [
-    "message_start",
-    "message_update",
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["message_start", "message_update"],
+  );
   assert.equal(events[0].message, assistant);
 });
 
@@ -561,10 +653,10 @@ test("live visible session hydration skips stale persisted regular messages and 
     mode.renderedContexts.map((context) => context.messages),
     [[user, card]],
   );
-  assert.deepEqual(events.map((event) => event.message), [
-    liveAssistant,
-    liveAssistant,
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.message),
+    [liveAssistant, liveAssistant],
+  );
 });
 
 test("live visible session hydration survives 100 complex persisted and live workflow shapes", () => {
@@ -581,26 +673,14 @@ test("live visible session hydration survives 100 complex persisted and live wor
 
     const renderedMessages = mode.renderedContexts.at(-1).messages;
     for (const message of workflow.persistedCustomMessages)
-      assert.ok(
-        renderedMessages.includes(message),
-        `seed ${seed} lost custom message ${message.content}`,
-      );
+      assert.ok(renderedMessages.includes(message), `seed ${seed} lost custom message ${message.content}`);
 
     for (const message of workflow.staleMessages)
-      assert.ok(
-        !renderedMessages.includes(message),
-        `seed ${seed} rendered stale message`,
-      );
+      assert.ok(!renderedMessages.includes(message), `seed ${seed} rendered stale message`);
 
-    const replayedMessages = events
-      .filter((event) => event.type === "message_start")
-      .map((event) => event.message);
+    const replayedMessages = events.filter((event) => event.type === "message_start").map((event) => event.message);
 
-    assert.deepEqual(
-      replayedMessages,
-      workflow.expectedReplayMessages,
-      `seed ${seed}`,
-    );
+    assert.deepEqual(replayedMessages, workflow.expectedReplayMessages, `seed ${seed}`);
   }
 });
 
@@ -629,9 +709,7 @@ test("live visible session hydration restarts live-only tool calls when message 
     if (event.type !== "message_update") return;
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    for (const toolCall of event.message.content?.filter(
-      (part) => part.type === "toolCall",
-    ) ?? [])
+    for (const toolCall of event.message.content?.filter((part) => part.type === "toolCall") ?? [])
       mode.pendingTools.set(toolCall.id, {});
   };
 
@@ -672,7 +750,10 @@ test("live visible session state restarts already-rendered pending tool activity
     mode.renderedContexts.map((context) => context.messages),
     [[user, assistant]],
   );
-  assert.deepEqual(events.map((event) => event.type), ["tool_execution_start"]);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["tool_execution_start"],
+  );
   assert.equal(events[0].toolCallId, "agents-call");
 });
 
@@ -693,11 +774,7 @@ test("AgentSession dispose cleans stale pi-gentic runtime references", async () 
   state.liveRuntimes.clear();
   await installBridgeForTest(state, "disposeBridgeInstalled");
   const { AgentSession } = await import(
-    pathToFileURL(
-      path.resolve(
-        "node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js",
-      ),
-    ).href
+    pathToFileURL(path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js")).href
   );
   const session = Object.assign(Object.create(AgentSession.prototype), {
     sessionManager: { getSessionId: () => "disposed-agent-session" },
@@ -730,11 +807,7 @@ test("/new parks the active visible run instead of disposing it", async () => {
   state.liveRuntimes.clear();
   await installBridgeForTest(state, "newSessionBridgeInstalled");
   const { AgentSessionRuntime } = await import(
-    pathToFileURL(
-      path.resolve(
-        "node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js",
-      ),
-    ).href
+    pathToFileURL(path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js")).href
   );
   const sessionDir = mkdtempSync(path.join(tmpdir(), "pi-gentic-new-"));
   let disposed = 0;
@@ -780,10 +853,7 @@ test("/new parks the active visible run instead of disposing it", async () => {
     await runtimeHost.newSession();
 
     assert.equal(disposed, 0);
-    assert.equal(
-      state.liveRuntimes.get("new-running-session").runtime,
-      runtimeHost,
-    );
+    assert.equal(state.liveRuntimes.get("new-running-session").runtime, runtimeHost);
   } finally {
     deleteRuntimeSession("new-running-session");
     state.liveRuntimes.clear();
@@ -816,10 +886,7 @@ test("switching away from an opened live run parks it instead of disposing it", 
   assert.equal(disposed, 0);
 
   assert.equal(state.liveRuntimes.get("running-session").runtime, runtimeHost);
-  assert.equal(
-    getRuntimeSession("running-session").lastActivityAt,
-    lastActivityAt,
-  );
+  assert.equal(getRuntimeSession("running-session").lastActivityAt, lastActivityAt);
 
   restore();
   session.dispose();
@@ -845,19 +912,13 @@ test("switching away from an unregistered visible run parks it instead of dispos
 
   assert.equal(disposed, 0);
 
-  assert.equal(
-    state.liveRuntimes.get("visible-running-session").runtime.session,
-    session,
-  );
+  assert.equal(state.liveRuntimes.get("visible-running-session").runtime.session, session);
 
   runtimeHost.session = {
     sessionManager: { getSessionId: () => "next-session" },
   };
 
-  assert.equal(
-    state.liveRuntimes.get("visible-running-session").runtime.session,
-    session,
-  );
+  assert.equal(state.liveRuntimes.get("visible-running-session").runtime.session, session);
 
   restore();
   session.dispose();
@@ -892,20 +953,17 @@ function complexHydrationWorkflow(seed) {
     content: `tool result ${seed}`,
   };
   const staleMessages = [];
-  const persistedCustomMessages = Array.from(
-    { length: 1 + (seed % 4) },
-    (_, index) => ({
-      role: "custom",
-      customType: "pi-gentic:card",
-      content: `card ${seed}.${index}`,
-      display: true,
-      details: {
-        kind: "send",
-        status: index % 2 === 0 ? "running" : "queued",
-        sessionId: `child-${seed}-${index}`,
-      },
-    }),
-  );
+  const persistedCustomMessages = Array.from({ length: 1 + (seed % 4) }, (_, index) => ({
+    role: "custom",
+    customType: "pi-gentic:card",
+    content: `card ${seed}.${index}`,
+    display: true,
+    details: {
+      kind: "send",
+      status: index % 2 === 0 ? "running" : "queued",
+      sessionId: `child-${seed}-${index}`,
+    },
+  }));
   const liveMessages =
     seed % 3 === 0
       ? [user, toolAssistant, toolResult, assistant]
@@ -926,8 +984,7 @@ function complexHydrationWorkflow(seed) {
 
   persistedMessages.push(...persistedCustomMessages.slice(0, seed % 4));
 
-  if (seed % 2 === 0 && liveMessages.includes(toolAssistant))
-    persistedMessages.push(toolAssistant);
+  if (seed % 2 === 0 && liveMessages.includes(toolAssistant)) persistedMessages.push(toolAssistant);
 
   persistedMessages.push(...persistedCustomMessages.slice(seed % 4));
 
@@ -958,13 +1015,7 @@ function complexHydrationWorkflow(seed) {
   };
 }
 
-function liveHydrationMode({
-  persistedMessages,
-  liveMessages,
-  streamingMessage,
-  events = [],
-  streaming = true,
-}) {
+function liveHydrationMode({ persistedMessages, liveMessages, streamingMessage, events = [], streaming = true }) {
   const agentState = {
     messages: liveMessages,
     ...(streamingMessage ? { streamingMessage } : {}),
@@ -977,9 +1028,7 @@ function liveHydrationMode({
     pendingTools: new Map(
       liveMessages
         .flatMap((message) =>
-          Array.isArray(message.content)
-            ? message.content.filter((part) => part.type === "toolCall")
-            : [],
+          Array.isArray(message.content) ? message.content.filter((part) => part.type === "toolCall") : [],
         )
         .map((toolCall) => [toolCall.id, {}]),
     ),
@@ -995,18 +1044,14 @@ function liveHydrationMode({
       this.renderedContexts.push(context);
       for (const message of context.messages) {
         if (!Array.isArray(message.content)) continue;
-        for (const toolCall of message.content.filter(
-          (part) => part.type === "toolCall",
-        ))
+        for (const toolCall of message.content.filter((part) => part.type === "toolCall"))
           this.pendingTools.set(toolCall.id, {});
       }
     },
     handleEvent(event) {
       events.push(event);
       if (event.type === "message_update") {
-        for (const toolCall of event.message.content?.filter(
-          (part) => part.type === "toolCall",
-        ) ?? [])
+        for (const toolCall of event.message.content?.filter((part) => part.type === "toolCall") ?? [])
           this.pendingTools.set(toolCall.id, {});
       }
     },
@@ -1014,9 +1059,7 @@ function liveHydrationMode({
 }
 
 async function installBridgeForTest(state, flag) {
-  process.env.PI_CLI = path.resolve(
-    "node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
-  );
+  process.env.PI_CLI = path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
   await installLiveSessionBridge();
 
   assert.equal(state[flag], true);

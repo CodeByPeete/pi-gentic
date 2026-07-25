@@ -11,14 +11,7 @@ import type {
 export type UnknownRecord = Record<string, unknown>;
 
 export type PiSessionManager = ExtensionContext["sessionManager"] &
-  Partial<
-    Pick<
-      SessionManager,
-      | "appendCustomEntry"
-      | "appendCustomMessageEntry"
-      | "appendMessage"
-    >
-  >;
+  Partial<Pick<SessionManager, "appendCustomEntry" | "appendCustomMessageEntry" | "appendMessage">>;
 
 export type PiApi = ExtensionAPI;
 

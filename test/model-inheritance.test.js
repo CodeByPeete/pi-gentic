@@ -1,29 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  applyInheritedModel,
-  inheritedModelForPolicy,
-} from "../dist/pi-host.js";
+import { applyInheritedModel, inheritedModelForPolicy } from "../dist/pi-host.js";
 
 test("agentless child sessions inherit the active model when policy has no model", () => {
-  assert.deepEqual(
-    inheritedModelForPolicy(
-      {},
-      { provider: "openai-codex", id: "gpt-5.4-mini" },
-    ),
-    {
-      provider: "openai-codex",
-      id: "gpt-5.4-mini",
-    },
-  );
+  assert.deepEqual(inheritedModelForPolicy({}, { provider: "openai-codex", id: "gpt-5.4-mini" }), {
+    provider: "openai-codex",
+    id: "gpt-5.4-mini",
+  });
 });
 
 test("configured policy model blocks inherited model", () => {
   assert.equal(
-    inheritedModelForPolicy(
-      { model: "openai-codex/gpt-5.4" },
-      { provider: "openai-codex", id: "gpt-5.4-mini" },
-    ),
+    inheritedModelForPolicy({ model: "openai-codex/gpt-5.4" }, { provider: "openai-codex", id: "gpt-5.4-mini" }),
     undefined,
   );
 });
@@ -38,10 +26,7 @@ test("inherited model is resolved through the target session registry", async ()
   const model = await applyInheritedModel(
     {
       modelRegistry: {
-        find: (provider, id) =>
-          provider === selected.provider && id === selected.id
-            ? selected
-            : undefined,
+        find: (provider, id) => (provider === selected.provider && id === selected.id ? selected : undefined),
       },
       setModel: async (next) => applied.push(next),
     },
@@ -78,10 +63,7 @@ test("agentless child sessions inherit through the current Pi model runtime", as
   const model = await applyInheritedModel(
     {
       modelRuntime: {
-        getModel: (provider, id) =>
-          provider === selected.provider && id === selected.id
-            ? selected
-            : undefined,
+        getModel: (provider, id) => (provider === selected.provider && id === selected.id ? selected : undefined),
       },
       setModel: async (next) => applied.push(next),
     },

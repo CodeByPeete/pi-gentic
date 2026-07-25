@@ -1,13 +1,14 @@
 import type { PrepareWorktreeRequest } from "./application/WorktreeManager.js";
-import {
-  extensionRuntime,
-  prepareWorktreeEffect,
-} from "./runtime/ExtensionRuntime.js";
+import { createExtensionRuntime, prepareWorktreeEffect } from "./runtime/ExtensionRuntime.js";
 
 export type PrepareWorktreeOptions = PrepareWorktreeRequest;
 
-export function prepareWorktree(
-  options: PrepareWorktreeOptions,
-): Promise<string> {
-  return extensionRuntime.runPromise(prepareWorktreeEffect(options));
+export async function prepareWorktree(options: PrepareWorktreeOptions) {
+  const runtime = createExtensionRuntime();
+
+  try {
+    return await runtime.runPromise(prepareWorktreeEffect(options));
+  } finally {
+    await runtime.dispose();
+  }
 }

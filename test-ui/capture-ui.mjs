@@ -2,11 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import {
-  clearLiveCardDetails,
-  renderAgentsResult,
-  setLiveCardDetails,
-} from "../dist/ui.js";
+import { clearLiveCardDetails, renderAgentsResult, setLiveCardDetails } from "../dist/ui.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const outputDir = path.join(root, "output");
@@ -76,8 +72,7 @@ const cases = [
       async: true,
       agentName: "researcher",
       sessionId: "2f91a8c4-demo",
-      message:
-        "Determine the cleanest dependency-management approach for this Pi workspace after the Pi update.",
+      message: "Determine the cleanest dependency-management approach for this Pi workspace after the Pi update.",
       answer:
         "Use the workspace lockfile as the canonical dependency source.\nThe package now preserves deterministic installs without unnecessary lockfile churn.\nThis third answer line should stay hidden while the card is collapsed.",
       startedAt: Date.now() - 450_000,
@@ -106,8 +101,7 @@ const cases = [
       activities: [
         {
           type: "assistant",
-          text:
-            "Implemented the completed-card presentation.\n\nChanges:\n- The answer is the primary body content.\n- The original request remains available as card state.\n- Matching assistant activity is shown once.",
+          text: "Implemented the completed-card presentation.\n\nChanges:\n- The answer is the primary body content.\n- The original request remains available as card state.\n- Matching assistant activity is shown once.",
         },
         { type: "tool", name: "edit", summary: "src/ui.ts" },
         { type: "tool", name: "bash", summary: "220 tests passed" },
@@ -176,8 +170,7 @@ const cases = [
       status: "error",
       agentName: "missing",
       sessionId: "bad00000-demo",
-      error:
-        'Unknown agent "missing". Available agents: researcher, builder, reviewer.',
+      error: 'Unknown agent "missing". Available agents: researcher, builder, reviewer.',
       startedAt: Date.now() - 3_000,
       completedAt: Date.now(),
     },
@@ -190,22 +183,22 @@ for (const item of cases) {
     setLiveCardDetails(item.details);
   }
   const component = renderAgentsResult(
-          {
-            content: [
-              {
-                type: "text",
-                text: item.details.message ?? item.details.error ?? "",
-              },
-            ],
-            details: item.details,
-          },
-          {
-            expanded: item.expanded ?? item.name === "load-agent",
-            isPartial: item.details.status === "running",
-          },
-          theme,
-          { args: {}, isError: item.details.status === "error" },
-        );
+    {
+      content: [
+        {
+          type: "text",
+          text: item.details.message ?? item.details.error ?? "",
+        },
+      ],
+      details: item.details,
+    },
+    {
+      expanded: item.expanded ?? item.name === "load-agent",
+      isPartial: item.details.status === "running",
+    },
+    theme,
+    { args: {}, isError: item.details.status === "error" },
+  );
 
   for (const input of item.inputs ?? []) component.handleInput?.(input);
   const lines = component.render(width);
@@ -224,9 +217,7 @@ for (const item of cases) {
   });
 
   if (result.error || result.status !== 0) {
-    console.error(
-      `Could not render ${pngPath}: ${result.error?.message ?? result.stderr}`,
-    );
+    console.error(`Could not render ${pngPath}: ${result.error?.message ?? result.stderr}`);
   } else {
     console.log(pngPath);
   }
@@ -308,8 +299,5 @@ function span(text, color, bold) {
 }
 
 function escapeXml(text) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

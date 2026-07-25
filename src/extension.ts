@@ -1,9 +1,5 @@
 import { Schema } from "effect";
-import {
-  SessionManager,
-  type AgentToolUpdateCallback,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import { SessionManager, type AgentToolUpdateCallback, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   AGENT_CYCLE_SHORTCUT,
   activeStateDiagnostics,
@@ -27,41 +23,19 @@ import {
   parseSendCommand,
   parseSkillCommand,
 } from "./interface.js";
-import {
-  readRuntimeDiagnostics,
-  reportRuntimeDiagnostic,
-} from "./diagnostics.js";
+import { readRuntimeDiagnostics, reportRuntimeDiagnostic } from "./diagnostics.js";
 import {
   AgentsToolParametersSchema,
   agentsActionName,
   normalizeAgentsToolInput,
   type AgentsToolInput,
 } from "./domain/agents-tool.js";
-import {
-  hostCompatibilityDiagnostics,
-  installLiveSessionBridge,
-  setActiveVisibleExtension,
-} from "./pi-host.js";
+import { hostCompatibilityDiagnostics, installLiveSessionBridge, setActiveVisibleExtension } from "./pi-host.js";
 import { PiGenticOrchestrator } from "./orchestration.js";
-import type {
-  PiApi,
-  PiContext,
-  UnknownRecord,
-} from "./pi-types.js";
-import {
-  createExtensionRuntime,
-  shouldDisposeExtensionRuntime,
-} from "./runtime/ExtensionRuntime.js";
+import type { PiApi, PiContext, UnknownRecord } from "./pi-types.js";
+import { createExtensionRuntime, shouldDisposeExtensionRuntime } from "./runtime/ExtensionRuntime.js";
 import { installResumeBridge, warmResumeCache } from "./resume.js";
-import {
-  buildSessionTree,
-  cachedPersistedSessions,
-  enrichSessionSummaries,
-  findSessionSummary,
-  listSessionSummariesFast,
-  sessionCompletionScope,
-  warmPersistedSessions,
-} from "./sessions.js";
+import { buildSessionTree, enrichSessionSummaries, findSessionSummary, sessionCompletionScope } from "./sessions.js";
 import {
   renderAgentsCall,
   renderAgentsResult,
@@ -70,29 +44,19 @@ import {
   startSessionLiveCardRefresh,
 } from "./ui.js";
 
-const AgentsToolParameters = Schema.toJsonSchemaDocument(
-  AgentsToolParametersSchema,
-);
+const AgentsToolParameters = Schema.toJsonSchemaDocument(AgentsToolParametersSchema);
 
-function showErrorCard(
-  pi: PiApi,
-  orchestrator: PiGenticOrchestrator,
-  error: unknown,
-  kind = "error",
-) {
+function showErrorCard(pi: PiApi, orchestrator: PiGenticOrchestrator, error: unknown, kind = "error") {
   const message = getErrorMessage(error);
 
-  showCard(
-    pi,
-    message,
-    orchestrator.cardDetails(kind, "error", { error: message }),
-  );
+  showCard(pi, message, orchestrator.cardDetails(kind, "error", { error: message }));
 }
 
 export default async function piGentic(pi: ExtensionAPI) {
-  await installLiveSessionBridge();
-  await installResumeBridge();
   const runtime = createExtensionRuntime();
+
+  await installLiveSessionBridge();
+  await installResumeBridge(runtime);
   const orchestrator = new PiGenticOrchestrator(pi, runtime);
   const completionContext = createCompletionContext(pi);
   let runtimeDisposed = false;
@@ -128,18 +92,14 @@ export default async function piGentic(pi: ExtensionAPI) {
     setActiveVisibleExtension(pi, ctx);
     stopSessionLiveCardRefresh?.();
     restorePersistedCardDetails(ctx.sessionManager);
-    stopSessionLiveCardRefresh = startSessionLiveCardRefresh(ctx);
+    stopSessionLiveCardRefresh = startSessionLiveCardRefresh(ctx, runtime);
     completionContext.capture(ctx);
     reportDiagnostics(pi, ctx);
-    void warmResumeCache(
-      ctx.sessionManager.getCwd?.() ?? ctx.cwd,
-      ctx.sessionManager.getSessionDir?.(),
-    );
+    void warmResumeCache(ctx.sessionManager.getCwd?.() ?? ctx.cwd, ctx.sessionManager.getSessionDir?.());
     try {
       const defaultResult = await orchestrator.loadDefaultAgent(ctx, event);
 
-      if (defaultResult)
-        showCard(pi, defaultResult.text, defaultResult.details);
+      if (defaultResult) showCard(pi, defaultResult.text, defaultResult.details);
       else await orchestrator.applyCurrentPolicy(ctx);
     } catch (error) {
       ctx.ui.notify(`pi-gentic: ${getErrorMessage(error)}`, "warning");
@@ -172,14 +132,11 @@ export default async function piGentic(pi: ExtensionAPI) {
     orchestrator.setTitle(ctx, false);
   });
 
-  pi.on("before_agent_start", (event, ctx) =>
-    orchestrator.buildPromptAppend(ctx, event),
-  );
+  pi.on("before_agent_start", (event, ctx) => orchestrator.buildPromptAppend(ctx, event));
 
   pi.registerCommand("agent", {
     description: "Set, clear, or show the active pi-gentic agent",
-    getArgumentCompletions: (prefix) =>
-      completeAgents(prefix, orchestrator.currentAgentName),
+    getArgumentCompletions: (prefix) => completeAgents(prefix, orchestrator.currentAgentName),
     handler: async (args, ctx) => {
       completionContext.capture(ctx);
       const parsed = parseAgentCommand(args);
@@ -187,9 +144,7 @@ export default async function piGentic(pi: ExtensionAPI) {
       if (!parsed.agent) {
         const active = orchestrator.getActiveAgent(ctx);
         ctx.ui.notify(
-          active
-            ? `Active agent: ${active.name}\n${active.description ?? ""}`
-            : "No active agent.",
+          active ? `Active agent: ${active.name}\n${active.description ?? ""}` : "No active agent.",
           "info",
         );
         return;
@@ -198,29 +153,17 @@ export default async function piGentic(pi: ExtensionAPI) {
       try {
         if (parsed.sessionId) {
           const config = trustedConfiguration(ctx);
-          const runtime = await orchestrator.getOrOpenSession(
-            ctx,
-            parsed.sessionId,
-          );
+          const runtime = await orchestrator.getOrOpenSession(ctx, parsed.sessionId);
 
           if (parsed.agent === "clear") {
-            runtime.session.sessionManager.appendCustomEntry(
-              "pi-gentic:state",
-              { agentName: undefined },
-            );
+            runtime.session.sessionManager.appendCustomEntry("pi-gentic:state", { agentName: undefined });
             ctx.ui.notify(
               `Cleared active agent in session ${shortSessionId(runtime.session.sessionManager.getSessionId())}.`,
               "info",
             );
             return;
           }
-          await orchestrator.loadAgentIntoSession(
-            runtime.session,
-            parsed.agent,
-            undefined,
-            config,
-            ctx,
-          );
+          await orchestrator.loadAgentIntoSession(runtime.session, parsed.agent, undefined, config, ctx);
           ctx.ui.notify(
             `Loaded ${parsed.agent} in session ${shortSessionId(runtime.session.sessionManager.getSessionId())}.`,
             "info",
@@ -238,8 +181,7 @@ export default async function piGentic(pi: ExtensionAPI) {
 
   pi.registerCommand("skill", {
     description: "Manually invoke a Pi skill: /skill <name> [request]",
-    getArgumentCompletions: (prefix) =>
-      completeSkill(prefix, completionContext.current()),
+    getArgumentCompletions: (prefix) => completeSkill(prefix, completionContext.current()),
     handler: async (args, ctx) => {
       completionContext.capture(ctx);
       const parsed = parseSkillCommand(args);
@@ -258,8 +200,7 @@ export default async function piGentic(pi: ExtensionAPI) {
     getArgumentCompletions: async (prefix) => {
       const snapshot = completionContext.current();
 
-      if (!isCompletingSendSession(prefix))
-        return completeSend(prefix, snapshot);
+      if (!isCompletingSendSession(prefix)) return completeSend(prefix, snapshot);
       const sessions = await listCompletionSessions(snapshot);
 
       return completeSend(prefix, {
@@ -274,7 +215,7 @@ export default async function piGentic(pi: ExtensionAPI) {
 
       if (typeof parsed.message !== "string" || !parsed.message.trim()) {
         ctx.ui.notify(
-          "Usage: /send <message> [--agent <agentName>] [--session <sessionId>] [--fork] [--bg|--fg] [--no-invoke] [--cwd <dir>] [--worktree [branch]] [--repo <dir>] [override flags]", 
+          "Usage: /send <message> [--agent <agentName>] [--session <sessionId>] [--fork] [--bg|--fg] [--no-invoke] [--cwd <dir>] [--worktree [branch]] [--repo <dir>] [override flags]",
           "warning",
         );
         return;
@@ -331,22 +272,13 @@ export default async function piGentic(pi: ExtensionAPI) {
       completionContext.capture(ctx);
       try {
         const input = await runtime.runPromise(normalizeAgentsToolInput(params));
-        const result = await executeAction(
-          orchestrator,
-          ctx,
-          input,
-          onUpdate,
-          signal,
-        );
+        const result = await executeAction(orchestrator, ctx, input, onUpdate, signal);
 
         return {
           content: [
             {
               type: "text",
-              text:
-                typeof result.text === "string"
-                  ? result.text
-                  : String(result.text ?? ""),
+              text: typeof result.text === "string" ? result.text : String(result.text ?? ""),
             },
           ],
           details: result.details,
@@ -356,11 +288,7 @@ export default async function piGentic(pi: ExtensionAPI) {
 
         return {
           content: [{ type: "text", text: message }],
-          details: orchestrator.cardDetails(
-            "error",
-            "error",
-            { error: message },
-          ),
+          details: orchestrator.cardDetails("error", "error", { error: message }),
           isError: true,
         };
       }
@@ -368,12 +296,7 @@ export default async function piGentic(pi: ExtensionAPI) {
   });
 }
 
-async function invokeSkillCommand(
-  pi: PiApi,
-  skillName: string,
-  message: string,
-  ctx: PiContext,
-) {
+async function invokeSkillCommand(pi: PiApi, skillName: string, message: string, ctx: PiContext) {
   if (!skillCommandsEnabled(ctx)) {
     ctx.ui.notify?.("Pi skill commands are disabled by settings.", "warning");
     return;
@@ -390,12 +313,8 @@ async function invokeSkillCommand(
 
 function skillCommandsEnabled(ctx: PiContext) {
   return (
-    loadPiSettings(
-      undefined,
-      ctx.cwd ?? process.cwd(),
-      [],
-      ctx.isProjectTrusted?.() === true,
-    ).enableSkillCommands !== false
+    loadPiSettings(undefined, ctx.cwd ?? process.cwd(), [], ctx.isProjectTrusted?.() === true).enableSkillCommands !==
+    false
   );
 }
 
@@ -413,10 +332,7 @@ type CompletionSnapshot = {
   systemPromptFiles: string[];
 };
 
-function createCompletionContext(
-  pi: PiApi,
-  onCapture?: (snapshot: UnknownRecord, ctx?: PiContext) => void,
-) {
+function createCompletionContext(pi: PiApi, onCapture?: (snapshot: UnknownRecord, ctx?: PiContext) => void) {
   let snapshot: CompletionSnapshot = {
     cwd: process.cwd(),
     agents: [],
@@ -438,23 +354,18 @@ function createCompletionContext(
       snapshot = {
         cwd,
         sessionDir: ctx.sessionManager?.getSessionDir?.() ?? snapshot.sessionDir,
-        currentSessionId:
-          ctx.sessionManager?.getSessionId?.() ?? snapshot.currentSessionId,
-        currentSessionPath:
-          ctx.sessionManager?.getSessionFile?.() ?? snapshot.currentSessionPath,
+        currentSessionId: ctx.sessionManager?.getSessionId?.() ?? snapshot.currentSessionId,
+        currentSessionPath: ctx.sessionManager?.getSessionFile?.() ?? snapshot.currentSessionPath,
         agents: config.agents,
         models: scopedModelSuggestions(ctx),
         tools: safeToolNames(pi),
-        skills: (
-          nativeSkills.length > 0
-            ? nativeSkills
-            : loadAvailableSkills({ cwd, projectTrusted })
-        ).map((skill) => skill.name),
+        skills: (nativeSkills.length > 0 ? nativeSkills : loadAvailableSkills({ cwd, projectTrusted })).map(
+          (skill) => skill.name,
+        ),
         commands: safeCommands(pi),
         themes: themeSuggestions(config),
         systemPromptFiles: systemPromptFileSuggestions(config),
       };
-      warmCompletionSessions(snapshot);
       onCapture?.(snapshot, ctx);
 
       return snapshot;
@@ -477,10 +388,7 @@ async function listCompletionSessions({
   currentSessionPath?: string;
 }) {
   try {
-    const persisted = await cachedPersistedSessions(
-      completionSessionCacheKey({ cwd, sessionDir }),
-      () => listCompletionSessionSources(cwd, sessionDir),
-    );
+    const persisted = await listCompletionSessionSources(cwd, sessionDir);
     const current =
       findSessionSummary(persisted, {
         id: currentSessionId,
@@ -494,14 +402,10 @@ async function listCompletionSessions({
             path: currentSessionPath,
           }
         : undefined);
-    const scoped = sessionCompletionScope(
-      buildSessionTree(current, persisted),
-      current,
-      {
-        rx: 4,
-        ry: 4,
-      },
-    );
+    const scoped = sessionCompletionScope(buildSessionTree(current, persisted), current, {
+      rx: 4,
+      ry: 4,
+    });
 
     return enrichSessionSummaries(scoped, 20);
   } catch (error) {
@@ -510,38 +414,10 @@ async function listCompletionSessions({
   }
 }
 
-function warmCompletionSessions({
-  cwd,
-  sessionDir,
-}: {
-  cwd: string;
-  sessionDir?: string;
-}) {
-  warmPersistedSessions(completionSessionCacheKey({ cwd, sessionDir }), () =>
-    listCompletionSessionSources(cwd, sessionDir),
-  );
-}
-
-async function listCompletionSessionSources(
-  cwd: string,
-  sessionDir?: string,
-) {
-  const fast = listSessionSummariesFast(sessionDir);
-
-  if (fast.length > 0) return fast;
+async function listCompletionSessionSources(cwd: string, sessionDir?: string) {
   const persisted = await SessionManager.list(cwd, sessionDir);
 
   return persisted.flatMap((session) => (isRecord(session) ? [session] : []));
-}
-
-function completionSessionCacheKey({
-  cwd,
-  sessionDir,
-}: {
-  cwd: string;
-  sessionDir?: string;
-}) {
-  return `${cwd ?? ""}\n${sessionDir ?? ""}`;
 }
 
 function scopedModelSuggestions(ctx: PiContext | undefined) {
@@ -552,19 +428,18 @@ function scopedModelSuggestions(ctx: PiContext | undefined) {
   if (patterns.length === 0) return available;
 
   return patterns.map((pattern) => {
-    const [provider, id] = String(pattern).split(/\/(.*)/).filter(Boolean);
+    const [provider, id] = String(pattern)
+      .split(/\/(.*)/)
+      .filter(Boolean);
     const match = provider && id ? registry?.find?.(provider, id) : undefined;
 
-    return recordValue(
-      match ?? { provider, id: id ?? pattern, label: pattern },
-    );
+    return recordValue(match ?? { provider, id: id ?? pattern, label: pattern });
   });
 }
 
 function safeAvailableModels(modelRegistry: unknown): UnknownRecord[] {
   try {
-    if (!isRecord(modelRegistry) || typeof modelRegistry.getAvailable !== "function")
-      return [];
+    if (!isRecord(modelRegistry) || typeof modelRegistry.getAvailable !== "function") return [];
     const models = modelRegistry.getAvailable();
 
     return Array.isArray(models) ? models.filter(isRecord) : [];
@@ -576,7 +451,10 @@ function safeAvailableModels(modelRegistry: unknown): UnknownRecord[] {
 
 function safeToolNames(pi: PiApi) {
   try {
-    return pi.getAllTools().map((tool) => tool.name).filter(Boolean);
+    return pi
+      .getAllTools()
+      .map((tool) => tool.name)
+      .filter(Boolean);
   } catch (error) {
     reportRuntimeDiagnostic("available-tools", error);
     return [];
@@ -597,18 +475,14 @@ function safeCommands(pi: PiApi): UnknownRecord[] {
   }
 }
 
-function systemPromptFileSuggestions(
-  config: ReturnType<typeof loadConfiguration>,
-) {
+function systemPromptFileSuggestions(config: ReturnType<typeof loadConfiguration>) {
   const settings = recordValue(config.settings);
   const agentless = recordValue(settings.agentlessSession);
   const defaults = recordValue(settings.agentDefaults);
   const files = [
     ...toStringArray(agentless.systemPromptFiles),
     ...toStringArray(defaults.systemPromptFiles),
-    ...config.agents.flatMap((agent: UnknownRecord) =>
-      toStringArray(agent.systemPromptFiles),
-    ),
+    ...config.agents.flatMap((agent: UnknownRecord) => toStringArray(agent.systemPromptFiles)),
   ];
 
   return files.filter((file, index) => files.indexOf(file) === index);
@@ -619,17 +493,14 @@ function recordValue(value: unknown): UnknownRecord {
 }
 
 function toStringArray(value: unknown) {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function themeSuggestions(config: ReturnType<typeof loadConfiguration>) {
   const settings = recordValue(config.settings);
-  const themes = [
-    settings.theme,
-    ...config.agents.map((agent) => agent.theme),
-  ].filter((theme): theme is string => typeof theme === "string" && Boolean(theme));
+  const themes = [settings.theme, ...config.agents.map((agent) => agent.theme)].filter(
+    (theme): theme is string => typeof theme === "string" && Boolean(theme),
+  );
 
   return themes.filter((theme, index) => themes.indexOf(theme) === index);
 }
@@ -645,11 +516,8 @@ async function executeAction(
     const config = trustedConfiguration(ctx);
     const agents = orchestrator.availableAgents(ctx, config);
     const text =
-      agents
-        .map((agent: UnknownRecord) =>
-          `${agent.name}: ${agent.description ?? ""}`,
-        )
-        .join("\n") || "No agents configured.";
+      agents.map((agent: UnknownRecord) => `${agent.name}: ${agent.description ?? ""}`).join("\n") ||
+      "No agents configured.";
 
     return {
       text,
@@ -664,12 +532,9 @@ async function executeAction(
   if (input._tag === "GetAgentsAction") {
     if (!input.agent) throw new Error('Field "agent" is required for get.');
     const config = trustedConfiguration(ctx);
-    const agent = orchestrator
-      .availableAgents(ctx, config)
-      .find((item: UnknownRecord) => item.name === input.agent);
+    const agent = orchestrator.availableAgents(ctx, config).find((item: UnknownRecord) => item.name === input.agent);
 
-    if (!agent)
-      throw new Error(`Unknown or unavailable agent "${input.agent}".`);
+    if (!agent) throw new Error(`Unknown or unavailable agent "${input.agent}".`);
     return {
       text: JSON.stringify(agent, null, 2),
       details: orchestrator.cardDetails("get", "done", {
@@ -680,8 +545,7 @@ async function executeAction(
   }
 
   if (input._tag === "StatusAgentsAction") {
-    if (!input.sessionId)
-      throw new Error('Field "sessionId" is required for status.');
+    if (!input.sessionId) throw new Error('Field "sessionId" is required for status.');
     const status = await orchestrator.status(ctx, input.sessionId);
 
     return {
@@ -736,15 +600,11 @@ async function executeAction(
 
 function reportDiagnostics(pi: ExtensionAPI, ctx: PiContext) {
   const projectTrusted = ctx.isProjectTrusted?.() === true;
-  const diagnostics = [
-    ...loadConfiguration({ cwd: ctx.cwd, projectTrusted }).diagnostics,
-  ];
+  const diagnostics = [...loadConfiguration({ cwd: ctx.cwd, projectTrusted }).diagnostics];
 
   loadAvailableSkills({ cwd: ctx.cwd, diagnostics, projectTrusted });
-  for (const message of hostCompatibilityDiagnostics())
-    diagnostics.push({ severity: "error", message });
-  for (const message of activeStateDiagnostics())
-    diagnostics.push({ severity: "warning", message });
+  for (const message of hostCompatibilityDiagnostics()) diagnostics.push({ severity: "error", message });
+  for (const message of activeStateDiagnostics()) diagnostics.push({ severity: "warning", message });
   for (const diagnostic of readRuntimeDiagnostics("warning"))
     diagnostics.push({
       severity: diagnostic.severity,
@@ -756,10 +616,7 @@ function reportDiagnostics(pi: ExtensionAPI, ctx: PiContext) {
 
     pi.events.emit("pi-gentic:diagnostic", diagnostic);
     if (diagnostic.severity === "debug") continue;
-    ctx.ui.notify(
-      `pi-gentic: ${diagnostic.message}${location}`,
-      diagnostic.severity === "error" ? "error" : "warning",
-    );
+    ctx.ui.notify(`pi-gentic: ${diagnostic.message}${location}`, diagnostic.severity === "error" ? "error" : "warning");
   }
 }
 
@@ -771,7 +628,5 @@ function trustedConfiguration(ctx: PiContext) {
 }
 
 function firstText(content: unknown) {
-  return Array.isArray(content)
-    ? content.find((item) => item.type === "text")?.text
-    : undefined;
+  return Array.isArray(content) ? content.find((item) => item.type === "text")?.text : undefined;
 }

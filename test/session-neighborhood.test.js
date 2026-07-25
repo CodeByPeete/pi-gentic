@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  filterSessionNeighborhood,
-  sessionDiscoveryScope,
-} from "../dist/sessions.js";
+import { filterSessionNeighborhood, sessionDiscoveryScope } from "../dist/sessions.js";
 
 test("session neighborhood keeps the current session when both radii are zero", () => {
   const sessions = [
@@ -14,9 +11,7 @@ test("session neighborhood keeps the current session when both radii are zero", 
   ];
 
   assert.deepEqual(
-    filterSessionNeighborhood(sessions, sessions[2], { rx: 0, ry: 0 }).map(
-      (session) => session.sessionId,
-    ),
+    filterSessionNeighborhood(sessions, sessions[2], { rx: 0, ry: 0 }).map((session) => session.sessionId),
     ["current"],
   );
 });
@@ -31,9 +26,7 @@ test("session neighborhood applies horizontal sibling radius", () => {
   ];
 
   assert.deepEqual(
-    filterSessionNeighborhood(sessions, sessions[2], { rx: 1, ry: 0 }).map(
-      (session) => session.sessionId,
-    ),
+    filterSessionNeighborhood(sessions, sessions[2], { rx: 1, ry: 0 }).map((session) => session.sessionId),
     ["left", "current", "right"],
   );
 });
@@ -48,9 +41,7 @@ test("session neighborhood applies vertical branch radius", () => {
   ];
 
   assert.deepEqual(
-    filterSessionNeighborhood(sessions, sessions[1], { rx: 0, ry: 1 }).map(
-      (session) => session.sessionId,
-    ),
+    filterSessionNeighborhood(sessions, sessions[1], { rx: 0, ry: 1 }).map((session) => session.sessionId),
     ["root", "current", "child"],
   );
 });

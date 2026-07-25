@@ -7,9 +7,7 @@ import {
   assertDifferentSession,
   assertSessionMessagingScope,
   buildSessionTree,
-  cachedPersistedSessions,
   enrichSessionSummaries,
-  listSessionSummariesFast,
   orderSessionTree,
   resolveSessionReference,
   sessionCompletionScope,
@@ -26,38 +24,23 @@ const sessions = [
 ];
 
 test("resolves full session id", () => {
-  assert.equal(
-    resolveSessionReference(sessions, "12345678-aaaa").firstMessage,
-    "one",
-  );
+  assert.equal(resolveSessionReference(sessions, "12345678-aaaa").firstMessage, "one");
 });
 
 test("resolves eight-character visible id", () => {
-  assert.equal(
-    resolveSessionReference(sessions, "87654321").firstMessage,
-    "two",
-  );
+  assert.equal(resolveSessionReference(sessions, "87654321").firstMessage, "two");
 });
 
 test("resolves unique longer prefix", () => {
-  assert.equal(
-    resolveSessionReference(sessions, "abcdef").firstMessage,
-    "three",
-  );
+  assert.equal(resolveSessionReference(sessions, "abcdef").firstMessage, "three");
 });
 
 test("resolves unique substring", () => {
-  assert.equal(
-    resolveSessionReference(sessions, "54321-b").firstMessage,
-    "two",
-  );
+  assert.equal(resolveSessionReference(sessions, "54321-b").firstMessage, "two");
 });
 
 test("rejects missing session reference", () => {
-  assert.throws(
-    () => resolveSessionReference(sessions, "missing"),
-    /No session/,
-  );
+  assert.throws(() => resolveSessionReference(sessions, "missing"), /No session/);
 });
 
 test("rejects ambiguous session reference", () => {
@@ -70,9 +53,7 @@ test("rejects sending a session message to the current session", () => {
     /Cannot send a message to the current session 12345678/,
   );
 
-  assert.doesNotThrow(() =>
-    assertDifferentSession("12345678-aaaa", "87654321-bbbb"),
-  );
+  assert.doesNotThrow(() => assertDifferentSession("12345678-aaaa", "87654321-bbbb"));
 });
 
 test("session messaging scope keeps existing session sends inside one tree", () => {
@@ -97,32 +78,16 @@ test("session messaging scope keeps existing session sends inside one tree", () 
   ];
 
   assert.doesNotThrow(() =>
-    assertSessionMessagingScope(
-      scopedSessions[1],
-      scopedSessions[2],
-      scopedSessions,
-      { scope: "tree" },
-    ),
+    assertSessionMessagingScope(scopedSessions[1], scopedSessions[2], scopedSessions, { scope: "tree" }),
   );
 
   assert.throws(
-    () =>
-      assertSessionMessagingScope(
-        scopedSessions[1],
-        scopedSessions[4],
-        scopedSessions,
-        { scope: "tree" },
-      ),
+    () => assertSessionMessagingScope(scopedSessions[1], scopedSessions[4], scopedSessions, { scope: "tree" }),
     /different session tree.*Caller root: root-a.*Target root: root-b/,
   );
 
   assert.doesNotThrow(() =>
-    assertSessionMessagingScope(
-      scopedSessions[1],
-      scopedSessions[4],
-      scopedSessions,
-      { scope: "all" },
-    ),
+    assertSessionMessagingScope(scopedSessions[1], scopedSessions[4], scopedSessions, { scope: "all" }),
   );
 });
 
@@ -313,37 +278,6 @@ test("session completion scope keeps neighbors and starts with latest children",
   );
 });
 
-test("fast session list reads session headers and names", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-fast-list-"));
-  const file = path.join(dir, "2026-01-01T00-00-00-000Z_fast-session.jsonl");
-
-  writeFileSync(
-    file,
-    [
-      JSON.stringify({
-        type: "session",
-        id: "fast-session",
-        timestamp: "2026-01-01T00:00:00.000Z",
-        cwd: dir,
-      }),
-      JSON.stringify({ type: "session_info", name: "Fast session" }),
-      JSON.stringify({
-        type: "message",
-        message: { role: "user", content: [{ type: "text", text: "Hello" }] },
-      }),
-    ].join("\n"),
-  );
-
-  assert.deepEqual(
-    listSessionSummariesFast(dir).map((session) => ({
-      id: session.id,
-      name: session.name,
-      firstMessage: session.firstMessage,
-    })),
-    [{ id: "fast-session", name: "Fast session", firstMessage: "Hello" }],
-  );
-});
-
 test("session summaries can defer persisted file enrichment", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-summary-"));
   const file = path.join(dir, "2026-01-01T00-00-00-000Z_session.jsonl");
@@ -363,24 +297,6 @@ test("session summaries can defer persisted file enrichment", () => {
   const [enriched] = enrichSessionSummaries([fast]);
 
   assert.equal(enriched.agentName, "reviewer");
-});
-
-test("cached persisted session lists reuse in-flight loads", async () => {
-  let calls = 0;
-  const load = async () => {
-    calls += 1;
-
-    return [{ id: "one" }];
-  };
-
-  const [first, second] = await Promise.all([
-    cachedPersistedSessions("unit-cache", load),
-    cachedPersistedSessions("unit-cache", load),
-  ]);
-
-  assert.equal(calls, 1);
-
-  assert.equal(first, second);
 });
 
 test("current visible runtime is shown as running and opens through its live path", () => {
@@ -439,13 +355,7 @@ test("tree switch path attaches to live runtimes only while sessions are running
     "pi-gentic-live:running",
   );
 
-  assert.equal(
-    treeSwitchPath({ livePath: "pi-gentic-live:running", running: true }),
-    "pi-gentic-live:running",
-  );
+  assert.equal(treeSwitchPath({ livePath: "pi-gentic-live:running", running: true }), "pi-gentic-live:running");
 
-  assert.equal(
-    treeSwitchPath({ path: "/running-without-live.jsonl", running: true }),
-    "/running-without-live.jsonl",
-  );
+  assert.equal(treeSwitchPath({ path: "/running-without-live.jsonl", running: true }), "/running-without-live.jsonl");
 });

@@ -35,13 +35,8 @@ function visibleWidth(text) {
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 
-  return [
-    ...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
-      clean,
-    ),
-  ].reduce((width, { segment }) => {
-    if (/\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(segment))
-      return width + 2;
+  return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(clean)].reduce((width, { segment }) => {
+    if (/\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(segment)) return width + 2;
     return width + 1;
   }, 0);
 }
@@ -51,11 +46,7 @@ function terminalTextWidth(text) {
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 
-  return [
-    ...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
-      clean,
-    ),
-  ].reduce((width, { segment }) => {
+  return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(clean)].reduce((width, { segment }) => {
     if (/\p{Regional_Indicator}/u.test(segment)) return width + 2;
 
     if (segment.includes("\ufe0f")) return width + 2;
@@ -115,6 +106,8 @@ test("agents tool call shell stays invisible so only the result card is shown", 
 
 test("expanded cards render all body lines without truncation", () => {
   const systemPrompt = [
+    "The following skills provide specialized instructions for specific tasks.",
+    "<available_skills><skill><name>debug</name><description>Debug issues</description><location>/skills/debug/SKILL.md</location></skill></available_skills>",
     "This is a very long prompt line that must wrap cleanly without visual truncation markers because expanded cards should reveal the whole content.",
     ...Array.from({ length: 60 }, (_, index) => `prompt line ${index + 1}`),
   ].join("\n");
@@ -126,6 +119,11 @@ test("expanded cards render all body lines without truncation", () => {
           kind: "load",
           status: "done",
           agentName: "researcher",
+          configuration: {
+            tools: ["read", "grep"],
+            model: { provider: "openai", id: "test" },
+            thinking: "high",
+          },
           systemPrompt,
         },
       },
@@ -135,6 +133,8 @@ test("expanded cards render all body lines without truncation", () => {
     ).render(120),
   );
 
+  assert.match(output, /Skill: debug/);
+  assert.match(output, /Path: \/skills\/debug\/SKILL\.md/);
   assert.match(output, /prompt line 1/);
 
   assert.match(output, /prompt line 60/);
@@ -179,6 +179,7 @@ test("persisted orchestration snapshots keep their captured inactivity", () => {
           sessions: [
             {
               sessionId: "running-session",
+              agentName: "researcher",
               lastMessage: "Historical running session",
               running: true,
               inactiveMs: 19_000,
@@ -299,9 +300,7 @@ test("terminal card state restores duration and activities after restart", () =>
             answer: "Dependency research completed",
             completedAt,
             updatedAt: completedAt - 1_000,
-            activities: [
-              { type: "tool", name: "write", summary: "research.json" },
-            ],
+            activities: [{ type: "tool", name: "write", summary: "research.json" }],
           },
         },
       ],
@@ -341,6 +340,21 @@ test("terminal card state restores duration and activities after restart", () =>
   } finally {
     Date.now = originalNow;
   }
+});
+
+test("persisted card restoration rejects malformed host entries", () => {
+  assert.doesNotThrow(() =>
+    restorePersistedCardDetails({
+      getEntries: () => [
+        null,
+        { customType: "other", data: {} },
+        {
+          customType: CARD_STATE_ENTRY_TYPE,
+          data: { cardId: "invalid", nested: () => "not JSON" },
+        },
+      ],
+    }),
+  );
 });
 
 test("collapsed completed send cards show the answer before recent activities", () => {
@@ -572,8 +586,7 @@ test("send card activity renders multiline answers without breaking the box", ()
     ).render(120),
   );
 
-  for (const line of output.split("\n"))
-    assert.doesNotMatch(line, /^File:|^Session summary:|^- /);
+  for (const line of output.split("\n")) assert.doesNotMatch(line, /^File:|^Session summary:|^- /);
 
   assert.match(output, /Done\. File:/);
 });

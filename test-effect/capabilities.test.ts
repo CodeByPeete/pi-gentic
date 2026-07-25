@@ -1,20 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { FastCheck } from "effect/testing";
-import {
-  applyCapabilityFilter,
-  resolveCapabilitySet,
-} from "../src/domain/capabilities.js";
+import { applyCapabilityFilter, resolveCapabilitySet } from "../src/domain/capabilities.js";
 
-const names = FastCheck.uniqueArray(
-  FastCheck.stringMatching(/^[a-z][a-z0-9_-]{0,12}$/),
-  { maxLength: 20 },
-);
+const names = FastCheck.uniqueArray(FastCheck.stringMatching(/^[a-z][a-z0-9_-]{0,12}$/), { maxLength: 20 });
 const filters = FastCheck.array(
-  FastCheck.tuple(
-    FastCheck.constantFrom("", "+", "-", "!"),
-    FastCheck.stringMatching(/^[a-z][a-z0-9_*?-]{0,12}$/),
-  ).map(([prefix, name]) => `${prefix}${name}`),
+  FastCheck.tuple(FastCheck.constantFrom("", "+", "-", "!"), FastCheck.stringMatching(/^[a-z][a-z0-9_*?-]{0,12}$/)).map(
+    ([prefix, name]) => `${prefix}${name}`,
+  ),
   { maxLength: 20 },
 );
 
@@ -59,14 +52,16 @@ describe("CapabilitySet", () => {
       assert.deepStrictEqual(
         resolveCapabilitySet(
           ["read", "write", "bash", "agents"],
-          [["read", "write", "bash"], ["*", "!write", "+agents"]],
+          [
+            ["read", "write", "bash"],
+            ["*", "!write", "+agents"],
+          ],
         ),
         ["read", "bash"],
       );
-      assert.deepStrictEqual(
-        resolveCapabilitySet(["read", "write"], [["read"], []]),
-        [],
-      );
+      assert.deepStrictEqual(resolveCapabilitySet(["read", "write"], [["read"], []]), []);
+      assert.deepStrictEqual(applyCapabilityFilter(["read", "write"], undefined), ["read", "write"]);
+      assert.deepStrictEqual(applyCapabilityFilter(["read", "write"], ["read", "+write", "-read"]), ["write"]);
     }),
   );
 });

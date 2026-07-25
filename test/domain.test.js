@@ -16,20 +16,12 @@ import {
   shortSessionId,
   toStringArray,
 } from "../dist/catalog.js";
-import {
-  normalizeToolInput,
-  parseAgentCommand,
-  parseSendCommand,
-  tokenizeCommandLine,
-} from "../dist/interface.js";
+import { normalizeToolInput, parseAgentCommand, parseSendCommand, tokenizeCommandLine } from "../dist/interface.js";
 
 const names = ["read", "write", "bash", "agents", "ask_question", "reviewer"];
 
 test("tokenizer preserves quoted text as one token", () => {
-  assert.deepEqual(tokenizeCommandLine('hello "wide world"'), [
-    "hello",
-    "wide world",
-  ]);
+  assert.deepEqual(tokenizeCommandLine('hello "wide world"'), ["hello", "wide world"]);
 });
 
 test("tokenizer unescapes newline inside quoted text", () => {
@@ -81,10 +73,7 @@ test("send removes known --agent flag from message", () => {
 });
 
 test("send supports --agent=value", () => {
-  assert.equal(
-    parseSendCommand("hello --agent=researcher").agent,
-    "researcher",
-  );
+  assert.equal(parseSendCommand("hello --agent=researcher").agent, "researcher");
 });
 
 test("send supports --session value", () => {
@@ -96,10 +85,7 @@ test("send supports --cwd value", () => {
 });
 
 test("send leaves unknown flags in message", () => {
-  assert.equal(
-    parseSendCommand("hello --unknown flag").message,
-    "hello --unknown flag",
-  );
+  assert.equal(parseSendCommand("hello --unknown flag").message, "hello --unknown flag");
 });
 
 test("send last bg or fg wins", () => {
@@ -121,10 +107,7 @@ test("send no-invoke maps to false", () => {
 });
 
 test("send preserves quoted whitespace in message", () => {
-  assert.equal(
-    parseSendCommand('say "hello there"').message,
-    "say hello there",
-  );
+  assert.equal(parseSendCommand('say "hello there"').message, "say hello there");
 });
 
 test("send parses runtime override flags", () => {
@@ -146,10 +129,7 @@ test("send supports --repo values for worktree source selection", () => {
 
   assert.equal(parseSendCommand("hello --repo=../source").repo, "../source");
 
-  assert.equal(
-    parseSendCommand('hello --repo "../source repo"').repo,
-    "../source repo",
-  );
+  assert.equal(parseSendCommand('hello --repo "../source repo"').repo, "../source repo");
 });
 
 test("send ignores repo without a value", () => {
@@ -179,10 +159,7 @@ test("tool input requires action", () => {
 });
 
 test("tool input trims action", () => {
-  assert.equal(
-    normalizeToolInput({ action: " send ", message: "delegate" }).action,
-    "send",
-  );
+  assert.equal(normalizeToolInput({ action: " send ", message: "delegate" }).action, "send");
 });
 
 test("radius floors decimals", () => {
@@ -236,18 +213,12 @@ test("catalog scalar helpers normalize every supported boundary shape", () => {
 
 test("filter layers preserve omission, ignore malformed layers, and honor denial", () => {
   assert.equal(mergeFilterLayers(undefined, "read"), undefined);
-  assert.deepEqual(mergeFilterLayers(["read"], undefined, ["write"]), [
-    "read",
-    "write",
-  ]);
+  assert.deepEqual(mergeFilterLayers(["read"], undefined, ["write"]), ["read", "write"]);
   assert.deepEqual(mergeFilterLayers(["read"], []), []);
 });
 
 test("shortest session ids expand across collisions and UUID separators", () => {
-  assert.equal(
-    shortestUniqueSessionId("12345678-abcd-final", ["12345678-abcd-other"]),
-    "12345678-abcd-fina",
-  );
+  assert.equal(shortestUniqueSessionId("12345678-abcd-final", ["12345678-abcd-other"]), "12345678-abcd-fina");
   assert.equal(shortestUniqueSessionId("short", []), "short");
 });
 
@@ -268,13 +239,7 @@ test("filter wildcard includes matches", () => {
 });
 
 test("filter exclusion removes matches", () => {
-  assert.deepEqual(applyFilterList(names, ["*", "!ba*"]), [
-    "read",
-    "write",
-    "agents",
-    "ask_question",
-    "reviewer",
-  ]);
+  assert.deepEqual(applyFilterList(names, ["*", "!ba*"]), ["read", "write", "agents", "ask_question", "reviewer"]);
 });
 
 test("filter force include restores exact name", () => {

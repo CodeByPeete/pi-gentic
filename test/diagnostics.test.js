@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  clearRuntimeDiagnostics,
-  readRuntimeDiagnostics,
-  reportRuntimeDiagnostic,
-} from "../dist/diagnostics.js";
+import { clearRuntimeDiagnostics, readRuntimeDiagnostics, reportRuntimeDiagnostic } from "../dist/diagnostics.js";
 
 test("runtime diagnostics retain structured severity and normalize unknown errors", () => {
   clearRuntimeDiagnostics();
@@ -36,8 +32,7 @@ test("runtime diagnostics retain structured severity and normalize unknown error
 test("runtime diagnostics keep a bounded recent history", () => {
   clearRuntimeDiagnostics();
 
-  for (let index = 0; index < 205; index++)
-    reportRuntimeDiagnostic("bounded", index);
+  for (let index = 0; index < 205; index++) reportRuntimeDiagnostic("bounded", index);
 
   const diagnostics = readRuntimeDiagnostics();
 

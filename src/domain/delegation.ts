@@ -9,66 +9,48 @@ const IdentityFields = {
   targetSessionId: SessionId,
 };
 
-export class DelegationQueued extends Schema.TaggedClass<DelegationQueued>()(
-  "DelegationQueued",
-  {
-    ...IdentityFields,
-    queuedAt: Schema.Finite,
-  },
-) {}
+export class DelegationQueued extends Schema.TaggedClass<DelegationQueued>()("DelegationQueued", {
+  ...IdentityFields,
+  queuedAt: Schema.Finite,
+}) {}
 
-export class DelegationRunning extends Schema.TaggedClass<DelegationRunning>()(
-  "DelegationRunning",
-  {
-    ...IdentityFields,
-    queuedAt: Schema.Finite,
-    startedAt: Schema.Finite,
-  },
-) {}
+export class DelegationRunning extends Schema.TaggedClass<DelegationRunning>()("DelegationRunning", {
+  ...IdentityFields,
+  queuedAt: Schema.Finite,
+  startedAt: Schema.Finite,
+}) {}
 
-export class DelegationCompleted extends Schema.TaggedClass<DelegationCompleted>()(
-  "DelegationCompleted",
-  {
-    ...IdentityFields,
-    queuedAt: Schema.Finite,
-    startedAt: Schema.Finite,
-    completedAt: Schema.Finite,
-    answer: Schema.String,
-  },
-) {}
+export class DelegationCompleted extends Schema.TaggedClass<DelegationCompleted>()("DelegationCompleted", {
+  ...IdentityFields,
+  queuedAt: Schema.Finite,
+  startedAt: Schema.Finite,
+  completedAt: Schema.Finite,
+  answer: Schema.String,
+}) {}
 
-export class DelegationFailed extends Schema.TaggedClass<DelegationFailed>()(
-  "DelegationFailed",
-  {
-    ...IdentityFields,
-    queuedAt: Schema.Finite,
-    startedAt: Schema.Finite,
-    completedAt: Schema.Finite,
-    reason: Schema.String,
-  },
-) {}
+export class DelegationFailed extends Schema.TaggedClass<DelegationFailed>()("DelegationFailed", {
+  ...IdentityFields,
+  queuedAt: Schema.Finite,
+  startedAt: Schema.Finite,
+  completedAt: Schema.Finite,
+  reason: Schema.String,
+}) {}
 
-export class DelegationStopped extends Schema.TaggedClass<DelegationStopped>()(
-  "DelegationStopped",
-  {
-    ...IdentityFields,
-    queuedAt: Schema.Finite,
-    startedAt: Schema.Finite,
-    completedAt: Schema.Finite,
-    reason: Schema.String,
-  },
-) {}
+export class DelegationStopped extends Schema.TaggedClass<DelegationStopped>()("DelegationStopped", {
+  ...IdentityFields,
+  queuedAt: Schema.Finite,
+  startedAt: Schema.Finite,
+  completedAt: Schema.Finite,
+  reason: Schema.String,
+}) {}
 
-export class DelegationAborted extends Schema.TaggedClass<DelegationAborted>()(
-  "DelegationAborted",
-  {
-    ...IdentityFields,
-    queuedAt: Schema.Finite,
-    startedAt: Schema.optionalKey(Schema.Finite),
-    completedAt: Schema.Finite,
-    reason: Schema.String,
-  },
-) {}
+export class DelegationAborted extends Schema.TaggedClass<DelegationAborted>()("DelegationAborted", {
+  ...IdentityFields,
+  queuedAt: Schema.Finite,
+  startedAt: Schema.optionalKey(Schema.Finite),
+  completedAt: Schema.Finite,
+  reason: Schema.String,
+}) {}
 
 export const DelegationState = Schema.Union([
   DelegationQueued,
@@ -80,30 +62,29 @@ export const DelegationState = Schema.Union([
 ]);
 export type DelegationState = typeof DelegationState.Type;
 
-export class StartDelegation extends Schema.TaggedClass<StartDelegation>()(
-  "StartDelegation",
-  { startedAt: Schema.Finite },
-) {}
+export class StartDelegation extends Schema.TaggedClass<StartDelegation>()("StartDelegation", {
+  startedAt: Schema.Finite,
+}) {}
 
-export class CompleteDelegation extends Schema.TaggedClass<CompleteDelegation>()(
-  "CompleteDelegation",
-  { completedAt: Schema.Finite, answer: Schema.String },
-) {}
+export class CompleteDelegation extends Schema.TaggedClass<CompleteDelegation>()("CompleteDelegation", {
+  completedAt: Schema.Finite,
+  answer: Schema.String,
+}) {}
 
-export class FailDelegation extends Schema.TaggedClass<FailDelegation>()(
-  "FailDelegation",
-  { completedAt: Schema.Finite, reason: Schema.String },
-) {}
+export class FailDelegation extends Schema.TaggedClass<FailDelegation>()("FailDelegation", {
+  completedAt: Schema.Finite,
+  reason: Schema.String,
+}) {}
 
-export class StopDelegation extends Schema.TaggedClass<StopDelegation>()(
-  "StopDelegation",
-  { completedAt: Schema.Finite, reason: Schema.String },
-) {}
+export class StopDelegation extends Schema.TaggedClass<StopDelegation>()("StopDelegation", {
+  completedAt: Schema.Finite,
+  reason: Schema.String,
+}) {}
 
-export class AbortDelegation extends Schema.TaggedClass<AbortDelegation>()(
-  "AbortDelegation",
-  { completedAt: Schema.Finite, reason: Schema.String },
-) {}
+export class AbortDelegation extends Schema.TaggedClass<AbortDelegation>()("AbortDelegation", {
+  completedAt: Schema.Finite,
+  reason: Schema.String,
+}) {}
 
 export const DelegationEvent = Schema.Union([
   StartDelegation,

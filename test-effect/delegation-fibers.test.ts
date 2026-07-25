@@ -1,9 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber } from "effect";
-import {
-  DelegationFibers,
-  DelegationFibersLive,
-} from "../src/infrastructure/runtime/DelegationFibers.js";
+import { DelegationFibers, DelegationFibersLive } from "../src/infrastructure/runtime/DelegationFibers.js";
 
 describe("DelegationFibers", () => {
   it.layer(DelegationFibersLive)((it) => {
@@ -11,10 +8,7 @@ describe("DelegationFibers", () => {
       Effect.gen(function* () {
         const delegations = yield* DelegationFibers;
         const first = yield* delegations.run("delegation-1", Effect.never);
-        const duplicate = yield* delegations.run(
-          "delegation-1",
-          Effect.never,
-        );
+        const duplicate = yield* delegations.run("delegation-1", Effect.never);
 
         assert.strictEqual(first, duplicate);
         assert.strictEqual(yield* delegations.size, 1);

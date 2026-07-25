@@ -21,26 +21,20 @@ export class WorktreeRepositoryInvalid extends Schema.TaggedErrorClass<WorktreeR
   },
 ) {}
 
-export class WorktreePathConflict extends Schema.TaggedErrorClass<WorktreePathConflict>()(
-  "WorktreePathConflict",
-  {
-    message: Schema.String,
-    worktreePath: Schema.String,
-    cause: CauseField,
-  },
-) {}
+export class WorktreePathConflict extends Schema.TaggedErrorClass<WorktreePathConflict>()("WorktreePathConflict", {
+  message: Schema.String,
+  worktreePath: Schema.String,
+  cause: CauseField,
+}) {}
 
-export class GitCommandFailed extends Schema.TaggedErrorClass<GitCommandFailed>()(
-  "GitCommandFailed",
-  {
-    message: Schema.String,
-    cwd: Schema.String,
-    args: Schema.Array(Schema.String),
-    exitCode: Schema.optionalKey(Schema.Finite),
-    stderr: Schema.optionalKey(Schema.String),
-    cause: CauseField,
-  },
-) {}
+export class GitCommandFailed extends Schema.TaggedErrorClass<GitCommandFailed>()("GitCommandFailed", {
+  message: Schema.String,
+  cwd: Schema.String,
+  args: Schema.Array(Schema.String),
+  exitCode: Schema.optionalKey(Schema.Finite),
+  stderr: Schema.optionalKey(Schema.String),
+  cause: CauseField,
+}) {}
 
 export class HostVersionUnsupported extends Schema.TaggedErrorClass<HostVersionUnsupported>()(
   "HostVersionUnsupported",
@@ -68,6 +62,11 @@ export class InvalidDelegationTransition extends Schema.TaggedErrorClass<Invalid
     event: Schema.String,
   },
 ) {}
+
+export class AgentCallFailed extends Schema.TaggedErrorClass<AgentCallFailed>()("AgentCallFailed", {
+  message: Schema.String,
+  cause: CauseField,
+}) {}
 
 export type WorktreeError =
   | PathOutsideAllowedRoot

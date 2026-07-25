@@ -1,39 +1,15 @@
-import {
-  truncateToWidth,
-  visibleWidth,
-  wrapTextWithAnsi,
-  type Component,
-  type TUI,
-} from "@earendil-works/pi-tui";
-import { Exit, Schema } from "effect";
-import {
-  formatDuration,
-  isRecord,
-  shortestUniqueSessionId,
-  shortSessionId,
-} from "./catalog.js";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Duration, Effect, Exit, Fiber, Schedule, Schema } from "effect";
+import { formatDuration, isRecord, shortestUniqueSessionId, shortSessionId } from "./catalog.js";
 import { reportRuntimeDiagnostic } from "./diagnostics.js";
-import type {
-  PiApi,
-  PiContext,
-  PiSessionManager,
-  PiTheme,
-  UnknownRecord,
-} from "./pi-types.js";
+import type { PiApi, PiContext, PiSessionManager, PiTheme, UnknownRecord } from "./pi-types.js";
+import type { ExtensionRuntime } from "./runtime/ExtensionRuntime.js";
 
 const COMPLETED_CARD_TTL_MS = 60_000;
-export const PersistedCardDetailsSchema = Schema.Record(
-  Schema.String,
-  Schema.UndefinedOr(Schema.Json),
-);
+export const PersistedCardDetailsSchema = Schema.Record(Schema.String, Schema.UndefinedOr(Schema.Json));
 
 const ACTIVE_CARD_STATUSES = new Set(["queued", "running"]);
-const TERMINAL_CARD_STATUSES = new Set([
-  "done",
-  "error",
-  "aborted",
-  "stopped",
-]);
+const TERMINAL_CARD_STATUSES = new Set(["done", "error", "aborted", "stopped"]);
 interface CardDetails extends UnknownRecord {
   status?: string;
   kind?: string;
@@ -89,15 +65,9 @@ function normalizeCardDetails(value: unknown): CardDetails {
     updatedAt: numberField(value.updatedAt),
     completedAt: numberField(value.completedAt),
     inactiveMs: numberField(value.inactiveMs),
-    activities: Array.isArray(value.activities)
-      ? value.activities.filter(isRecord)
-      : undefined,
-    configuration: isRecord(value.configuration)
-      ? value.configuration
-      : undefined,
-    sessions: Array.isArray(value.sessions)
-      ? value.sessions.filter(isRecord)
-      : undefined,
+    activities: Array.isArray(value.activities) ? value.activities.filter(isRecord) : undefined,
+    configuration: isRecord(value.configuration) ? value.configuration : undefined,
+    sessions: Array.isArray(value.sessions) ? value.sessions.filter(isRecord) : undefined,
     systemPrompt: stringField(value.systemPrompt),
     error: stringField(value.error),
     restored: booleanField(value.restored),
@@ -113,12 +83,16 @@ function booleanField(value: unknown) {
 }
 
 function numberField(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-const liveCards = new Map<string, { details: CardDetails; timer?: NodeJS.Timeout }>();
+interface LiveCardEntry {
+  readonly details: CardDetails;
+  readonly token: symbol;
+  readonly interruptExpiry?: () => void;
+}
+
+const liveCards = new Map<string, LiveCardEntry>();
 const persistedCards = new Map<string, CardDetails>();
 const liveCardRefreshers = new Set<(details?: UnknownRecord) => void>();
 
@@ -136,26 +110,34 @@ export function liveCardKey(details: CardDetails | undefined) {
   return details.cardId ?? details.sessionId;
 }
 
-export function setLiveCardDetails(
-  details: CardDetails,
-  options: { ttlMs?: number } = {},
-) {
+export function setLiveCardDetails(details: CardDetails, options: { ttlMs?: number; runtime?: ExtensionRuntime } = {}) {
   const key = liveCardKey(details);
 
   if (!key) return undefined;
   const existing = liveCards.get(key);
 
-  if (existing?.timer) clearTimeout(existing.timer);
+  existing?.interruptExpiry?.();
   const nextDetails = { ...(existing?.details ?? {}), ...details };
   const ttlMs = liveCardTtl(nextDetails, options.ttlMs);
-  const timer =
-    ttlMs === undefined
-      ? undefined
-      : setTimeout(() => liveCards.delete(key), ttlMs);
+  const token = Symbol(key);
+  let interruptExpiry: (() => void) | undefined;
 
-  timer?.unref?.();
+  if (ttlMs !== undefined && options.runtime) {
+    const fiber = options.runtime.runFork(
+      Effect.sleep(Duration.millis(ttlMs)).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            if (liveCards.get(key)?.token === token) liveCards.delete(key);
+          }),
+        ),
+      ),
+    );
+    interruptExpiry = () => {
+      options.runtime?.runFork(Fiber.interrupt(fiber));
+    };
+  }
 
-  liveCards.set(key, { details: nextDetails, timer });
+  liveCards.set(key, { details: nextDetails, token, interruptExpiry });
   notifyLiveCardRefreshers(nextDetails);
 
   return nextDetails;
@@ -179,27 +161,15 @@ export function setPersistedCardDetails(details: CardDetails) {
   return nextDetails;
 }
 
-export function restorePersistedCardDetails(
-  sessionManager: PiSessionManager,
-) {
-  const entries =
-    sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
+export function restorePersistedCardDetails(sessionManager: PiSessionManager) {
+  const entries = sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
 
   for (const entry of entries) {
-    if (!isRecord(entry) || entry.customType !== CARD_STATE_ENTRY_TYPE)
-      continue;
-    const decoded = Schema.decodeUnknownExit(PersistedCardDetailsSchema)(
-      entry.data,
-    );
+    if (!isRecord(entry) || entry.customType !== CARD_STATE_ENTRY_TYPE) continue;
+    const decoded = Schema.decodeUnknownExit(PersistedCardDetailsSchema)(entry.data);
 
-    if (Exit.isSuccess(decoded))
-      setPersistedCardDetails(normalizeCardDetails(decoded.value));
-    else
-      reportRuntimeDiagnostic(
-        "persisted-card-state",
-        decoded.cause,
-        "warning",
-      );
+    if (Exit.isSuccess(decoded)) setPersistedCardDetails(normalizeCardDetails(decoded.value));
+    else reportRuntimeDiagnostic("persisted-card-state", decoded.cause, "warning");
   }
 }
 
@@ -225,7 +195,7 @@ export function clearLiveCardDetails(details: CardDetails) {
   const key = liveCardKey(details);
   const entry = key ? liveCards.get(key) : undefined;
 
-  if (entry?.timer) clearTimeout(entry.timer);
+  entry?.interruptExpiry?.();
 
   if (key) liveCards.delete(key);
 
@@ -257,9 +227,7 @@ function renderBordered(
 
   return [
     colorBorder(`╭${"─".repeat(Math.max(0, width - 2))}╮`),
-    ...content(innerWidth).map(
-      (line) => colorBorder("│ ") + fit(line, innerWidth) + colorBorder(" │"),
-    ),
+    ...content(innerWidth).map((line) => colorBorder("│ ") + fit(line, innerWidth) + colorBorder(" │")),
     colorBorder(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
   ];
 }
@@ -273,19 +241,11 @@ export function joinWithRight(left: string, right: string, width: number) {
   return `${fittedLeft}${" ".repeat(Math.max(1, width - visibleLength(fittedLeft) - rightWidth))}${right}`;
 }
 
-export function joinWithMiddle(
-  left: string,
-  middle: string,
-  right: string,
-  width: number,
-) {
+export function joinWithMiddle(left: string, middle: string, right: string, width: number) {
   const rightWidth = visibleLength(right);
   const leftAreaWidth = Math.max(0, width - rightWidth - 1);
   const middleWidth = Math.max(0, leftAreaWidth - visibleLength(left));
-  const fittedLeft =
-    middleWidth > 0
-      ? `${left}${fit(middle, middleWidth)}`
-      : fit(left, leftAreaWidth);
+  const fittedLeft = middleWidth > 0 ? `${left}${fit(middle, middleWidth)}` : fit(left, leftAreaWidth);
 
   return `${fittedLeft}${" ".repeat(Math.max(1, width - visibleLength(fittedLeft) - rightWidth))}${right}`;
 }
@@ -303,9 +263,7 @@ export function wrap(text: unknown, width: number) {
 }
 
 export function fit(text: unknown, width: number) {
-  return width <= 0
-    ? ""
-    : truncateToWidth(String(text ?? ""), width, "…", true);
+  return width <= 0 ? "" : truncateToWidth(String(text ?? ""), width, "…", true);
 }
 
 export function visibleLength(text: unknown) {
@@ -329,11 +287,7 @@ export function setAgentLabel(ctx: PiContext, agentName: unknown) {
   ctx.ui.setWidget(AGENT_WIDGET_KEY, content, { placement: "belowEditor" });
 }
 
-export function showCard(
-  pi: PiApi,
-  text: string,
-  details: UnknownRecord,
-) {
+export function showCard(pi: PiApi, text: string, details: UnknownRecord) {
   pi.sendMessage({
     customType: CARD_MESSAGE_TYPE,
     content: text,
@@ -344,6 +298,7 @@ export function showCard(
 
 export function startLiveRefresh(
   ctx: PiContext,
+  runtime: ExtensionRuntime,
   key = "default",
   options: LiveRefreshOptions = {},
 ) {
@@ -351,8 +306,7 @@ export function startLiveRefresh(
     refresh: (_details?: UnknownRecord) => {},
   });
 
-  if (ctx.mode !== "tui" || typeof ctx.ui?.setWidget !== "function")
-    return noop;
+  if (ctx.mode !== "tui" || typeof ctx.ui?.setWidget !== "function") return noop;
   const widgetKey = `${LIVE_REFRESH_WIDGET_KEY}:${key}`;
   const placement = options.placement ?? "aboveEditor";
   const resolveContext = () => options.resolveContext?.() ?? ctx;
@@ -362,22 +316,25 @@ export function startLiveRefresh(
   let mountedContext: PiContext | undefined;
   let tui: TUI | undefined;
   let lastRefreshAt = 0;
-  let refreshTimer: NodeJS.Timeout | undefined;
-  let pulseTimer: NodeJS.Timeout | undefined;
-  let timeout: NodeJS.Timeout | undefined;
-  const clearRefreshTimer = () => {
-    if (!refreshTimer) return;
-    clearTimeout(refreshTimer);
-    refreshTimer = undefined;
+  let refreshFiber: Fiber.Fiber<void, never> | undefined;
+  let pulseFiber: Fiber.Fiber<unknown, never> | undefined;
+  let timeoutFiber: Fiber.Fiber<void, never> | undefined;
+  const interrupt = (fiber: Fiber.Fiber<unknown, unknown> | undefined) => {
+    if (fiber) runtime.runFork(Fiber.interrupt(fiber));
+  };
+  const clearRefresh = () => {
+    interrupt(refreshFiber);
+    refreshFiber = undefined;
   };
   const stop = () => {
     if (stopped) return;
     stopped = true;
     liveCardRefreshers.delete(stop.refresh);
-    clearRefreshTimer();
-
-    if (pulseTimer) clearInterval(pulseTimer);
-    if (timeout) clearTimeout(timeout);
+    clearRefresh();
+    interrupt(pulseFiber);
+    interrupt(timeoutFiber);
+    pulseFiber = undefined;
+    timeoutFiber = undefined;
 
     try {
       mountedContext?.ui?.setWidget?.(widgetKey, undefined, { placement });
@@ -406,9 +363,7 @@ export function startLiveRefresh(
         (nextTui: TUI, theme: PiTheme) => {
           tui = nextTui;
 
-          return (
-            options.createComponent?.(nextTui, theme) ?? invisibleComponent()
-          );
+          return options.createComponent?.(nextTui, theme) ?? invisibleComponent();
         },
         { placement },
       );
@@ -419,41 +374,41 @@ export function startLiveRefresh(
   };
 
   stop.refresh = (details?: UnknownRecord) => {
-    if (stopped || pending || options.acceptsDetails?.(details) === false)
-      return;
+    if (stopped || pending || options.acceptsDetails?.(details) === false) return;
     const delay = Math.max(0, minIntervalMs - (Date.now() - lastRefreshAt));
     pending = true;
-    refreshTimer = setTimeout(renderPulse, delay);
-    refreshTimer.unref?.();
+    clearRefresh();
+    if (delay === 0) renderPulse();
+    else
+      refreshFiber = runtime.runFork(
+        Effect.sleep(Duration.millis(delay)).pipe(Effect.andThen(Effect.sync(renderPulse))),
+      );
   };
 
   if (options.trackLiveCards !== false) liveCardRefreshers.add(stop.refresh);
 
   if (options.autoPulse !== false) {
-    pulseTimer = setInterval(() => {
-      if (options.shouldPulse?.() === false) return;
-      renderPulse();
-    }, Math.max(250, Number(options.pulseIntervalMs ?? 1000)));
-    pulseTimer.unref?.();
+    const interval = Math.max(250, Number(options.pulseIntervalMs ?? 1000));
+
+    pulseFiber = runtime.runFork(
+      Effect.sync(() => {
+        if (options.shouldPulse?.() !== false) renderPulse();
+      }).pipe(Effect.repeat(Schedule.fixed(Duration.millis(interval)))),
+    );
   }
 
-  if (options.ttlMs !== undefined) {
-    timeout = setTimeout(
-      () => stop(),
-      Math.max(1000, Number(options.ttlMs)),
+  if (options.ttlMs !== undefined)
+    timeoutFiber = runtime.runFork(
+      Effect.sleep(Duration.millis(Math.max(1000, Number(options.ttlMs)))).pipe(Effect.andThen(Effect.sync(stop))),
     );
-    timeout.unref?.();
-  }
 
   return stop;
 }
 
-export function startSessionLiveCardRefresh(ctx: PiContext) {
-  const stop = startLiveRefresh(ctx, "session-live-cards", {
-    acceptsDetails: (details: UnknownRecord | undefined) =>
-      !details || cardBelongsToSession(ctx, details),
-    createComponent: (tui: TUI, theme: PiTheme) =>
-      new LiveCardsPanel(ctx, tui, theme),
+export function startSessionLiveCardRefresh(ctx: PiContext, runtime: ExtensionRuntime) {
+  const stop = startLiveRefresh(ctx, runtime, "session-live-cards", {
+    acceptsDetails: (details: UnknownRecord | undefined) => !details || cardBelongsToSession(ctx, details),
+    createComponent: (tui: TUI, theme: PiTheme) => new LiveCardsPanel(ctx, tui, theme),
     shouldPulse: () => sessionLiveCardDetails(ctx).length > 0,
   });
 
@@ -469,27 +424,18 @@ export function sessionHasVisibleLiveCard(ctx: PiContext) {
 function sessionLiveCardDetails(ctx: PiContext) {
   const cards = [...liveCards.values()]
     .map((entry) => entry.details)
-    .filter(
-      (details) => isActiveCard(details) && cardBelongsToSession(ctx, details),
-    )
+    .filter((details) => isActiveCard(details) && cardBelongsToSession(ctx, details))
     .sort(
-      (left, right) =>
-        Number(left.startedAt ?? left.updatedAt ?? 0) -
-        Number(right.startedAt ?? right.updatedAt ?? 0),
+      (left, right) => Number(left.startedAt ?? left.updatedAt ?? 0) - Number(right.startedAt ?? right.updatedAt ?? 0),
     );
 
-  return [
-    ...new Map(
-      cards.map((details) => [details.sessionId ?? liveCardKey(details), details]),
-    ).values(),
-  ];
+  return [...new Map(cards.map((details) => [details.sessionId ?? liveCardKey(details), details])).values()];
 }
 
 function cardBelongsToSession(ctx: PiContext, details: UnknownRecord) {
   const sessionId = currentSessionId(ctx);
 
-  if (details?.callerSessionId)
-    return details.callerSessionId === sessionId;
+  if (details?.callerSessionId) return details.callerSessionId === sessionId;
   const key = liveCardKey(details);
 
   return Boolean(key && sessionCardKeys(ctx).has(key));
@@ -513,9 +459,7 @@ function sessionCardKeys(ctx: PiContext) {
       ...(ctx.sessionManager?.getEntries?.() ?? []),
       ...(ctx.sessionManager?.getBranch?.() ?? []),
     ];
-    entries = sessionEntries.flatMap((entry) =>
-      isRecord(entry) ? [entry] : [],
-    );
+    entries = sessionEntries.flatMap((entry) => (isRecord(entry) ? [entry] : []));
   } catch (error) {
     reportRuntimeDiagnostic("session-card-keys", error);
     return keys;
@@ -524,13 +468,9 @@ function sessionCardKeys(ctx: PiContext) {
   for (const entry of entries) {
     const message = isRecord(entry.message) ? entry.message : undefined;
     const details =
-      entry?.type === "custom_message" &&
-      entry.customType === CARD_MESSAGE_TYPE &&
-      entry.display !== false
+      entry?.type === "custom_message" && entry.customType === CARD_MESSAGE_TYPE && entry.display !== false
         ? normalizeCardDetails(entry.details)
-        : entry?.type === "message" &&
-            message?.role === "toolResult" &&
-            message.toolName === "agents"
+        : entry?.type === "message" && message?.role === "toolResult" && message.toolName === "agents"
           ? normalizeCardDetails(message.details)
           : undefined;
     const key = liveCardKey(details);
@@ -562,14 +502,9 @@ class LiveCardsPanel {
     const rowLimit = Math.max(1, terminalRows - 10);
     const hiddenCount = Math.max(0, cards.length - rowLimit);
     const visibleCards = cards.slice(-rowLimit);
-    const rows = visibleCards.map((details) =>
-      this.cardRow(details, Math.max(10, width - 4)),
-    );
+    const rows = visibleCards.map((details) => this.cardRow(details, Math.max(10, width - 4)));
 
-    if (hiddenCount > 0)
-      rows[0] = this.dim(
-        `… ${hiddenCount} earlier active card${hiddenCount === 1 ? "" : "s"}`,
-      );
+    if (hiddenCount > 0) rows[0] = this.dim(`… ${hiddenCount} earlier active card${hiddenCount === 1 ? "" : "s"}`);
 
     return renderBordered(
       width,
@@ -583,15 +518,9 @@ class LiveCardsPanel {
     const indicator = queued ? this.accent("○") : this.success("●");
     const mode = this.accent(details.async ? "[ASYNC]" : "[SYNC]");
     const agent =
-      details.agentName && details.agentName !== "agentless"
-        ? styleAgentName(details.agentName)
-        : this.bold("agent");
-    const session = details.sessionId
-      ? this.dim(`(${shortSessionId(details.sessionId)})`)
-      : "";
-    const activities = Array.isArray(details.activities)
-      ? details.activities
-      : [];
+      details.agentName && details.agentName !== "agentless" ? styleAgentName(details.agentName) : this.bold("agent");
+    const session = details.sessionId ? this.dim(`(${shortSessionId(details.sessionId)})`) : "";
+    const activities = Array.isArray(details.activities) ? details.activities : [];
     const detail = normalizeInline(
       activities.length > 0
         ? formatActivity(activities.at(-1))
@@ -600,17 +529,11 @@ class LiveCardsPanel {
           : details.message,
     );
     const now = Date.now();
-    const inactive = formatDuration(
-      Math.max(0, now - Number(details.updatedAt ?? now)),
-    );
-    const total = formatDuration(
-      Math.max(0, now - Number(details.startedAt ?? now)),
-    );
+    const inactive = formatDuration(Math.max(0, now - Number(details.updatedAt ?? now)));
+    const total = formatDuration(Math.max(0, now - Number(details.startedAt ?? now)));
     const left = `${indicator} ${mode} ${agent}${session ? ` ${session}` : ""}`;
     const middle = ` ${this.dim("│")} ${detail}`;
-    const right =
-      `${this.dim("idle")} ${this.timer(inactive)} ` +
-      `${this.dim("· total")} ${this.timer(total)}`;
+    const right = `${this.dim("idle")} ${this.timer(inactive)} ` + `${this.dim("· total")} ${this.timer(total)}`;
 
     return joinWithMiddle(left, middle, right, width);
   }
@@ -636,19 +559,14 @@ class LiveCardsPanel {
   }
 }
 
-export function styleAgentName(
-  agentName: unknown,
-  { bracketed = false }: UnknownRecord = {},
-) {
+export function styleAgentName(agentName: unknown, { bracketed = false }: UnknownRecord = {}) {
   const text = bracketed ? `[${agentName}]` : agentName;
 
   return `\x1b[${agentColorCode(agentName)}m${text}\x1b[39m`;
 }
 
 export function agentColorCode(agentName: unknown) {
-  return AGENT_COLORS[
-    hashString(String(agentName ?? "")) % AGENT_COLORS.length
-  ];
+  return AGENT_COLORS[hashString(String(agentName ?? "")) % AGENT_COLORS.length];
 }
 
 function createAgentLabel(agentName: unknown) {
@@ -690,18 +608,11 @@ export const SESSION_TREE_VISIBLE_ITEMS = 12;
 function sessionTreeConnector(session: UnknownRecord) {
   const depth = Math.max(0, Number(session.depth ?? 0));
 
-  return depth === 0
-    ? ""
-    : `${"│  ".repeat(Math.max(0, depth - 1))}${session.isLast === true ? "└─" : "├─"} `;
+  return depth === 0 ? "" : `${"│  ".repeat(Math.max(0, depth - 1))}${session.isLast === true ? "└─" : "├─"} `;
 }
 
 function sessionMessage(session: UnknownRecord) {
-  return normalizeInline(
-    session.lastMessage ??
-      session.firstMessage ??
-      session.name ??
-      "Untitled session",
-  );
+  return normalizeInline(session.lastMessage ?? session.firstMessage ?? session.name ?? "Untitled session");
 }
 
 function visibleSessionId(session: UnknownRecord, sessions: UnknownRecord[]) {
@@ -715,12 +626,7 @@ export function renderAgentsCall() {
   return new InvisibleComponent();
 }
 
-export function renderAgentsResult(
-  resultValue: unknown,
-  optionsValue: unknown,
-  theme: PiTheme,
-  contextValue: unknown,
-) {
+export function renderAgentsResult(resultValue: unknown, optionsValue: unknown, theme: PiTheme, contextValue: unknown) {
   const result = isRecord(resultValue) ? resultValue : {};
   const options = isRecord(optionsValue) ? optionsValue : {};
   const context = isRecord(contextValue) ? contextValue : {};
@@ -731,17 +637,13 @@ export function renderAgentsResult(
   const args = isRecord(context.args) ? context.args : {};
   const { details, liveDetails, live } = resolveCardDetails(originalDetails);
 
-  if (isActiveCard(originalDetails) && details.livePanel === true)
-    return new InvisibleComponent();
-  const restoredRunning =
-    details.status === "running" && !options.isPartial && !liveDetails;
+  if (isActiveCard(originalDetails) && details.livePanel === true) return new InvisibleComponent();
+  const restoredRunning = details.status === "running" && !options.isPartial && !liveDetails;
 
   card.update(
     {
       cardId: details.cardId,
-      kind:
-        details.kind ??
-        (typeof args.action === "string" ? args.action : "agents"),
+      kind: details.kind ?? (typeof args.action === "string" ? args.action : "agents"),
       live,
       restored: restoredRunning,
       status: restoredRunning
@@ -750,28 +652,18 @@ export function renderAgentsResult(
           ? (details.status ?? "running")
           : (details.status ?? (context.isError ? "error" : "done")),
       async: details.async ?? args.async === true,
-      agentName:
-        details.agentName ??
-        (typeof args.agent === "string" ? args.agent : undefined),
-      sessionId:
-        details.sessionId ??
-        (typeof args.sessionId === "string" ? args.sessionId : undefined),
+      agentName: details.agentName ?? (typeof args.agent === "string" ? args.agent : undefined),
+      sessionId: details.sessionId ?? (typeof args.sessionId === "string" ? args.sessionId : undefined),
       message:
-        details.message ??
-        (typeof args.message === "string" ? args.message : undefined) ??
-        firstText(result.content),
+        details.message ?? (typeof args.message === "string" ? args.message : undefined) ?? firstText(result.content),
       answer:
         details.answer ??
-        (details.kind === "send" && details.status === "done"
-          ? firstText(result.content)
-          : undefined),
+        (details.kind === "send" && details.status === "done" ? firstText(result.content) : undefined),
       activities: details.activities ?? [],
       startedAt:
         details.startedAt ??
         previousCard?.data?.startedAt ??
-        (details.kind === "send" && details.status === "running"
-          ? Date.now()
-          : undefined),
+        (details.kind === "send" && details.status === "running" ? Date.now() : undefined),
       updatedAt: details.updatedAt ?? previousCard?.data?.updatedAt,
       completedAt: restoredRunning
         ? (details.completedAt ?? details.updatedAt ?? details.startedAt)
@@ -780,9 +672,7 @@ export function renderAgentsResult(
       configuration: details.configuration,
       sessions:
         details.sessions ??
-        (Array.isArray(details.configuration?.sessions)
-          ? details.configuration.sessions.filter(isRecord)
-          : undefined),
+        (Array.isArray(details.configuration?.sessions) ? details.configuration.sessions.filter(isRecord) : undefined),
       systemPrompt: details.systemPrompt,
     },
     options.expanded === true,
@@ -792,9 +682,7 @@ export function renderAgentsResult(
 }
 
 function firstText(content: unknown) {
-  return Array.isArray(content)
-    ? content.find((item) => item.type === "text")?.text
-    : undefined;
+  return Array.isArray(content) ? content.find((item) => item.type === "text")?.text : undefined;
 }
 
 class InvisibleComponent {
@@ -824,21 +712,14 @@ class AgentsCard {
   invalidate() {}
 
   render(width: number) {
-    const { details, liveDetails, persistedDetails, live } =
-      resolveCardDetails(this.data);
+    const { details, liveDetails, persistedDetails, live } = resolveCardDetails(this.data);
     const staleRunning = details.status === "running" && !live;
     this.data = {
       ...details,
       live,
-      restored: staleRunning
-        ? true
-        : liveDetails || persistedDetails
-          ? false
-          : details.restored,
+      restored: staleRunning ? true : liveDetails || persistedDetails ? false : details.restored,
       status: staleRunning ? "restored" : details.status,
-      completedAt: staleRunning
-        ? (details.completedAt ?? details.updatedAt ?? details.startedAt)
-        : details.completedAt,
+      completedAt: staleRunning ? (details.completedAt ?? details.updatedAt ?? details.startedAt) : details.completedAt,
     };
     return renderBordered(
       width,
@@ -856,10 +737,7 @@ class AgentsCard {
     const footer = this.footer(width);
     const visibleBody =
       !this.expanded && body.length > maxBodyLines
-        ? [
-            ...body.slice(0, maxBodyLines - 1),
-            this.muted(`… ${body.length - maxBodyLines + 1} more`),
-          ]
+        ? [...body.slice(0, maxBodyLines - 1), this.muted(`… ${body.length - maxBodyLines + 1} more`)]
         : body;
 
     return [header, "", ...visibleBody, "", footer];
@@ -870,42 +748,30 @@ class AgentsCard {
     const async = this.data.async ? `${this.purple("[ASYNC]")} ` : "";
     const title = this.title();
     const agent =
-      this.data.agentName && this.data.agentName !== "agentless"
-        ? ` ${this.agent(this.data.agentName)}`
-        : "";
-    const session = this.data.sessionId
-      ? ` ${this.dim(`(${shortSessionId(this.data.sessionId)})`)}`
-      : "";
+      this.data.agentName && this.data.agentName !== "agentless" ? ` ${this.agent(this.data.agentName)}` : "";
+    const session = this.data.sessionId ? ` ${this.dim(`(${shortSessionId(this.data.sessionId)})`)}` : "";
     const inactive =
       this.data.live && this.data.status === "running" && this.data.updatedAt
         ? `${this.dim("Inactive:")} ${this.timer(formatDuration(Date.now() - this.data.updatedAt))}`
         : "";
 
-    return joinWithRight(
-      `${icon} ${async}${this.bold(title)}${agent}${session}`,
-      inactive,
-      width,
-    );
+    return joinWithRight(`${icon} ${async}${this.bold(title)}${agent}${session}`, inactive, width);
   }
 
   title() {
     if (this.data.status === "error") return "Agent call failed.";
 
-    if (this.data.status === "stopped")
-      return "Agent stopped before answering.";
+    if (this.data.status === "stopped") return "Agent stopped before answering.";
 
     if (this.data.status === "aborted") return "Agent got aborted.";
 
     if (this.data.status === "queued") return "Message queued.";
 
-    if (this.data.restored && this.data.kind === "send")
-      return "Sent a message to";
+    if (this.data.restored && this.data.kind === "send") return "Sent a message to";
 
-    if (this.data.status === "done" && this.data.kind === "send")
-      return "Agent answered.";
+    if (this.data.status === "done" && this.data.kind === "send") return "Agent answered.";
 
-    if (this.data.kind === "load" && this.data.agentName === "agentless")
-      return "Cleared active agent";
+    if (this.data.kind === "load" && this.data.agentName === "agentless") return "Cleared active agent";
 
     if (this.data.kind === "load") return "Loaded";
 
@@ -915,11 +781,9 @@ class AgentsCard {
   }
 
   body(width: number) {
-    if (this.data.error)
-      return wrap(this.data.error, width).map((line) => this.red(line));
+    if (this.data.error) return wrap(this.data.error, width).map((line) => this.red(line));
 
-    if (this.data.kind === "discoverSessions")
-      return this.sessionTreeLines(width);
+    if (this.data.kind === "discoverSessions") return this.sessionTreeLines(width);
 
     if (this.data.kind === "load") return this.configurationLines(width);
     const content = wrap(this.bodyText(), width);
@@ -931,10 +795,7 @@ class AgentsCard {
   collapsedBody(width: number, maxLines: number) {
     if (this.data.kind !== "send" || this.data.error) return this.body(width);
     const content = wrap(this.bodyText(), width).slice(0, 2);
-    const activities = this.activityLines(
-      width,
-      Math.max(0, maxLines - content.length),
-    );
+    const activities = this.activityLines(width, Math.max(0, maxLines - content.length));
 
     return [...content, ...activities];
   }
@@ -946,34 +807,22 @@ class AgentsCard {
   }
 
   sessionTreeLines(width: number) {
-    const sessions = Array.isArray(this.data.sessions)
-      ? this.data.sessions
-      : [];
+    const sessions = Array.isArray(this.data.sessions) ? this.data.sessions : [];
     const title = center(this.bold("Orchestration Tree"), width);
 
     if (sessions.length === 0)
-      return [
-        title,
-        this.muted("─".repeat(width)),
-        "",
-        this.muted("No related sessions found."),
-      ];
+      return [title, this.muted("─".repeat(width)), "", this.muted("No related sessions found.")];
     const end = Math.min(SESSION_TREE_VISIBLE_ITEMS, sessions.length);
     const scroll =
       sessions.length > SESSION_TREE_VISIBLE_ITEMS
-        ? [
-            "",
-            this.muted(fit(`  Showing 1-${end} of ${sessions.length}`, width)),
-          ]
+        ? ["", this.muted(fit(`  Showing 1-${end} of ${sessions.length}`, width))]
         : [];
 
     return [
       title,
       this.muted("─".repeat(width)),
       "",
-      ...sessions
-        .slice(0, end)
-        .map((session) => this.sessionTreeLine(session, width)),
+      ...sessions.slice(0, end).map((session) => this.sessionTreeLine(session, width)),
       ...scroll,
     ];
   }
@@ -982,9 +831,7 @@ class AgentsCard {
     const connector = sessionTreeConnector(session);
     const indicator = session.running ? this.green("●") : this.dim("○");
     const agent =
-      typeof session.agentName === "string" && session.agentName
-        ? `${this.agentName(session.agentName)} `
-        : "";
+      typeof session.agentName === "string" && session.agentName ? `${this.agentName(session.agentName)} ` : "";
     const message = sessionMessage(session);
     const id = this.dim(`(${visibleSessionId(session, this.data.sessions ?? [])})`);
     const left = `${this.dim(connector)}${indicator} ${agent}`;
@@ -998,9 +845,7 @@ class AgentsCard {
 
   configurationLines(width: number) {
     const configuration = this.data.configuration ?? {};
-    const lines = Object.entries(configuration).map(
-      ([key, value]) => `${this.muted(`${key}:`)} ${formatValue(value)}`,
-    );
+    const lines = Object.entries(configuration).map(([key, value]) => `${this.muted(`${key}:`)} ${formatValue(value)}`);
 
     if (this.expanded && this.data.systemPrompt) {
       lines.push(
@@ -1017,22 +862,13 @@ class AgentsCard {
     const answer = normalizeInline(this.data.answer);
     const activities = Array.isArray(this.data.activities)
       ? this.data.activities.filter(
-          (activity) =>
-            !(
-              answer &&
-              activity?.type === "assistant" &&
-              normalizeInline(activity.text) === answer
-            ),
+          (activity) => !(answer && activity?.type === "assistant" && normalizeInline(activity.text) === answer),
         )
       : [];
 
     if (activities.length === 0 || maxLines <= 0) return [];
-    const activityLimit = Math.max(
-      0,
-      maxLines - (activities.length > maxLines ? 1 : 0),
-    );
-    const visible =
-      activityLimit > 0 ? activities.slice(-activityLimit) : [];
+    const activityLimit = Math.max(0, maxLines - (activities.length > maxLines ? 1 : 0));
+    const visible = activityLimit > 0 ? activities.slice(-activityLimit) : [];
     const hidden = activities.length - visible.length;
     const lines = hidden > 0 ? [this.muted(`├─ [+${hidden} activities]`)] : [];
 
@@ -1054,9 +890,7 @@ class AgentsCard {
     if (this.data.kind !== "send" || !this.data.startedAt) return "";
     const endAt =
       this.data.completedAt ??
-      (this.data.live && isActiveCard(this.data)
-        ? Date.now()
-        : (this.data.updatedAt ?? this.data.startedAt));
+      (this.data.live && isActiveCard(this.data) ? Date.now() : (this.data.updatedAt ?? this.data.startedAt));
 
     return formatDuration(Math.max(0, endAt - this.data.startedAt));
   }
@@ -1066,10 +900,7 @@ class AgentsCard {
 
     if (this.data.status === "done") return this.green("✓");
 
-    if (
-      typeof this.data.status === "string" &&
-      ["error", "aborted", "stopped"].includes(this.data.status)
-    )
+    if (typeof this.data.status === "string" && ["error", "aborted", "stopped"].includes(this.data.status))
       return this.red("!");
 
     if (this.data.status === "queued") return this.pink("○");
@@ -1132,10 +963,7 @@ class AgentsCard {
 
 function formatSystemPromptForCard(systemPrompt: unknown) {
   return String(systemPrompt ?? "")
-    .replace(
-      "The following skills provide specialized instructions for specific tasks.",
-      "Available skills",
-    )
+    .replace("The following skills provide specialized instructions for specific tasks.", "Available skills")
     .replace(/<available_skills>\s*([\s\S]*?)\s*<\/available_skills>/g, (_full, body) =>
       String(body)
         .replace(/<skill>\s*([\s\S]*?)\s*<\/skill>/g, (_skill, skillBody) => {
@@ -1164,9 +992,7 @@ function formatActivity(activity: unknown) {
       `[${activity.name}] ${activity.summary ?? ""} ${activity.status ? `(${activity.status})` : ""}`,
     );
 
-  return normalizeInline(
-    activity.text ?? activity.summary ?? JSON.stringify(activity),
-  );
+  return normalizeInline(activity.text ?? activity.summary ?? JSON.stringify(activity));
 }
 
 function formatValue(value: unknown) {

@@ -216,6 +216,8 @@ A background send returns immediately and keeps the delegated task visible.
 
 Pi-gentic decorates Pi's native session selector with agent labels, running state, inactivity, short session ids, and parent-child relationships. Pi's standard search, sort, scope, rename, path, delete, and session switching behavior remains native.
 
+Large directories open from one fast filesystem snapshot. Native Pi summaries and persisted pi-gentic metadata are revalidated in the background, then applied to the open selector without blocking its first render. The 500-session regression gate covers both loading and decoration.
+
 <img src="./docs/assets/resume.png" alt="Native resume selector with pi-gentic session details" width="900">
 
 ---
@@ -301,7 +303,11 @@ flowchart TD
     Legacy --> Pi
 ```
 
-The extension host owns one scoped `ManagedRuntime`. Runtime metadata is observable through `SubscriptionRef`, and background delegations are owned by `FiberMap`. Shutdown interrupts owned fibers and releases runtime entries. The exact-version adapter under `src/infrastructure/pi/legacy-v0_82/` contains every private Pi 0.82 integration.
+The extension host owns one scoped `ManagedRuntime`. Runtime metadata is observable through `SubscriptionRef`, background delegations are owned by `FiberMap`, native session enrichment is coalesced by `Cache`, and TUI cadence uses `Schedule`. Live repaint delays, timer pulses, and expiry are runtime-owned fibers. Git operations use scoped streams, timeouts, spans, redacted attributes, and metrics. Shutdown interrupts every owned fiber and releases runtime entries. The exact-version adapter under `src/infrastructure/pi/legacy-v0_82/` contains every private Pi 0.82 integration.
+
+Unknown host and persistence values are decoded once with Effect Schema. Card snapshots accept JSON values plus absent top-level fields; activity builders omit absent nested fields before persistence. This keeps stored snapshots valid without weakening their JSON contract.
+
+The refactor baseline contained 10,769 TypeScript source lines. The current source contains 9,056, a 15.9% reduction, while expanding deterministic behavior coverage. `Prettier` with the repository configuration keeps that compact layout reproducible. The exhaustive sidebar mapping is recorded in [`docs/effect-feature-ledger.md`](docs/effect-feature-ledger.md).
 
 ---
 

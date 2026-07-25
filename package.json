@@ -23,6 +23,7 @@
   "files": [
     "dist",
     "docs/assets",
+    "docs/effect-feature-ledger.md",
     "README.md"
   ],
   "exports": "./dist/extension.js",
@@ -35,6 +36,8 @@
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.js\" \"test-effect/**/*.ts\" \"test-ui/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.js\" \"test-effect/**/*.ts\" \"test-ui/**/*.mjs\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check:effect": "effect-tsgo diagnostics --project tsconfig.json --strict --format pretty",
     "check": "npm run typecheck && npm run check:effect && npm test && npm run pack:dry",
@@ -43,7 +46,7 @@
     "test:effect": "vitest run",
     "test:integration": "npm run build && node --test test/config-trust.test.js test/worktree-security.test.js",
     "test:compat": "npm run build && node --test test/active-agent-calls.test.js test/live-runtime.test.js test/resume.test.js",
-    "test:coverage": "npm run build && node --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=75 --test-coverage-include=dist/**/*.js --test-coverage-exclude=dist/domain/** --test-coverage-exclude=dist/infrastructure/runtime/** --test-coverage-exclude=dist/runtime/** --test test/*.test.js",
+    "test:coverage": "npm run build && node --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=80 --test-coverage-include=dist/**/*.js --test-coverage-exclude=dist/domain/** --test-coverage-exclude=dist/infrastructure/runtime/** --test-coverage-exclude=dist/runtime/** --test test/*.test.js",
     "test:coverage:effect": "vitest run --coverage",
     "test:ui": "npm run build && node test-ui/capture-ui.mjs",
     "test:e2e": "npm run build && python test-e2e/capture-terminal-ui.py --deterministic",
@@ -60,7 +63,7 @@
     "@effect/vitest": "4.0.0-beta.101",
     "@types/node": "25.9.3",
     "@vitest/coverage-v8": "4.1.10",
-    "fast-check": "4.5.3",
+    "prettier": "3.8.2",
     "typescript": "7.0.2",
     "vitest": "4.1.10"
   },

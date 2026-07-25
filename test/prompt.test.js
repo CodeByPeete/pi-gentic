@@ -66,20 +66,11 @@ test("resolved prompt preserves native Pi content and appends one delimited cont
     assert.match(prompt, /Research instructions/);
     assert.match(prompt, /Delegation rules/);
     assert.match(prompt, /Extra prompt file content/);
-    assert.match(
-      prompt,
-      /Available agents\n- researcher: Finds reliable context/,
-    );
-    assert.match(
-      prompt,
-      /When generating a session or worktree name, it must be 3 words long max\./,
-    );
+    assert.match(prompt, /Available agents\n- researcher: Finds reliable context/);
+    assert.match(prompt, /When generating a session or worktree name, it must be 3 words long max\./);
     assert.equal([...prompt.matchAll(/<available_skills>/g)].length, 1);
     assert.equal([...prompt.matchAll(/Research instructions\./g)].length, 1);
-    assert.ok(
-      prompt.indexOf("Extra prompt file content.") <
-        prompt.indexOf("Available agents"),
-    );
+    assert.ok(prompt.indexOf("Extra prompt file content.") < prompt.indexOf("Available agents"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -92,11 +83,7 @@ test("agent policy never removes native prompts, project instructions, or skills
     tools: ["read"],
     skills: [],
   };
-  input.policy.systemPromptFiles = [
-    "*",
-    "!@agent/SYSTEM.md",
-    "!*AGENTS.md",
-  ];
+  input.policy.systemPromptFiles = ["*", "!@agent/SYSTEM.md", "!*AGENTS.md"];
   const prompt = buildResolvedSystemPrompt(input);
 
   assert.equal(prompt.slice(0, basePrompt.length), basePrompt);

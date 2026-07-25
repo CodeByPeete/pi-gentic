@@ -1,23 +1,11 @@
-import {
-  existsSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-} from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
-import {
-  loadSkills,
-  parseFrontmatter,
-} from "@earendil-works/pi-coding-agent";
+import { loadSkills, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Exit, Schema } from "effect";
 import { applyCapabilityFilter } from "./domain/capabilities.js";
-import type {
-  PiContext,
-  PiSessionManager,
-  UnknownRecord,
-} from "./pi-types.js";
+import type { PiContext, PiSessionManager, UnknownRecord } from "./pi-types.js";
 
 export interface AgentDefinition extends UnknownRecord {
   readonly name: string;
@@ -52,8 +40,7 @@ export function isRecord(value: unknown): value is UnknownRecord {
 }
 
 export function toStringArray(value: unknown) {
-  if (Array.isArray(value))
-    return value.filter((item) => typeof item === "string");
+  if (Array.isArray(value)) return value.filter((item) => typeof item === "string");
 
   if (typeof value === "string")
     return value
@@ -68,16 +55,11 @@ export function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function parseIntegerRadius(
-  value: unknown,
-  fieldName: string,
-  fallback = 0,
-) {
+export function parseIntegerRadius(value: unknown, fieldName: string, fallback = 0) {
   if (value === undefined || value === null) return fallback;
   const number = typeof value === "number" ? value : Number(value);
 
-  if (!Number.isFinite(number) || number < 0)
-    throw new Error(`${fieldName} must be a non-negative number.`);
+  if (!Number.isFinite(number) || number < 0) throw new Error(`${fieldName} must be a non-negative number.`);
   return Math.floor(number);
 }
 
@@ -91,18 +73,14 @@ export function formatDuration(milliseconds: number) {
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
 
-  if (hours > 0)
-    return `${hours}h:${minutes.toString().padStart(2, "0")}m:${seconds.toString().padStart(2, "0")}s`;
+  if (hours > 0) return `${hours}h:${minutes.toString().padStart(2, "0")}m:${seconds.toString().padStart(2, "0")}s`;
 
   if (minutes > 0) return `${minutes}m:${seconds.toString().padStart(2, "0")}s`;
 
   return `${seconds}s`;
 }
 
-export function applyFilterList(
-  allNames: string[],
-  filters: unknown = FILTER_ALL,
-) {
+export function applyFilterList(allNames: string[], filters: unknown = FILTER_ALL) {
   if (!Array.isArray(filters)) return [...allNames];
 
   return applyCapabilityFilter(
@@ -134,10 +112,7 @@ export function shortSessionId(sessionId: unknown) {
   return String(sessionId ?? "").slice(0, 8);
 }
 
-export function shortestUniqueSessionId(
-  sessionId: unknown,
-  sessionIds: unknown[] = [],
-) {
+export function shortestUniqueSessionId(sessionId: unknown, sessionIds: unknown[] = []) {
   const full = String(sessionId ?? "");
   let length = Math.min(8, full.length);
 
@@ -154,41 +129,26 @@ export function shortestUniqueSessionId(
   return full.slice(0, length);
 }
 
-export function buildReceiptText(
-  callerAgent: unknown,
-  callerSessionId: unknown,
-  message: string,
-) {
+export function buildReceiptText(callerAgent: unknown, callerSessionId: unknown, message: string) {
   const agentText = callerAgent ? `[${callerAgent}] agent` : "agent";
 
   return `Message from ${agentText} from session ${String(callerSessionId ?? "")}:\n${message}\nOnly your final answer will be returned.`;
 }
 
-export function buildReturnText(
-  agent: unknown,
-  sessionId: unknown,
-  finalAnswer: string,
-) {
+export function buildReturnText(agent: unknown, sessionId: unknown, finalAnswer: string) {
   const agentText = agent ? `[${agent}] agent` : "agent";
 
   return `Message from ${agentText} from session ${String(sessionId ?? "")}:\n${finalAnswer}`;
 }
 
-
 const EXTENSION_DIR = path.join("extensions", "pi-gentic");
 const JsonObjectSchema = Schema.Record(Schema.String, Schema.Json);
 
 export function defaultAgentDir() {
-  return (
-    process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent")
-  );
+  return process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent");
 }
 
-export function getConfigRoots(
-  cwd = process.cwd(),
-  agentDir = defaultAgentDir(),
-  projectTrusted = false,
-) {
+export function getConfigRoots(cwd = process.cwd(), agentDir = defaultAgentDir(), projectTrusted = false) {
   const roots = [path.join(agentDir, EXTENSION_DIR)];
 
   if (projectTrusted) {
@@ -223,9 +183,7 @@ export function loadPiSettings(
   const settings: UnknownRecord = {};
   const paths = [
     path.join(agentDir, "settings.json"),
-    ...(projectTrusted
-      ? ancestorDirs(cwd, ".pi", "settings.json")
-      : []),
+    ...(projectTrusted ? ancestorDirs(cwd, ".pi", "settings.json") : []),
   ];
 
   for (const settingsPath of dedupePaths(paths)) {
@@ -245,8 +203,7 @@ export function enabledModelPatterns(agentDir = defaultAgentDir()) {
 
 export function loadConfiguration(options: UnknownRecord = {}) {
   const cwd = typeof options.cwd === "string" ? options.cwd : undefined;
-  const agentDir =
-    typeof options.agentDir === "string" ? options.agentDir : undefined;
+  const agentDir = typeof options.agentDir === "string" ? options.agentDir : undefined;
   const roots = Array.isArray(options.roots)
     ? options.roots.filter((root): root is string => typeof root === "string")
     : getConfigRoots(cwd, agentDir, options.projectTrusted === true);
@@ -261,26 +218,17 @@ export function loadConfiguration(options: UnknownRecord = {}) {
     if (rootSettings) {
       mergeRootSettings(settings, rootSettings);
 
-      for (const definition of normalizeAgentDefinitions(
-        rootSettings.agentDefinitions,
-        settingsPath,
-        diagnostics,
-      )) {
+      for (const definition of normalizeAgentDefinitions(rootSettings.agentDefinitions, settingsPath, diagnostics)) {
         agentsByName.set(String(definition.name), definition);
       }
     }
 
-    for (const definition of loadMarkdownAgents(
-      path.join(root, "agents"),
-      diagnostics,
-    )) {
+    for (const definition of loadMarkdownAgents(path.join(root, "agents"), diagnostics)) {
       agentsByName.set(String(definition.name), definition);
     }
   }
 
-  const agents = [...agentsByName.values()].filter(
-    (agent) => agent.disabled !== true,
-  );
+  const agents = [...agentsByName.values()].filter((agent) => agent.disabled !== true);
 
   return {
     settings: { ...settings, agentDefinitions: agents },
@@ -337,15 +285,10 @@ function mergeRootSettings(target: UnknownRecord, source: unknown) {
     target.defaultAgent = source.defaultAgent;
 
   if (Number.isFinite(Number(source.globalMaxSubagentDepth))) {
-    target.globalMaxSubagentDepth = Math.floor(
-      Number(source.globalMaxSubagentDepth),
-    );
+    target.globalMaxSubagentDepth = Math.floor(Number(source.globalMaxSubagentDepth));
   }
 
-  if (
-    typeof source.sessionMessagingScope === "string" &&
-    ["tree", "all"].includes(source.sessionMessagingScope)
-  )
+  if (typeof source.sessionMessagingScope === "string" && ["tree", "all"].includes(source.sessionMessagingScope))
     target.sessionMessagingScope = source.sessionMessagingScope;
 }
 
@@ -353,10 +296,7 @@ function mergeObjects(base: UnknownRecord, patch: UnknownRecord) {
   const result = { ...base };
 
   for (const [key, value] of Object.entries(patch)) {
-    result[key] =
-      isRecord(value) && isRecord(result[key])
-        ? mergeObjects(result[key], value)
-        : value;
+    result[key] = isRecord(value) && isRecord(result[key]) ? mergeObjects(result[key], value) : value;
   }
 
   return result;
@@ -380,9 +320,7 @@ function loadMarkdownAgents(dir: string, diagnostics: UnknownRecord[]) {
 
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .flatMap((entry) =>
-      loadMarkdownAgent(path.join(dir, entry.name), diagnostics),
-    );
+    .flatMap((entry) => loadMarkdownAgent(path.join(dir, entry.name), diagnostics));
 }
 
 function loadMarkdownAgent(filePath: string, diagnostics: UnknownRecord[]) {
@@ -412,11 +350,7 @@ function normalizeAgentDefinitions(value: unknown, sourcePath: string, diagnosti
   if (!Array.isArray(value)) return [];
 
   return value.flatMap((item, index) => {
-    const definition = normalizeAgentDefinition(
-      item,
-      `${sourcePath}#agentDefinitions[${index}]`,
-      diagnostics,
-    );
+    const definition = normalizeAgentDefinition(item, `${sourcePath}#agentDefinitions[${index}]`, diagnostics);
 
     return definition ? [definition] : [];
   });
@@ -450,8 +384,7 @@ export function normalizeAgentDefinition(
   return removeUndefined<AgentDefinition>({
     name,
     description: typeof value.description === "string" ? value.description : "",
-    instructions:
-      typeof value.instructions === "string" ? value.instructions : "",
+    instructions: typeof value.instructions === "string" ? value.instructions : "",
     disabled: value.disabled === true,
     agents: toStringArray(value.agents),
     tools: toStringArray(value.tools),
@@ -496,8 +429,7 @@ function numberOrUndefined(value: unknown) {
 }
 
 function removeUndefined<T extends UnknownRecord>(object: T): T {
-  for (const key of Object.keys(object))
-    if (object[key] === undefined) delete object[key];
+  for (const key of Object.keys(object)) if (object[key] === undefined) delete object[key];
 
   return object;
 }
@@ -516,9 +448,7 @@ export function parseMarkdownDefinition(content: string): {
 
 function mergePiSettings(target: UnknownRecord, source: UnknownRecord) {
   for (const [key, value] of Object.entries(source))
-    target[key] = isRecord(value) && isRecord(target[key])
-      ? mergeObjects(target[key], value)
-      : value;
+    target[key] = isRecord(value) && isRecord(target[key]) ? mergeObjects(target[key], value) : value;
 }
 
 function ancestorDirs(cwd: string, ...parts: string[]) {
@@ -533,15 +463,12 @@ function dedupePaths(paths: string[]) {
   return [...new Set(paths.filter(Boolean).map((item) => path.resolve(String(item))))];
 }
 
-
 const SKILL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 export function loadAvailableSkills(options: UnknownRecord = {}) {
   const cwd = path.resolve(text(options.cwd) ?? process.cwd());
   const agentDir = path.resolve(text(options.agentDir) ?? defaultAgentDir());
-  const diagnostics = Array.isArray(options.diagnostics)
-    ? options.diagnostics
-    : [];
+  const diagnostics = Array.isArray(options.diagnostics) ? options.diagnostics : [];
   const projectTrusted = options.projectTrusted === true;
   const settings = isRecord(options.settings)
     ? options.settings
@@ -549,16 +476,10 @@ export function loadAvailableSkills(options: UnknownRecord = {}) {
   const configuredRoots = strings(options.skillRoots)?.map((root) => path.resolve(root));
   const roots = options.noSkills
     ? []
-    : configuredRoots ??
-      skillRoots(cwd, agentDir, settings, diagnostics, projectTrusted);
+    : (configuredRoots ?? skillRoots(cwd, agentDir, settings, diagnostics, projectTrusted));
   const skillPaths = uniquePaths([
     ...roots,
-    ...explicitSkillPaths(
-      [...refs(settings.skills), ...refs(options.skills)],
-      cwd,
-      agentDir,
-      diagnostics,
-    ),
+    ...explicitSkillPaths([...refs(settings.skills), ...refs(options.skills)], cwd, agentDir, diagnostics),
   ]).filter(existsSync);
   const loaded = loadSkills({ cwd, agentDir, skillPaths, includeDefaults: false });
 
@@ -567,8 +488,7 @@ export function loadAvailableSkills(options: UnknownRecord = {}) {
 
   for (const diagnostic of loaded.diagnostics) {
     if (diagnostic.type !== "collision") {
-      if (!diagnostic.path || loadedPaths.has(diagnostic.path) || omittedPaths.has(diagnostic.path))
-        continue;
+      if (!diagnostic.path || loadedPaths.has(diagnostic.path) || omittedPaths.has(diagnostic.path)) continue;
       omittedPaths.add(diagnostic.path);
     }
     diagnostics.push({
@@ -587,9 +507,7 @@ export function loadAvailableSkills(options: UnknownRecord = {}) {
 export function findAvailableSkill(name: unknown, options: UnknownRecord = {}) {
   const query = String(name ?? "").toLowerCase();
 
-  return loadAvailableSkills(options).find(
-    (skill) => String(skill.name).toLowerCase() === query,
-  );
+  return loadAvailableSkills(options).find((skill) => String(skill.name).toLowerCase() === query);
 }
 
 export function systemPromptSkillEntries(ctx: PiContext) {
@@ -625,19 +543,11 @@ function skillRoots(
   ]);
 }
 
-function explicitSkillPaths(
-  entries: unknown[],
-  cwd: string,
-  agentDir: string,
-  diagnostics: UnknownRecord[],
-) {
+function explicitSkillPaths(entries: unknown[], cwd: string, agentDir: string, diagnostics: UnknownRecord[]) {
   return entries.flatMap((entry) => {
     const ref = refPath(entry);
     const resolved = ref
-      ? uniquePaths([
-          path.isAbsolute(ref) ? ref : path.resolve(cwd, ref),
-          path.resolve(agentDir, ref),
-        ]).find(existsSync)
+      ? uniquePaths([path.isAbsolute(ref) ? ref : path.resolve(cwd, ref), path.resolve(agentDir, ref)]).find(existsSync)
       : undefined;
 
     if (resolved) return [resolved];
@@ -651,11 +561,7 @@ function explicitSkillPaths(
   });
 }
 
-function packageSkillRoots(
-  cwd: string,
-  settings: UnknownRecord,
-  diagnostics: UnknownRecord[],
-) {
+function packageSkillRoots(cwd: string, settings: UnknownRecord, diagnostics: UnknownRecord[]) {
   return [
     ...nearestPackageRoots(cwd),
     ...refs(settings.packages).flatMap((entry) => resolvePackageRoot(entry, cwd, diagnostics) ?? []),
@@ -688,9 +594,7 @@ function resolvePackageRoot(entry: unknown, cwd: string, diagnostics: UnknownRec
   const packageName = ref.startsWith("npm:") ? ref.slice(4) : ref;
 
   try {
-    return path.dirname(
-      createRequire(path.join(cwd, "package.json")).resolve(`${packageName}/package.json`),
-    );
+    return path.dirname(createRequire(path.join(cwd, "package.json")).resolve(`${packageName}/package.json`));
   } catch (error) {
     diagnostics.push({
       severity: "debug",
@@ -706,10 +610,7 @@ function resolvePackageSkillRef(entry: unknown, root: string) {
   return ref ? (path.isAbsolute(ref) ? ref : path.resolve(root, ref)) : undefined;
 }
 
-function loadSkillEntry(
-  filePath: string,
-  diagnostics: UnknownRecord[],
-): SkillDefinition[] {
+function loadSkillEntry(filePath: string, diagnostics: UnknownRecord[]): SkillDefinition[] {
   try {
     const { frontmatter, body } = parseMarkdownDefinition(readFileSync(filePath, "utf8"));
     const metadata = frontmatter;
@@ -734,30 +635,28 @@ function loadSkillEntry(
       return [];
     }
 
-    return [compact<SkillDefinition>({
-      name,
-      description,
-      location: filePath,
-      source: text(metadata.source),
-      license: text(metadata.license),
-      compatibility: toStringArray(metadata.compatibility),
-      metadata: isRecord(metadata.metadata) ? metadata.metadata : undefined,
-      allowedTools: toolRefs(metadata["allowed-tools"] ?? metadata.allowedTools),
-      disableModelInvocation:
-        metadata["disable-model-invocation"] === true ||
-        metadata.disableModelInvocation === true,
-      instructions: body.trim(),
-    })];
+    return [
+      compact<SkillDefinition>({
+        name,
+        description,
+        location: filePath,
+        source: text(metadata.source),
+        license: text(metadata.license),
+        compatibility: toStringArray(metadata.compatibility),
+        metadata: isRecord(metadata.metadata) ? metadata.metadata : undefined,
+        allowedTools: toolRefs(metadata["allowed-tools"] ?? metadata.allowedTools),
+        disableModelInvocation:
+          metadata["disable-model-invocation"] === true || metadata.disableModelInvocation === true,
+        instructions: body.trim(),
+      }),
+    ];
   } catch (error) {
     diagnostics.push(diag("warning", filePath, "Could not load skill", error));
     return [];
   }
 }
 
-function dedupeSkills(
-  skills: SkillDefinition[],
-  diagnostics: UnknownRecord[],
-) {
+function dedupeSkills(skills: SkillDefinition[], diagnostics: UnknownRecord[]) {
   const byName = new Map<string, SkillDefinition>();
 
   for (const skill of skills) {
@@ -807,10 +706,12 @@ function refPath(value: unknown) {
 function toolRefs(value: unknown): string[] | undefined {
   if (Array.isArray(value)) return value.flatMap((item) => toolRefs(item) ?? []);
   return typeof value === "string"
-    ? value.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean)
+    ? value
+        .split(/[\s,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
     : undefined;
 }
-
 
 function uniquePaths(paths: string[]) {
   return [...new Set(paths.filter(Boolean).map((item) => path.resolve(String(item))))];
@@ -825,8 +726,7 @@ function text(value: unknown) {
 }
 
 function compact<T extends UnknownRecord>(object: T): T {
-  for (const key of Object.keys(object))
-    if (object[key] === undefined) delete object[key];
+  for (const key of Object.keys(object)) if (object[key] === undefined) delete object[key];
 
   return object;
 }
@@ -838,7 +738,6 @@ function diag(severity: string, filePath: string, message: string, error: unknow
     message: `${message}: ${error instanceof Error ? error.message : String(error)}`,
   };
 }
-
 
 const DEFAULT_ACCESS = ["*"];
 
@@ -857,66 +756,35 @@ export function resolveSessionPolicy({
   allTools: string[];
   allSkills: string[];
 }) {
-  const defaults = isRecord(settings.agentDefaults)
-    ? settings.agentDefaults
-    : {};
-  const agentless = isRecord(settings.agentlessSession)
-    ? settings.agentlessSession
-    : {};
+  const defaults = isRecord(settings.agentDefaults) ? settings.agentDefaults : {};
+  const agentless = isRecord(settings.agentlessSession) ? settings.agentlessSession : {};
   const base = activeAgent ? defaults : agentless;
   const merged = mergePolicyObjects(base, activeAgent ?? {});
   const resolved = mergePolicyObjects(merged, overrides ?? {});
   const agentsFilter =
     (activeAgent
-      ? mergeFilterLayers(
-          defaults.agents,
-          activeAgent.agents,
-          overrides?.agents,
-        )
-      : mergeFilterLayers(agentless.agents, overrides?.agents)) ??
-    DEFAULT_ACCESS;
+      ? mergeFilterLayers(defaults.agents, activeAgent.agents, overrides?.agents)
+      : mergeFilterLayers(agentless.agents, overrides?.agents)) ?? DEFAULT_ACCESS;
   const toolsFilter =
     (activeAgent
       ? mergeFilterLayers(defaults.tools, activeAgent.tools, overrides?.tools)
       : mergeFilterLayers(agentless.tools, overrides?.tools)) ?? DEFAULT_ACCESS;
   const skillsFilter =
     (activeAgent
-      ? mergeFilterLayers(
-          defaults.skills,
-          activeAgent.skills,
-          overrides?.skills,
-        )
-      : mergeFilterLayers(agentless.skills, overrides?.skills)) ??
-    DEFAULT_ACCESS;
+      ? mergeFilterLayers(defaults.skills, activeAgent.skills, overrides?.skills)
+      : mergeFilterLayers(agentless.skills, overrides?.skills)) ?? DEFAULT_ACCESS;
   const systemPromptFilesFilter = activeAgent
-    ? mergeFilterLayers(
-        defaults.systemPromptFiles,
-        activeAgent.systemPromptFiles,
-        overrides?.systemPromptFiles,
-      )
-    : mergeFilterLayers(
-        agentless.systemPromptFiles,
-        overrides?.systemPromptFiles,
-      );
+    ? mergeFilterLayers(defaults.systemPromptFiles, activeAgent.systemPromptFiles, overrides?.systemPromptFiles)
+    : mergeFilterLayers(agentless.systemPromptFiles, overrides?.systemPromptFiles);
 
   return {
     agentName: activeAgent?.name,
-    description:
-      typeof resolved.description === "string"
-        ? resolved.description
-        : undefined,
-    instructions:
-      typeof resolved.instructions === "string"
-        ? resolved.instructions
-        : undefined,
+    description: typeof resolved.description === "string" ? resolved.description : undefined,
+    instructions: typeof resolved.instructions === "string" ? resolved.instructions : undefined,
     model: typeof resolved.model === "string" ? resolved.model : undefined,
-    thinking:
-      typeof resolved.thinking === "string" ? resolved.thinking : undefined,
+    thinking: typeof resolved.thinking === "string" ? resolved.thinking : undefined,
     theme: typeof resolved.theme === "string" ? resolved.theme : undefined,
-    maxSubagentDepth:
-      typeof resolved.maxSubagentDepth === "number"
-        ? resolved.maxSubagentDepth
-        : 1,
+    maxSubagentDepth: typeof resolved.maxSubagentDepth === "number" ? resolved.maxSubagentDepth : 1,
     agentsTool: mergePolicyObjects(
       isRecord(defaults.agentsTool) ? defaults.agentsTool : {},
       mergePolicyObjects(
@@ -940,9 +808,7 @@ export function resolveSessionPolicy({
 const persistedStateDiagnostics = new Set<string>();
 
 const ActiveStateSchema = Schema.Struct({
-  agentName: Schema.optional(
-    Schema.String.check(Schema.isPattern(/\S/)),
-  ),
+  agentName: Schema.optional(Schema.String.check(Schema.isPattern(/\S/))),
   overrides: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
 });
 
@@ -952,34 +818,22 @@ export function getActiveState(sessionManager: PiSessionManager) {
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
 
-    if (
-      isRecord(entry) &&
-      entry.type === "custom" &&
-      entry.customType === "pi-gentic:state"
-    ) {
+    if (isRecord(entry) && entry.type === "custom" && entry.customType === "pi-gentic:state") {
       const decoded = decodeActiveState(entry.data);
 
       if (decoded) return decoded;
-      persistedStateDiagnostics.add(
-        "Ignored an invalid persisted active-agent state.",
-      );
+      persistedStateDiagnostics.add("Ignored an invalid persisted active-agent state.");
     }
   }
 
   return emptyActiveState();
 }
 
-export function appendActiveState(
-  sessionManager: PiSessionManager,
-  state: unknown,
-) {
+export function appendActiveState(sessionManager: PiSessionManager, state: unknown) {
   if (typeof sessionManager.appendCustomEntry !== "function")
     throw new Error("The active Pi session does not support custom state entries.");
 
-  sessionManager.appendCustomEntry(
-    "pi-gentic:state",
-    decodeActiveState(state) ?? {},
-  );
+  sessionManager.appendCustomEntry("pi-gentic:state", decodeActiveState(state) ?? {});
 }
 
 function decodeActiveState(value: unknown) {
@@ -996,17 +850,11 @@ function emptyActiveState() {
   return { agentName: undefined, overrides: undefined };
 }
 
-function mergePolicyObjects(
-  base: UnknownRecord | undefined,
-  patch: UnknownRecord | undefined,
-) {
+function mergePolicyObjects(base: UnknownRecord | undefined, patch: UnknownRecord | undefined) {
   const result = { ...(base ?? {}) };
 
   for (const [key, value] of Object.entries(patch ?? {})) {
-    result[key] =
-      isPlainObject(value) && isPlainObject(result[key])
-        ? mergePolicyObjects(result[key], value)
-        : value;
+    result[key] = isPlainObject(value) && isPlainObject(result[key]) ? mergePolicyObjects(result[key], value) : value;
   }
 
   return result;
@@ -1049,10 +897,7 @@ function integer(value: unknown) {
 
 export const AGENT_CYCLE_SHORTCUT = "f7";
 
-export function nextAgentName(
-  currentAgentName: string | undefined,
-  agents: UnknownRecord[],
-) {
+export function nextAgentName(currentAgentName: string | undefined, agents: UnknownRecord[]) {
   const cycle = [undefined, ...agents.map((agent) => String(agent.name))];
   const index = cycle.findIndex((name) => name === currentAgentName);
 
@@ -1061,17 +906,11 @@ export function nextAgentName(
 
 export function hasPersistedAgentState(sessionManager: PiSessionManager) {
   return (sessionManager.getEntries?.() ?? []).some(
-    (entry) =>
-      isRecord(entry) &&
-      entry.type === "custom" &&
-      entry.customType === "pi-gentic:state",
+    (entry) => isRecord(entry) && entry.type === "custom" && entry.customType === "pi-gentic:state",
   );
 }
 
-export function shouldApplyDefaultAgent(
-  event: { reason?: unknown },
-  sessionManager: PiSessionManager,
-) {
+export function shouldApplyDefaultAgent(event: { reason?: unknown }, sessionManager: PiSessionManager) {
   return (
     typeof event.reason === "string" &&
     ["new", "startup"].includes(event.reason) &&
@@ -1082,15 +921,12 @@ export function shouldApplyDefaultAgent(
 
 function isBlankSession(sessionManager: PiSessionManager) {
   return !(sessionManager.getEntries?.() ?? []).some(
-    (entry) =>
-      isRecord(entry) &&
-      (entry.type === "message" || entry.type === "custom_message"),
+    (entry) => isRecord(entry) && (entry.type === "message" || entry.type === "custom_message"),
   );
 }
 
 export function configuredDefaultAgent(settings: UnknownRecord) {
-  return typeof settings?.defaultAgent === "string" &&
-    settings.defaultAgent.trim()
+  return typeof settings?.defaultAgent === "string" && settings.defaultAgent.trim()
     ? settings.defaultAgent.trim()
     : undefined;
 }
@@ -1108,13 +944,8 @@ export function filterAvailableAgents(
   return config.agents.filter((agent) => allowed.has(agent.name));
 }
 
-export function assertAvailableAgent(
-  agentName: unknown,
-  agents: AgentDefinition[],
-) {
-  const agent = agents.find(
-    (item) => String(item.name).toLowerCase() === String(agentName ?? "").toLowerCase(),
-  );
+export function assertAvailableAgent(agentName: unknown, agents: AgentDefinition[]) {
+  const agent = agents.find((item) => String(item.name).toLowerCase() === String(agentName ?? "").toLowerCase());
 
   if (!agent)
     throw new Error(
@@ -1123,7 +954,6 @@ export function assertAvailableAgent(
 
   return agent;
 }
-
 
 export function buildResolvedSystemPrompt({
   baseSystemPrompt,
@@ -1146,21 +976,12 @@ export function buildResolvedSystemPrompt({
     .filter(Boolean);
 
   if (extensionSections.length === 0) return baseSystemPrompt;
-  const extensionContext = [
-    "<pi-gentic-context>",
-    ...extensionSections,
-    "</pi-gentic-context>",
-  ].join("\n\n");
+  const extensionContext = ["<pi-gentic-context>", ...extensionSections, "</pi-gentic-context>"].join("\n\n");
 
-  return baseSystemPrompt.length > 0
-    ? `${baseSystemPrompt}\n\n${extensionContext}`
-    : extensionContext;
+  return baseSystemPrompt.length > 0 ? `${baseSystemPrompt}\n\n${extensionContext}` : extensionContext;
 }
 
-export function mergeSkillEntries(
-  primary: UnknownRecord[] = [],
-  secondary: UnknownRecord[] = [],
-) {
+export function mergeSkillEntries(primary: UnknownRecord[] = [], secondary: UnknownRecord[] = []) {
   const merged = new Map<string, UnknownRecord>();
 
   for (const entry of [...primary, ...secondary]) {
@@ -1174,16 +995,11 @@ export function mergeSkillEntries(
   return [...merged.values()];
 }
 
-export function availableAgentLines(
-  agents: UnknownRecord[],
-  allowedNames: string[],
-) {
+export function availableAgentLines(agents: UnknownRecord[], allowedNames: string[]) {
   const allowed = new Set(allowedNames);
   const lines = agents
     .filter((agent) => allowed.has(String(agent.name)))
-    .map((agent) =>
-      `- ${String(agent.name)}: ${String(agent.description ?? "")}`.trim(),
-    );
+    .map((agent) => `- ${String(agent.name)}: ${String(agent.description ?? "")}`.trim());
 
   return lines.join("\n") || "none";
 }
@@ -1192,11 +1008,7 @@ export function parseSkillEntries(_systemPrompt: unknown): UnknownRecord[] {
   return [];
 }
 
-export function filterSkillPrompt(
-  systemPrompt: unknown,
-  _skillEntries: UnknownRecord[],
-  _allowedSkills: string[],
-) {
+export function filterSkillPrompt(systemPrompt: unknown, _skillEntries: UnknownRecord[], _allowedSkills: string[]) {
   return String(systemPrompt ?? "");
 }
 
@@ -1240,9 +1052,7 @@ function promptFileRefs(filters: unknown): string[] {
 function agentsSection(config: UnknownRecord, policy: UnknownRecord) {
   if (!canUseAgentsTool(policy)) return "";
   const resources = isRecord(policy.resources) ? policy.resources : {};
-  const agents = Array.isArray(config.agents)
-    ? config.agents.filter(isRecord)
-    : [];
+  const agents = Array.isArray(config.agents) ? config.agents.filter(isRecord) : [];
   const allowed = Array.isArray(resources.agents)
     ? resources.agents.filter((name): name is string => typeof name === "string")
     : [];
@@ -1252,9 +1062,7 @@ function agentsSection(config: UnknownRecord, policy: UnknownRecord) {
 }
 
 function namingSection(policy: UnknownRecord) {
-  return canUseAgentsTool(policy)
-    ? "When generating a session or worktree name, it must be 3 words long max."
-    : "";
+  return canUseAgentsTool(policy) ? "When generating a session or worktree name, it must be 3 words long max." : "";
 }
 
 function canUseAgentsTool(policy: UnknownRecord) {
@@ -1281,9 +1089,7 @@ function readPromptFile(filePath: string, config: UnknownRecord) {
 function resolvePromptFile(filePath: string, config: UnknownRecord) {
   if (filePath.length === 0) return undefined;
   const roots = configurationRoots(config);
-  const candidates = path.isAbsolute(filePath)
-    ? [filePath]
-    : roots.map((root) => path.resolve(root, filePath));
+  const candidates = path.isAbsolute(filePath) ? [filePath] : roots.map((root) => path.resolve(root, filePath));
 
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
@@ -1303,18 +1109,9 @@ function resolvePromptFile(filePath: string, config: UnknownRecord) {
       });
 
       if (allowed) return canonicalCandidate;
-      recordPromptDiagnostic(
-        config,
-        candidate,
-        "Ignored prompt file outside trusted configuration roots",
-      );
+      recordPromptDiagnostic(config, candidate, "Ignored prompt file outside trusted configuration roots");
     } catch (error) {
-      recordPromptDiagnostic(
-        config,
-        candidate,
-        "Could not validate prompt file",
-        error,
-      );
+      recordPromptDiagnostic(config, candidate, "Could not validate prompt file", error);
     }
   }
 
@@ -1322,22 +1119,14 @@ function resolvePromptFile(filePath: string, config: UnknownRecord) {
 }
 
 function configurationRoots(config: UnknownRecord): string[] {
-  return Array.isArray(config.roots)
-    ? config.roots.filter((root): root is string => typeof root === "string")
-    : [];
+  return Array.isArray(config.roots) ? config.roots.filter((root): root is string => typeof root === "string") : [];
 }
 
-function recordPromptDiagnostic(
-  config: UnknownRecord,
-  filePath: string,
-  message: string,
-  error?: unknown,
-) {
+function recordPromptDiagnostic(config: UnknownRecord, filePath: string, message: string, error?: unknown) {
   if (!Array.isArray(config.diagnostics)) return;
   config.diagnostics.push({
     severity: "warning",
     path: filePath,
-    message:
-      error === undefined ? message : `${message}: ${getErrorMessage(error)}`,
+    message: error === undefined ? message : `${message}: ${getErrorMessage(error)}`,
   });
 }

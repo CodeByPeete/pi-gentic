@@ -10,11 +10,7 @@ export type RuntimeDiagnostic = {
 const MAX_DIAGNOSTICS = 200;
 const runtimeDiagnostics: RuntimeDiagnostic[] = [];
 
-export function reportRuntimeDiagnostic(
-  scope: string,
-  error: unknown,
-  severity: DiagnosticSeverity = "debug",
-) {
+export function reportRuntimeDiagnostic(scope: string, error: unknown, severity: DiagnosticSeverity = "debug") {
   runtimeDiagnostics.push({
     scope,
     message: error instanceof Error ? error.message : String(error),
@@ -30,9 +26,7 @@ export function clearRuntimeDiagnostics() {
   runtimeDiagnostics.length = 0;
 }
 
-export function readRuntimeDiagnostics(
-  minimumSeverity: DiagnosticSeverity = "debug",
-) {
+export function readRuntimeDiagnostics(minimumSeverity: DiagnosticSeverity = "debug") {
   const severityRank: Record<DiagnosticSeverity, number> = {
     debug: 0,
     warning: 1,
@@ -40,7 +34,5 @@ export function readRuntimeDiagnostics(
   };
   const minimumRank = severityRank[minimumSeverity];
 
-  return runtimeDiagnostics.filter(
-    (diagnostic) => severityRank[diagnostic.severity] >= minimumRank,
-  );
+  return runtimeDiagnostics.filter((diagnostic) => severityRank[diagnostic.severity] >= minimumRank);
 }

@@ -23,10 +23,7 @@ function createFixture() {
       ],
     }),
   );
-  writeFileSync(
-    path.join(project, ".pi", "settings.json"),
-    JSON.stringify({ enableSkillCommands: false }),
-  );
+  writeFileSync(path.join(project, ".pi", "settings.json"), JSON.stringify({ enableSkillCommands: false }));
 
   return {
     project,
@@ -63,12 +60,7 @@ test("trusted projects can contribute agent definitions and Pi settings", () => 
       agentDir: fixture.user,
       projectTrusted: true,
     });
-    const settings = loadPiSettings(
-      fixture.user,
-      fixture.project,
-      [],
-      true,
-    );
+    const settings = loadPiSettings(fixture.user, fixture.project, [], true);
 
     assert.deepEqual(
       configuration.agents.map((agent) => agent.name),

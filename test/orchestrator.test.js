@@ -5,18 +5,18 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { applyFilterList } from "../dist/catalog.js";
-import {
-  availableAgentLines,
-  filterSkillPrompt,
-} from "../dist/catalog.js";
+import { availableAgentLines, filterSkillPrompt } from "../dist/catalog.js";
 import {
   abortActor,
+  collectSessionActivities,
   createSessionActivityMonitor,
   contextStillActive,
   deliverCardToCaller,
   deliverReturnToCaller,
   deliverSendContextToCaller,
+  deliverToLiveCaller,
   lastRuntimeActivities,
+  persistReturnForCaller,
   persistAgentCardState,
 } from "../dist/orchestration.js";
 import {
@@ -36,7 +36,11 @@ import { formatSessionStatus, sessionStatus } from "../dist/orchestration.js";
 import { assertAvailableAgent, filterAvailableAgents } from "../dist/catalog.js";
 import { resolveSessionPolicy } from "../dist/catalog.js";
 import { PiGenticOrchestrator, prepareWorktree } from "../dist/orchestration.js";
-import { deleteRuntimeSession, setRuntimeSession } from "../dist/pi-host.js";
+import { deleteRuntimeSession, loadPiCodingAgentPeer, setRuntimeSession } from "../dist/pi-host.js";
+import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
+
+const effectRuntime = createExtensionRuntime();
+test.after(() => effectRuntime.dispose());
 
 function createGitRepo(prefix = path.join(tmpdir(), "pi-gentic-worktree-repo-")) {
   const repo = mkdtempSync(prefix);
@@ -54,19 +58,10 @@ function createGitRepo(prefix = path.join(tmpdir(), "pi-gentic-worktree-repo-"))
 
 test("terminal card persistence validates snapshots and copies activities", () => {
   assert.equal(persistAgentCardState({}, { status: "done" }), false);
+  assert.equal(persistAgentCardState({}, { cardId: "card", status: "running" }), false);
+  assert.equal(persistAgentCardState({}, { cardId: "card", status: "done" }), false);
   assert.equal(
-    persistAgentCardState({}, { cardId: "card", status: "running" }),
-    false,
-  );
-  assert.equal(
-    persistAgentCardState({}, { cardId: "card", status: "done" }),
-    false,
-  );
-  assert.equal(
-    persistAgentCardState(
-      { appendCustomEntry() {} },
-      { cardId: "invalid", status: "done", invalid: () => undefined },
-    ),
+    persistAgentCardState({ appendCustomEntry() {} }, { cardId: "invalid", status: "done", invalid: () => undefined }),
     false,
   );
 
@@ -84,36 +79,48 @@ test("terminal card persistence validates snapshots and copies activities", () =
   assert.equal(persisted, 1);
   assert.notEqual(entries[0][1].activities, activities);
   assert.deepEqual(entries[0][1].activities, activities);
+
+  const assistantActivities = collectSessionActivities({
+    agent: {
+      state: {
+        messages: [
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Created the file." }],
+          },
+          { role: "system", content: "ignored" },
+        ],
+      },
+    },
+  });
+  const assistantEntries = [];
+
+  assert.deepEqual(assistantActivities, [{ id: "assistant", type: "assistant", text: "Created the file." }]);
+  assert.equal(
+    persistAgentCardState(
+      { appendCustomEntry: (...args) => assistantEntries.push(args) },
+      {
+        cardId: "assistant-activity",
+        status: "done",
+        activities: assistantActivities,
+      },
+    ),
+    true,
+  );
 });
 
 test("send status text classifies every terminal and active state", () => {
-  assert.equal(
-    sendStatusText({ status: "done", agentName: "reviewer" }),
-    "Agent reviewer answered.",
-  );
+  assert.equal(sendStatusText({ status: "done", agentName: "reviewer" }), "Agent reviewer answered.");
   assert.equal(sendStatusText({ status: "queued" }), "Queued message for agent.");
-  assert.equal(
-    sendStatusText({ status: "stopped" }),
-    "Agent stopped before answering.",
-  );
-  assert.equal(
-    sendStatusText({ status: "stopped", error: "limit" }),
-    "limit",
-  );
+  assert.equal(sendStatusText({ status: "stopped" }), "Agent stopped before answering.");
+  assert.equal(sendStatusText({ status: "stopped", error: "limit" }), "limit");
   assert.equal(sendStatusText({ status: "error" }), "Agent call failed.");
   assert.equal(sendStatusText({}), "Sending message to agent...");
 });
 
 test("send pending text handles foreground and agentless background deliveries", () => {
-  assert.equal(
-    sendPendingText({ async: false, details: { status: "done" } }),
-    "Agent answered.",
-  );
-  const background = sendConfirmationText(
-    undefined,
-    undefined,
-    "delegate",
-  );
+  assert.equal(sendPendingText({ async: false, details: { status: "done" } }), "Agent answered.");
+  const background = sendConfirmationText(undefined, undefined, "delegate");
   assert.match(background, /^Sent message to agent in session \./);
   assert.match(background, /full answer/);
   assert.deepEqual(resolveReturnDelivery({ awaitCompletion: true }), {
@@ -152,7 +159,11 @@ test("send context delivery respects caller liveness and absorbs stale APIs", ()
   assert.equal(sent, undefined);
   assert.doesNotThrow(() =>
     deliverSendContextToCaller({
-      pi: { sendMessage: () => { throw new Error("stale"); } },
+      pi: {
+        sendMessage: () => {
+          throw new Error("stale");
+        },
+      },
       ctx: { isIdle: () => true },
       target,
     }),
@@ -165,26 +176,26 @@ test("message options and context liveness tolerate stale native contexts", () =
   });
   assert.equal(sendUserMessageOptions({ isIdle: () => true }), undefined);
   assert.equal(
-    sendUserMessageOptions({ isIdle: () => { throw new Error("stale"); } }),
+    sendUserMessageOptions({
+      isIdle: () => {
+        throw new Error("stale");
+      },
+    }),
     undefined,
   );
   assert.equal(
-    contextStillActive(
-      { cwd: process.cwd(), sessionManager: { getSessionId: () => "caller" } },
-      "caller",
-    ),
+    contextStillActive({ cwd: process.cwd(), sessionManager: { getSessionId: () => "caller" } }, "caller"),
     true,
   );
   assert.equal(
-    contextStillActive(
-      { cwd: process.cwd(), sessionManager: { getSessionId: () => "other" } },
-      "caller",
-    ),
+    contextStillActive({ cwd: process.cwd(), sessionManager: { getSessionId: () => "other" } }, "caller"),
     false,
   );
   assert.equal(
     contextStillActive({
-      get cwd() { throw new Error("stale"); },
+      get cwd() {
+        throw new Error("stale");
+      },
       sessionManager: { getSessionId: () => "caller" },
     }),
     false,
@@ -241,7 +252,7 @@ test("runtime session references reject ambiguous shared prefixes", async () => 
   setRuntimeSession(secondSessionId, runtime(secondSessionId));
 
   try {
-    const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] });
+    const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
 
     await assert.rejects(
       () =>
@@ -252,12 +263,78 @@ test("runtime session references reject ambiguous shared prefixes", async () => 
           },
           "019faaaa",
         ),
-      /Ambiguous session reference/, 
+      /Ambiguous session reference/,
     );
   } finally {
     deleteRuntimeSession(firstSessionId);
     deleteRuntimeSession(secondSessionId);
   }
+});
+
+test("caller delivery boundaries contain stale and persistence failures", async () => {
+  assert.equal(
+    await deliverCardToCaller({
+      pi: { sendMessage: () => {} },
+      ctx: { sessionManager: { getSessionId: () => "other" } },
+      callerSessionId: "caller",
+      callerSessionManager: {
+        appendCustomMessageEntry: () => {
+          throw new Error("read only");
+        },
+      },
+      text: "Return",
+      details: {},
+      invoke: false,
+    }),
+    "unavailable",
+  );
+
+  assert.deepEqual(
+    await deliverToLiveCaller({
+      pi: {
+        sendMessage: () => {
+          throw new Error("stale api");
+        },
+      },
+      ctx: { sessionManager: { getSessionId: () => "caller" } },
+      callerSessionId: "caller",
+      text: "Return",
+      invoke: false,
+    }),
+    { delivered: false },
+  );
+  assert.deepEqual(
+    await deliverToLiveCaller({
+      pi: { sendMessage: () => {} },
+      ctx: { sessionManager: { getSessionId: () => "caller" } },
+      callerSessionId: "caller",
+      visibleSession: {
+        sessionManager: {
+          getSessionId: () => {
+            throw new Error("stale session");
+          },
+        },
+      },
+      text: "Return",
+      invoke: false,
+    }),
+    { delivered: true, mode: "live" },
+  );
+
+  const appended = [];
+  persistReturnForCaller({
+    callerSessionManager: { appendMessage: (message) => appended.push(message) },
+    text: "Invoke",
+    invoke: true,
+  });
+  persistReturnForCaller({
+    callerSessionManager: {
+      appendCustomMessageEntry: (...args) => appended.push(args),
+    },
+    text: "Persist",
+    invoke: false,
+  });
+  assert.equal(appended.length, 2);
 });
 
 test("target command prompts keep slash commands and attach caller context", async () => {
@@ -275,11 +352,7 @@ test("target command prompts keep slash commands and attach caller context", asy
 
   assert.equal(isTargetSlashCommand("/send nested", session), false);
 
-  const prompt = await prepareTargetPromptForSend(
-    session,
-    "/review staged",
-    "Message from agent from session caller",
-  );
+  const prompt = await prepareTargetPromptForSend(session, "/review staged", "Message from agent from session caller");
 
   assert.equal(prompt.text, "/review staged");
 
@@ -294,26 +367,23 @@ test("extension slash commands are recognized without command-specific code", as
   const customMessages = [];
   const session = {
     createReplacedSessionContext: () => ({
-      getCommands: () => [
-        { name: "goal", source: "extension", description: "Complete goal" },
-      ],
+      getCommands: () => [{ name: "goal", source: "extension", description: "Complete goal" }],
     }),
     sendCustomMessage: (...args) => customMessages.push(args),
   };
 
   assert.equal(isTargetSlashCommand("/goal done", session), true);
 
-  const prompt = await prepareTargetPromptForSend(
-    session,
-    "/goal done",
-    "Message from agent from session caller",
-  );
+  const prompt = await prepareTargetPromptForSend(session, "/goal done", "Message from agent from session caller");
 
   assert.equal(prompt.text, "/goal done");
 
   assert.equal(prompt.command.source, "extension");
 
-  assert.equal(slashCommandDeliveryText(prompt.command, "019eabcd-0000"), "Command /goal delivered to session 019eabcd.");
+  assert.equal(
+    slashCommandDeliveryText(prompt.command, "019eabcd-0000"),
+    "Command /goal delivered to session 019eabcd.",
+  );
 
   assert.deepEqual(customMessages, []);
 });
@@ -327,11 +397,7 @@ test("busy target command prompts steer context before queuing slash command", a
     sendCustomMessage: (...args) => customMessages.push(args),
   };
 
-  const prompt = await prepareTargetPromptForSend(
-    session,
-    "/review staged",
-    "Message from agent from session caller",
-  );
+  const prompt = await prepareTargetPromptForSend(session, "/review staged", "Message from agent from session caller");
 
   assert.equal(prompt.text, "/review staged");
 
@@ -372,8 +438,10 @@ test("aborted async sends persist terminal failures after the caller extension b
   const persistedMessages = [];
   const targetMessages = [];
   let stale = false;
+  let targetAborted = false;
   let rejectPrompt;
   let markPromptStarted;
+  const controller = new AbortController();
   let markSettled;
   const promptStarted = new Promise((resolve) => {
     markPromptStarted = resolve;
@@ -398,15 +466,21 @@ test("aborted async sends persist terminal failures after the caller extension b
           rejectPrompt = reject;
           markPromptStarted();
         }),
-      abort: async () => {},
+      abort: async () => {
+        targetAborted = true;
+        rejectPrompt?.(new Error("Agent call aborted."));
+      },
     },
   };
-  const orchestrator = new PiGenticOrchestrator({
-    getAllTools: () => [],
-    sendMessage: () => {
-      if (stale) throw new Error(staleContextError);
+  const orchestrator = new PiGenticOrchestrator(
+    {
+      getAllTools: () => [],
+      sendMessage: () => {
+        if (stale) throw new Error(staleContextError);
+      },
     },
-  });
+    effectRuntime,
+  );
   orchestrator.load = () => ({});
   orchestrator.resolvePolicy = () => ({ agentsTool: {} });
   orchestrator.resolveTargetSession = async () => target;
@@ -422,19 +496,153 @@ test("aborted async sends persist terminal failures after the caller extension b
         isIdle: () => true,
       },
       { message: "Research Pi updates", async: true },
-      { onSettled: markSettled },
+      { onSettled: markSettled, signal: controller.signal },
     );
     await promptStarted;
     stale = true;
     targetMessages.push({ role: "assistant", content: "", stopReason: "aborted" });
-    rejectPrompt(new Error("Agent call aborted."));
+    controller.abort();
     await settled;
+    assert.equal(targetAborted, true);
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(persistedMessages.length, 1);
     assert.equal(persistedMessages[0][0], "pi-gentic:card");
     assert.match(persistedMessages[0][1], /Caller session unavailable/);
     assert.equal(persistedMessages[0][3].status, "error");
+  } finally {
+    deleteRuntimeSession(targetSessionId);
+  }
+});
+
+test("foreground sends complete through the managed delegation runtime", async () => {
+  const messages = [];
+  const listeners = new Set();
+  let unsubscribed = false;
+  const session = {
+    agent: { state: { messages } },
+    isStreaming: true,
+    sessionManager: { getSessionId: () => "foreground-target" },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+        unsubscribed = true;
+      };
+    },
+    prompt: async () => {
+      for (const listener of listeners)
+        listener({
+          type: "message_update",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Foreground answer" }],
+          },
+        });
+      messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: "Foreground answer" }],
+        stopReason: "stop",
+      });
+      queueMicrotask(() => {
+        for (const listener of listeners) listener({ type: "agent_settled" });
+      });
+      setTimeout(() => {
+        session.isStreaming = false;
+        for (const listener of listeners) listener({ type: "agent_settled" });
+      }, 10);
+    },
+    abort: async () => {},
+  };
+  const target = { agentName: "researcher", session };
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [], sendMessage: () => {} }, effectRuntime);
+  orchestrator.load = () => ({});
+  orchestrator.resolvePolicy = () => ({ agentsTool: {} });
+  orchestrator.resolveTargetSession = async () => target;
+  const updates = [];
+  const refreshes = [];
+
+  try {
+    const result = await orchestrator.send(
+      {
+        cwd: process.cwd(),
+        isIdle: () => true,
+        sessionManager: {
+          getEntries: () => [],
+          getSessionId: () => "foreground-caller",
+        },
+      },
+      { message: "Complete this synchronously", async: false },
+      {
+        onRefresh: (details) => refreshes.push(details),
+        onUpdate: (update) => updates.push(update),
+      },
+    );
+
+    assert.match(result.text, /Foreground answer/);
+    assert.equal(result.details.answer, "Foreground answer");
+    assert.equal(result.details.status, "done");
+    assert.equal(unsubscribed, true);
+    assert.equal(updates.length, 1);
+    assert.ok(refreshes.some((details) => details.status === "done"));
+  } finally {
+    deleteRuntimeSession("foreground-target");
+  }
+});
+
+test("background sends deliver successful terminal state to the caller", async () => {
+  const targetSessionId = "background-target";
+  const messages = [];
+  const deliveries = [];
+  let settle;
+  const settled = new Promise((resolve) => {
+    settle = resolve;
+  });
+  const target = {
+    agentName: "builder",
+    session: {
+      agent: { state: { messages } },
+      isStreaming: false,
+      sessionManager: { getSessionId: () => targetSessionId },
+      prompt: async () => {
+        messages.push({
+          role: "assistant",
+          content: "Background answer",
+          stopReason: "stop",
+        });
+      },
+      abort: async () => {},
+    },
+  };
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [], sendMessage: () => {} }, effectRuntime);
+  orchestrator.load = () => ({});
+  orchestrator.resolvePolicy = () => ({ agentsTool: {} });
+  orchestrator.resolveTargetSession = async () => target;
+  orchestrator.deliverCallerCard = async (_ctx, delivery) => {
+    deliveries.push(delivery);
+    return "background";
+  };
+
+  try {
+    const pending = await orchestrator.send(
+      {
+        cwd: process.cwd(),
+        isIdle: () => true,
+        sessionManager: {
+          appendCustomEntry: () => {},
+          getEntries: () => [],
+          getSessionId: () => "background-caller",
+        },
+      },
+      { message: "Complete this in the background", async: true },
+      { onSettled: settle },
+    );
+    await settled;
+
+    assert.match(pending.text, /background|builder/i);
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].details.status, "done");
+    assert.match(deliveries[0].text, /Background answer/);
   } finally {
     deleteRuntimeSession(targetSessionId);
   }
@@ -550,14 +758,7 @@ test("deferred completion cards persist in their original caller session", async
   });
 
   assert.equal(mode, "persisted");
-  assert.deepEqual(entries, [
-    [
-      "pi-gentic:card",
-      "Agent answer",
-      true,
-      { cardId: "send:child:1", status: "done" },
-    ],
-  ]);
+  assert.deepEqual(entries, [["pi-gentic:card", "Agent answer", true, { cardId: "send:child:1", status: "done" }]]);
   assert.equal(persisted, 1);
 });
 
@@ -641,8 +842,7 @@ test("async return delivery steers the caller at the next model boundary", async
     invoke: true,
     queue: delivery.queue,
     visibleSession: {
-      sendUserMessage: async (text, options) =>
-        userMessages.push({ text, options }),
+      sendUserMessage: async (text, options) => userMessages.push({ text, options }),
     },
   });
 
@@ -677,12 +877,7 @@ test("send return persists when the captured caller is no longer active", async 
 
   assert.equal(mode, "persisted");
 
-  assert.deepEqual(appended[0], [
-    "pi-gentic:return-context",
-    "Returned answer",
-    true,
-    { kind: "returnContext" },
-  ]);
+  assert.deepEqual(appended[0], ["pi-gentic:return-context", "Returned answer", true, { kind: "returnContext" }]);
 });
 
 test("no-invoke return steers into a running caller without opening a new run", async () => {
@@ -792,8 +987,7 @@ test("send return invokes stale caller sessions through the background delivery 
   assert.deepEqual(appended, []);
 });
 
-const staleContextError =
-  "This extension ctx is stale after session replacement or reload.";
+const staleContextError = "This extension ctx is stale after session replacement or reload.";
 
 test("foreground send waits for the native session to settle after recoverable agent runs", async () => {
   let listener;
@@ -804,10 +998,7 @@ test("foreground send waits for the native session to settle after recoverable a
       return () => {};
     },
   };
-  const completed = promptSessionAndWaitForTurnEnd(
-    session,
-    () => new Promise(() => {}),
-  ).then(() => {
+  const completed = promptSessionAndWaitForTurnEnd(session, effectRuntime, () => new Promise(() => {})).then(() => {
     resolved = true;
   });
 
@@ -838,10 +1029,7 @@ test("settlement tracking preserves later live UI event listeners", async () => 
       };
     },
   };
-  const completed = promptSessionAndWaitForTurnEnd(
-    session,
-    () => new Promise(() => {}),
-  );
+  const completed = promptSessionAndWaitForTurnEnd(session, effectRuntime, () => new Promise(() => {}));
 
   await Promise.resolve();
   const visibleEvents = [];
@@ -861,9 +1049,35 @@ test("foreground send also completes from the native prompt promise", async () =
     },
   };
 
-  await promptSessionAndWaitForTurnEnd(session, async () => {});
+  await promptSessionAndWaitForTurnEnd(session, effectRuntime, async () => {});
 
   assert.equal(unsubscribed, true);
+});
+
+test("foreground prompt tracking preserves failures, aborts, and sessions without subscriptions", async () => {
+  assert.equal(await promptSessionAndWaitForTurnEnd({}, effectRuntime, async () => "native result"), "native result");
+
+  let unsubscribed = 0;
+  const session = {
+    subscribe: () => () => unsubscribed++,
+  };
+  await assert.rejects(
+    promptSessionAndWaitForTurnEnd(session, effectRuntime, async () => {
+      throw new Error("prompt failed");
+    }),
+    /prompt failed/,
+  );
+
+  const controller = new AbortController();
+  const aborted = promptSessionAndWaitForTurnEnd(
+    session,
+    effectRuntime,
+    () => new Promise(() => {}),
+    controller.signal,
+  );
+  controller.abort();
+  await assert.rejects(aborted, /Agent call aborted/);
+  assert.equal(unsubscribed, 2);
 });
 
 test("send return skips a stale visible session before starting a caller turn", async () => {
@@ -907,9 +1121,7 @@ test("send return skips a stale visible session before starting a caller turn", 
 });
 
 test("prompt append ignores stale extension contexts during session replacement", () => {
-  const orchestrator = new PiGenticOrchestrator({
-    getAllTools: () => [],
-  });
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
 
   assert.equal(
     orchestrator.buildPromptAppend(
@@ -925,11 +1137,343 @@ test("prompt append ignores stale extension contexts during session replacement"
   );
 });
 
+test("orchestrator routes target, status, abort, and policy operations", async () => {
+  const sessionId = "019fbbbb-1111-7111-8111-111111111111";
+  const target = {
+    session: {
+      agent: { state: { messages: [] } },
+      isStreaming: false,
+      abort: async () => {
+        target.aborted = true;
+      },
+      sessionManager: {
+        getSessionId: () => sessionId,
+        getEntries: () => [],
+      },
+    },
+    createdAt: new Date().toISOString(),
+  };
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
+  const ctx = {
+    cwd: process.cwd(),
+    abort: () => {
+      ctx.aborted = true;
+    },
+    sessionManager: {
+      getSessionId: () => "caller-session",
+      getEntries: () => [],
+    },
+  };
+
+  await assert.rejects(() => orchestrator.status(ctx), /sessionId.*required/);
+  orchestrator.getOrOpenSession = async () => target;
+  assert.equal((await orchestrator.status(ctx, sessionId)).sessionId, sessionId);
+  assert.match(await orchestrator.abort(ctx), /caller-s/);
+  assert.equal(ctx.aborted, true);
+  assert.match(await orchestrator.abort(ctx, sessionId), /019fbbbb/);
+  assert.equal(target.aborted, true);
+
+  const operations = [];
+  orchestrator.assertCanMessageSession = async () => operations.push("message");
+  orchestrator.applyRequestedTargetPolicy = async () => operations.push("policy");
+  assert.equal(
+    await orchestrator.resolveTargetSession(ctx, { sessionId, cwd: ctx.cwd, message: "existing" }, {}),
+    target,
+  );
+  assert.deepEqual(operations, ["message", "policy"]);
+
+  operations.length = 0;
+  orchestrator.createChildSession = async () => target;
+  orchestrator.applyAgentlessPolicyToNewSession = async () => operations.push("agentless");
+  await orchestrator.resolveTargetSession(ctx, { message: "new" }, {});
+  assert.deepEqual(operations, ["policy", "agentless"]);
+
+  const policyOrchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
+  policyOrchestrator.loadAgentIntoSession = async () => operations.push("agent");
+  policyOrchestrator.applySessionOverrides = async () => operations.push("overrides");
+  await policyOrchestrator.applyRequestedTargetPolicy(target.session, { agent: "builder" }, {});
+  await policyOrchestrator.applyRequestedTargetPolicy(target.session, { overrides: { thinking: "high" } }, {});
+  assert.deepEqual(operations.slice(-2), ["agent", "overrides"]);
+
+  assert.equal(await orchestrator.resolveSendCwd(ctx, { cwd: "chosen" }), "chosen");
+  orchestrator.prepareWorktree = async () => "worktree";
+  assert.equal(await orchestrator.resolveSendCwd(ctx, { worktree: "branch" }), "worktree");
+  assert.deepEqual(Object.keys(orchestrator.cardDetails("send", "done")).sort(), ["kind", "status", "updatedAt"]);
+});
+
+test("orchestrator creates native child and fork session runtimes", async () => {
+  const peer = await loadPiCodingAgentPeer();
+  const originals = {
+    create: peer.SessionManager.create,
+    forkFrom: peer.SessionManager.forkFrom,
+    createAgentSessionServices: peer.createAgentSessionServices,
+    createAgentSessionFromServices: peer.createAgentSessionFromServices,
+    createAgentSessionRuntime: peer.createAgentSessionRuntime,
+  };
+  let createdManager;
+  let forkedManager;
+  const manager = (sessionId) => ({
+    appendSessionInfo: () => {},
+    flush: () => {},
+    getCwd: () => process.cwd(),
+    getEntries: () => [],
+    getSessionFile: () => `${sessionId}.jsonl`,
+    getSessionId: () => sessionId,
+  });
+  peer.SessionManager.create = () => (createdManager = manager("created-child"));
+  peer.SessionManager.forkFrom = () => (forkedManager = manager("forked-child"));
+  peer.createAgentSessionServices = async () => ({ diagnostics: [] });
+  peer.createAgentSessionFromServices = async ({ sessionManager }) => ({
+    session: { sessionManager, isStreaming: false },
+  });
+  peer.createAgentSessionRuntime = async (createRuntime, options) => createRuntime(options);
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
+  orchestrator.assertCanCreateChildSession = async () => {};
+  const ctx = {
+    cwd: process.cwd(),
+    sessionManager: {
+      flush: () => {},
+      getSessionDir: () => process.cwd(),
+      getSessionFile: () => "parent.jsonl",
+    },
+  };
+
+  try {
+    const created = await orchestrator.createChildSession(ctx, { message: "create child" }, {});
+    assert.equal(created.session.sessionManager, createdManager);
+    assert.equal(created.parentSessionPath, "parent.jsonl");
+
+    const forked = await orchestrator.createChildSession(ctx, { message: "fork child", fork: true }, {});
+    assert.equal(forked.session.sessionManager, forkedManager);
+  } finally {
+    Object.assign(peer.SessionManager, {
+      create: originals.create,
+      forkFrom: originals.forkFrom,
+    });
+    Object.assign(peer, {
+      createAgentSessionServices: originals.createAgentSessionServices,
+      createAgentSessionFromServices: originals.createAgentSessionFromServices,
+      createAgentSessionRuntime: originals.createAgentSessionRuntime,
+    });
+    deleteRuntimeSession("created-child");
+    deleteRuntimeSession("forked-child");
+  }
+});
+
+test("orchestrator invokes registered caller runtimes with structured returns", async () => {
+  const sessionId = "019fffff-1111-7111-8111-111111111111";
+  const sent = [];
+  const persisted = [];
+  const callerSessionManager = {
+    appendCustomMessageEntry: (...args) => persisted.push(args),
+    getCwd: () => process.cwd(),
+    getEntries: () => [],
+    getSessionId: () => sessionId,
+  };
+  const existing = {
+    session: {
+      isStreaming: true,
+      sessionManager: callerSessionManager,
+      sendCustomMessage: async (message, options) => sent.push({ message, options }),
+    },
+  };
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
+  orchestrator.applyPolicyToAgentSession = async () => {};
+  setRuntimeSession(sessionId, existing);
+
+  try {
+    await orchestrator.invokeCallerSession({
+      callerSessionManager,
+      callerCwd: process.cwd(),
+      message: {
+        customType: "pi-gentic:return-context",
+        content: "Return answer",
+        display: true,
+      },
+      config: {},
+      queue: "followUp",
+    });
+    assert.equal(sent.length, 1);
+    assert.equal(existing.lastMessage, "Return answer");
+    await assert.rejects(
+      () =>
+        orchestrator.invokeCallerSession({
+          callerSessionManager,
+          message: { content: "invalid" },
+          config: {},
+        }),
+      /structured Pi message/,
+    );
+
+    existing.session.sendCustomMessage = async () => {
+      throw new Error("return failed");
+    };
+    await orchestrator.invokeCallerSession({
+      callerSessionManager,
+      message: {
+        customType: "pi-gentic:return-context",
+        content: "Failure",
+        display: true,
+      },
+      config: {},
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(persisted.at(-1)[0], "pi-gentic:return-invoke-error");
+
+    orchestrator.createRuntimeForSessionManager = async () => ({ fresh: true });
+    assert.deepEqual(
+      await orchestrator.runtimeForCallerInvocation({
+        existing: { session: { isStreaming: false } },
+        callerSessionManager,
+      }),
+      { fresh: true },
+    );
+  } finally {
+    deleteRuntimeSession(sessionId);
+  }
+});
+
+test("orchestrator applies runtime policy and discovers the current session", async () => {
+  const runtime = createExtensionRuntime();
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, runtime);
+  const model = { provider: "openai", id: "gpt-test" };
+  const calls = [];
+  const session = {
+    getAllTools: () => [{ name: "read" }],
+    modelRuntime: { getAvailable: () => [model] },
+    resourceLoader: { getSkills: () => ({ skills: [{ name: "debug" }] }) },
+    sessionManager: { getEntries: () => [] },
+    setActiveToolsByName: (tools) => calls.push(["tools", tools]),
+    setModel: async (selected) => calls.push(["model", selected]),
+    setThinkingLevel: (level) => calls.push(["thinking", level]),
+  };
+  orchestrator.resolveAgentSessionPolicy = () => ({
+    model: "gpt-test",
+    thinking: "high",
+    resources: { tools: ["read"], agents: [], skills: [] },
+  });
+
+  await orchestrator.applyPolicyToAgentSession(session, {});
+  assert.deepEqual(calls, [
+    ["tools", ["read"]],
+    ["model", model],
+    ["thinking", "high"],
+  ]);
+
+  const depthOrchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
+  depthOrchestrator.currentSessionDepth = async () => 1;
+  depthOrchestrator.resolvePolicy = () => ({ maxSubagentDepth: 2 });
+  await assert.doesNotReject(() =>
+    depthOrchestrator.assertCanCreateChildSession({}, { settings: { globalMaxSubagentDepth: 3 } }),
+  );
+  await depthOrchestrator.assertCanMessageSession({}, {}, { settings: { sessionMessagingScope: "all" } });
+
+  const overrideEntries = [];
+  const overrideSession = {
+    sessionManager: {
+      appendCustomEntry: (customType, data) => overrideEntries.push({ type: "custom", customType, data }),
+      getEntries: () => [
+        {
+          type: "custom",
+          customType: "pi-gentic:state",
+          data: { agentName: "reviewer" },
+        },
+      ],
+      getSessionId: () => "override-session",
+    },
+  };
+  orchestrator.applyPolicyToAgentSession = async () => "applied";
+  assert.equal(await orchestrator.applySessionOverrides(overrideSession, { thinking: "high" }, {}), "applied");
+  assert.equal(overrideEntries.at(-1).data.agentName, "reviewer");
+  await assert.rejects(
+    () => orchestrator.loadAgentIntoSession(overrideSession, "missing", undefined, { agents: [] }),
+    /Unknown agent/,
+  );
+
+  const policyOrchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
+  const resolvedPolicy = policyOrchestrator.resolveAgentSessionPolicy(
+    {
+      getAllTools: () => [{ name: "read" }],
+      resourceLoader: { getSkills: () => ({ skills: [{ name: "debug" }] }) },
+      sessionManager: {
+        getEntries: () => [
+          {
+            type: "custom",
+            customType: "pi-gentic:state",
+            data: { agentName: "reviewer", overrides: { thinking: "high" } },
+          },
+        ],
+      },
+    },
+    {
+      settings: { agentDefaults: {}, agentlessSession: {} },
+      agents: [{ name: "reviewer", tools: ["read"] }],
+    },
+  );
+  assert.equal(resolvedPolicy.agentName, "reviewer");
+  assert.equal(resolvedPolicy.thinking, "high");
+
+  assert.doesNotThrow(() =>
+    policyOrchestrator.resolvePolicy(
+      {
+        getSystemPromptOptions: () => {
+          throw new Error("stale skill context");
+        },
+      },
+      {
+        settings: { agentDefaults: {}, agentlessSession: {} },
+        agents: [],
+      },
+      {},
+    ),
+  );
+  const prompt = policyOrchestrator.resolvedPromptForCard(
+    {
+      cwd: process.cwd(),
+      getSystemPrompt: () => {
+        throw new Error("stale prompt");
+      },
+      getSystemPromptOptions: () => ({ skills: [] }),
+      isProjectTrusted: () => false,
+    },
+    { agents: [], settings: {} },
+    {
+      resources: { agents: [], skills: [], tools: [] },
+      systemPromptFiles: [],
+    },
+    undefined,
+  );
+  assert.equal(typeof prompt, "string");
+
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-discover-"));
+  const ctx = {
+    cwd: dir,
+    sessionManager: {
+      getEntries: () => [],
+      getHeader: () => ({}),
+      getSessionDir: () => dir,
+      getSessionFile: () => path.join(dir, "current.jsonl"),
+      getSessionId: () => "019fcccc-1111-7111-8111-111111111111",
+      getSessionName: () => "Current",
+    },
+  };
+  orchestrator.load = () => ({});
+  orchestrator.resolvePolicy = () => ({ agentsTool: { rx: 0, ry: 0 } });
+
+  try {
+    assert.equal(await orchestrator.currentSessionDepth(ctx), 0);
+    const result = await orchestrator.discoverSessions(ctx, {});
+    assert.equal(result.sessions.length, 1);
+    assert.equal(result.sessions[0].sessionId, "019fcccc-1111-7111-8111-111111111111");
+    assert.deepEqual([result.rx, result.ry], [0, 0]);
+  } finally {
+    await runtime.dispose();
+  }
+});
+
 test("worktree preparation uses cwd as folder and empty worktree as branch from folder", async () => {
   const repo = createGitRepo();
-  const worktreeParent = mkdtempSync(
-    path.join(tmpdir(), "pi-gentic-worktree-parent-"),
-  );
+  const worktreeParent = mkdtempSync(path.join(tmpdir(), "pi-gentic-worktree-parent-"));
   const worktree = path.join(worktreeParent, "task-branch");
 
   const resolved = await prepareWorktree({
@@ -943,6 +1487,27 @@ test("worktree preparation uses cwd as folder and empty worktree as branch from 
   assert.equal(resolved, worktree);
 
   assert.equal(existsSync(path.join(worktree, ".git")), true);
+  assert.equal(
+    await prepareWorktree({
+      repoCwd: repo,
+      message: "Implement task",
+      cwd: worktree,
+      worktree: "",
+      allowedWorktreeRoots: [worktreeParent],
+    }),
+    worktree,
+  );
+  await assert.rejects(
+    () =>
+      prepareWorktree({
+        repoCwd: repo,
+        message: "Invalid branch",
+        cwd: path.join(worktreeParent, "invalid-branch"),
+        worktree: "invalid branch name",
+        allowedWorktreeRoots: [worktreeParent],
+      }),
+    /Invalid Git branch name/,
+  );
 
   const defaultWorktree = await prepareWorktree({
     repoCwd: repo,
@@ -950,10 +1515,7 @@ test("worktree preparation uses cwd as folder and empty worktree as branch from 
     worktree: "",
   });
 
-  assert.equal(
-    defaultWorktree.startsWith(path.join(repo, ".agentfiles", "worktrees")),
-    true,
-  );
+  assert.equal(defaultWorktree.startsWith(path.join(repo, ".agentfiles", "worktrees")), true);
 
   assert.equal(existsSync(path.join(defaultWorktree, ".git")), true);
 });
@@ -969,10 +1531,7 @@ test("worktree preparation can use an explicit absolute source repository", asyn
     worktree: "",
   });
 
-  assert.equal(
-    resolved.startsWith(path.join(repo, ".agentfiles", "worktrees")),
-    true,
-  );
+  assert.equal(resolved.startsWith(path.join(repo, ".agentfiles", "worktrees")), true);
 
   assert.equal(existsSync(path.join(resolved, ".git")), true);
 });
@@ -1003,12 +1562,23 @@ test("worktree preparation reports non-git repositories clearly", async () => {
   );
 });
 
+test("worktree preparation reports unavailable Git executables", async () => {
+  const repo = createGitRepo();
+  const originalPath = process.env.PATH;
+
+  try {
+    process.env.PATH = "";
+    await assert.rejects(
+      () => prepareWorktree({ repoCwd: repo, message: "Missing Git" }),
+      /Worktree repository must be a git repository/,
+    );
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
+
 test("send confirmation tells callers not to wait or duplicate delegated work", () => {
-  const text = sendConfirmationText(
-    "researcher",
-    "019ecdce-4317-701b-9c51-1b05272f0db0",
-    "check that",
-  );
+  const text = sendConfirmationText("researcher", "019ecdce-4317-701b-9c51-1b05272f0db0", "check that");
 
   assert.match(text, /session 019ecdce-4317-701b-9c51-1b05272f0db0/);
 
@@ -1032,10 +1602,7 @@ test("queued send confirmation explains that the target session is busy", () => 
 });
 
 test("abort actor is always defined for caller and agent sessions", () => {
-  assert.equal(
-    abortActor({ sessionManager: { getEntries: () => [] } }),
-    "caller session",
-  );
+  assert.equal(abortActor({ sessionManager: { getEntries: () => [] } }), "caller session");
 
   assert.equal(
     abortActor({
@@ -1131,19 +1698,57 @@ test("sessions that stop at the output limit report the stop reason and recent m
   assert.match(outcome.text, /Recent model error: Input exceeds the context window\./);
 });
 
+test("session outcomes explain model errors and missing responses", () => {
+  const runtime = (messages) => ({
+    agentName: "reviewer",
+    session: {
+      sessionManager: { getSessionId: () => "error-session" },
+      agent: { state: { messages } },
+    },
+  });
+
+  const modelError = sessionRunOutcome(
+    runtime([
+      {
+        role: "assistant",
+        content: "",
+        stopReason: "error",
+        errorMessage: "Provider unavailable",
+      },
+    ]),
+    { request: "Review" },
+  );
+  assert.equal(modelError.status, "error");
+  assert.match(modelError.text, /Provider unavailable/);
+
+  const thrown = sessionRunOutcome(runtime([]), {
+    request: "Review",
+    error: new Error("Connection lost"),
+  });
+  assert.equal(thrown.status, "error");
+  assert.match(thrown.text, /Connection lost/);
+
+  const missing = sessionRunOutcome(runtime([]), { request: "Review" });
+  assert.equal(missing.status, "stopped");
+  assert.match(missing.text, /No assistant response/);
+
+  const customStop = sessionRunOutcome(runtime([{ role: "assistant", content: "", stopReason: "tool_use" }]), {
+    request: "Review",
+  });
+  assert.equal(customStop.status, "stopped");
+  assert.match(customStop.text, /tool_use/);
+});
+
 test("activity monitors reset inactivity for lifecycle and reasoning progress", () => {
   const originalNow = Date.now;
   const published = [];
 
   try {
     Date.now = () => 1_000;
-    const monitor = createSessionActivityMonitor(
-      { status: "running", updatedAt: 100 },
-      (details) => {
-        published.push(details);
-        return details;
-      },
-    );
+    const monitor = createSessionActivityMonitor({ status: "running", updatedAt: 100 }, (details) => {
+      published.push(details);
+      return details;
+    });
 
     monitor.observe({ type: "agent_start" });
     assert.equal(published.at(-1).updatedAt, 1_000);
@@ -1164,15 +1769,91 @@ test("activity monitors reset inactivity for lifecycle and reasoning progress", 
   }
 });
 
+test("activity monitors normalize every native progress event", () => {
+  const published = [];
+  const monitor = createSessionActivityMonitor({ status: "running" }, (details) => {
+    published.push(details);
+    return details;
+  });
+  const events = [
+    {
+      type: "tool_execution_start",
+      toolCallId: "tool",
+      toolName: "read",
+      args: { path: "one" },
+    },
+    {
+      type: "tool_execution_update",
+      toolCallId: "tool",
+      toolName: "read",
+      partialResult: [{ text: "two" }],
+    },
+    {
+      type: "tool_execution_end",
+      toolCallId: "tool",
+      toolName: "read",
+      result: { content: [{ text: "three" }] },
+      isError: true,
+    },
+    {
+      type: "message_update",
+      message: { role: "assistant", content: "Working" },
+    },
+    {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Done" }],
+      },
+    },
+  ];
+
+  for (const event of events) monitor.observe(event);
+  assert.deepEqual(
+    published.at(-1).activities.map((activity) => activity.id),
+    ["tool", "assistant"],
+  );
+  assert.equal(published.at(-1).activities[0].status, "error");
+  assert.equal(monitor.fail("failure").status, "error");
+  assert.equal(monitor.stop("aborted").status, "aborted");
+
+  assert.deepEqual(
+    collectSessionActivities({
+      agent: {
+        state: {
+          messages: [
+            { role: "assistant", content: "", stopReason: "aborted" },
+            {
+              role: "assistant",
+              content: "",
+              stopReason: "error",
+              errorMessage: "Model failed",
+            },
+            {
+              role: "toolResult",
+              toolCallId: "result",
+              toolName: "write",
+              content: [{ text: "saved" }],
+              isError: false,
+            },
+          ],
+        },
+      },
+    }).map(({ type, status }) => ({ type, status })),
+    [
+      { type: "assistant", status: "aborted" },
+      { type: "assistant", status: "error" },
+      { type: "tool", status: "done" },
+    ],
+  );
+});
+
 test("activity monitors preserve the completed answer in terminal card state", () => {
   const published = [];
-  const monitor = createSessionActivityMonitor(
-    { status: "running", updatedAt: 100 },
-    (details) => {
-      published.push(details);
-      return details;
-    },
-  );
+  const monitor = createSessionActivityMonitor({ status: "running", updatedAt: 100 }, (details) => {
+    published.push(details);
+    return details;
+  });
 
   const completed = monitor.finish({
     answer: "Final agent answer",
@@ -1186,13 +1867,10 @@ test("activity monitors preserve the completed answer in terminal card state", (
 
 test("queued activity monitors ignore the target's current run until the queued turn starts", () => {
   const published = [];
-  const monitor = createSessionActivityMonitor(
-    { status: "queued", updatedAt: 100 },
-    (details) => {
-      published.push(details);
-      return details;
-    },
-  );
+  const monitor = createSessionActivityMonitor({ status: "queued", updatedAt: 100 }, (details) => {
+    published.push(details);
+    return details;
+  });
 
   monitor.observe({
     type: "tool_execution_start",
@@ -1307,20 +1985,11 @@ test("formatted status is readable instead of raw JSON", () => {
 });
 
 test("send completion policy supports deferred foreground commands without changing tool defaults", () => {
-  assert.equal(
-    shouldDeferSendCompletion({ async: true, awaitCompletion: true }),
-    true,
-  );
+  assert.equal(shouldDeferSendCompletion({ async: true, awaitCompletion: true }), true);
 
-  assert.equal(
-    shouldDeferSendCompletion({ async: false, awaitCompletion: false }),
-    true,
-  );
+  assert.equal(shouldDeferSendCompletion({ async: false, awaitCompletion: false }), true);
 
-  assert.equal(
-    shouldDeferSendCompletion({ async: false, awaitCompletion: undefined }),
-    false,
-  );
+  assert.equal(shouldDeferSendCompletion({ async: false, awaitCompletion: undefined }), false);
 });
 
 test("agent availability has a reusable core boundary", () => {
@@ -1342,10 +2011,7 @@ test("agent availability has a reusable core boundary", () => {
 
   assert.equal(assertAvailableAgent("researcher", agents).name, "researcher");
 
-  assert.throws(
-    () => assertAvailableAgent("reviewer", agents),
-    /Unavailable agent/,
-  );
+  assert.throws(() => assertAvailableAgent("reviewer", agents), /Unavailable agent/);
 });
 
 test("named child sessions activate with the current Pi model runtime", async () => {
@@ -1359,16 +2025,13 @@ test("named child sessions activate with the current Pi model runtime", async ()
   const session = {
     modelRuntime: {
       getModel: (provider, id) =>
-        provider === selectedModel.provider && id === selectedModel.id
-          ? selectedModel
-          : undefined,
+        provider === selectedModel.provider && id === selectedModel.id ? selectedModel : undefined,
       getModels: () => [selectedModel],
       getAvailableSnapshot: () => [selectedModel],
     },
     resourceLoader: { getSkills: () => ({ skills: [] }) },
     sessionManager: {
-      appendCustomEntry: (customType, data) =>
-        entries.push({ type: "custom", customType, data }),
+      appendCustomEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
       getEntries: () => entries,
       getSessionId: () => sessionId,
     },
@@ -1391,15 +2054,10 @@ test("named child sessions activate with the current Pi model runtime", async ()
       },
     ],
   };
-  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] });
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
 
   try {
-    await orchestrator.loadAgentIntoSession(
-      session,
-      "researcher",
-      undefined,
-      config,
-    );
+    await orchestrator.loadAgentIntoSession(session, "researcher", undefined, config);
 
     assert.deepEqual(appliedModels, [selectedModel]);
     assert.deepEqual(entries.at(-1)?.data, {

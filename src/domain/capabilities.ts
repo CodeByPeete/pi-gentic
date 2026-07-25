@@ -1,10 +1,4 @@
-import { HashSet, Schema } from "effect";
-
-export class CapabilityPolicy extends Schema.Class<CapabilityPolicy>(
-  "CapabilityPolicy",
-)({
-  filters: Schema.Array(Schema.String),
-}) {}
+import { HashSet } from "effect";
 
 export function applyCapabilityFilter(
   ambientCapabilities: ReadonlyArray<string>,
@@ -30,31 +24,19 @@ export function applyCapabilityFilter(
   let selected =
     includes.length === 0
       ? ceiling
-      : HashSet.filter(ceiling, (name) =>
-          includes.some((pattern) => matchesPattern(name, pattern)),
-        );
+      : HashSet.filter(ceiling, (name) => includes.some((pattern) => matchesPattern(name, pattern)));
 
-  selected = HashSet.filter(
-    selected,
-    (name) => !excludes.some((pattern) => matchesPattern(name, pattern)),
-  );
+  selected = HashSet.filter(selected, (name) => !excludes.some((pattern) => matchesPattern(name, pattern)));
 
   for (const name of ambientCapabilities) {
-    if (
-      forceIncludes.some(
-        (pattern) => pattern.toLowerCase() === name.toLowerCase(),
-      )
-    ) {
+    if (forceIncludes.some((pattern) => pattern.toLowerCase() === name.toLowerCase())) {
       selected = HashSet.add(selected, name);
     }
   }
 
   selected = HashSet.filter(
     selected,
-    (name) =>
-      !forceExcludes.some(
-        (pattern) => pattern.toLowerCase() === name.toLowerCase(),
-      ),
+    (name) => !forceExcludes.some((pattern) => pattern.toLowerCase() === name.toLowerCase()),
   );
 
   return ambientCapabilities.filter((name) => HashSet.has(selected, name));

@@ -7,20 +7,22 @@ import {
   clearLiveCardDetails,
   getLiveCardDetails,
   renderAgentsResult,
+  sessionHasVisibleLiveCard,
   setAgentLabel,
   setLiveCardDetails,
   showCard,
   startLiveRefresh,
   startSessionLiveCardRefresh,
 } from "../dist/ui.js";
+import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
+
+const runtime = createExtensionRuntime();
+test.after(() => runtime.dispose());
 
 test("agent label appears right-aligned below the editor without a prefix", () => {
   const calls = [];
 
-  setAgentLabel(
-    { mode: "tui", ui: { setWidget: (...args) => calls.push(args) } },
-    "builder",
-  );
+  setAgentLabel({ mode: "tui", ui: { setWidget: (...args) => calls.push(args) } }, "builder");
 
   assert.equal(calls.length, 1);
 
@@ -41,19 +43,15 @@ test("agent label appears right-aligned below the editor without a prefix", () =
 test("clearing the agent removes the below-editor label", () => {
   const calls = [];
 
-  setAgentLabel(
-    { mode: "tui", ui: { setWidget: (...args) => calls.push(args) } },
-    undefined,
-  );
+  setAgentLabel({ mode: "tui", ui: { setWidget: (...args) => calls.push(args) } }, undefined);
 
-  assert.deepEqual(calls, [
-    [AGENT_WIDGET_KEY, undefined, { placement: "belowEditor" }],
-  ]);
+  assert.deepEqual(calls, [[AGENT_WIDGET_KEY, undefined, { placement: "belowEditor" }]]);
 });
 
 test("live refresh mounts one stable widget above the editor", async () => {
   const calls = [];
   let renders = 0;
+  let mounted;
   const tui = { requestRender: () => renders++ };
   const stop = startLiveRefresh(
     {
@@ -61,10 +59,11 @@ test("live refresh mounts one stable widget above the editor", async () => {
       ui: {
         setWidget: (...args) => {
           calls.push(args);
-          args[1]?.(tui, {});
+          if (args[1]) mounted = args[1](tui, {});
         },
       },
     },
+    runtime,
     "test",
     { ttlMs: 10_000, intervalMs: 0, autoPulse: false },
   );
@@ -79,11 +78,8 @@ test("live refresh mounts one stable widget above the editor", async () => {
   assert.equal(calls[0][0], `${LIVE_REFRESH_WIDGET_KEY}:test`);
   assert.deepEqual(calls[0][2], { placement: "aboveEditor" });
   assert.ok(renders > 0);
-  assert.deepEqual(calls.at(-1), [
-    `${LIVE_REFRESH_WIDGET_KEY}:test`,
-    undefined,
-    { placement: "aboveEditor" },
-  ]);
+  assert.deepEqual(mounted.render(80), []);
+  assert.deepEqual(calls.at(-1), [`${LIVE_REFRESH_WIDGET_KEY}:test`, undefined, { placement: "aboveEditor" }]);
 });
 
 test("live refresh follows the active TUI context after the tool context becomes stale", async () => {
@@ -102,7 +98,7 @@ test("live refresh follows the active TUI context after the tool context becomes
     mode: "tui",
     ui: { setWidget: (...args) => activeCalls.push(args) },
   };
-  const stop = startLiveRefresh(staleContext, "context-switch", {
+  const stop = startLiveRefresh(staleContext, runtime, "context-switch", {
     ttlMs: 10_000,
     intervalMs: 0,
     autoPulse: false,
@@ -131,11 +127,13 @@ test("live refresh repaints timers without remounting its widget", async () => {
         },
       },
     },
+    runtime,
     "timer",
     { ttlMs: 10_000, intervalMs: 0, pulseIntervalMs: 250 },
   );
 
-  await new Promise((resolve) => setTimeout(resolve, 550));
+  for (let attempts = 0; renders === 0 && attempts < 20; attempts++)
+    await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], `${LIVE_REFRESH_WIDGET_KEY}:timer`);
   assert.ok(renders > 0);
@@ -145,11 +143,102 @@ test("live refresh repaints timers without remounting its widget", async () => {
   await new Promise((resolve) => setTimeout(resolve, 300));
 
   assert.equal(renders, rendered);
-  assert.deepEqual(calls.at(-1), [
-    `${LIVE_REFRESH_WIDGET_KEY}:timer`,
-    undefined,
-    { placement: "aboveEditor" },
-  ]);
+  assert.deepEqual(calls.at(-1), [`${LIVE_REFRESH_WIDGET_KEY}:timer`, undefined, { placement: "aboveEditor" }]);
+});
+
+test("live card lookup contains stale session-manager failures", () => {
+  clearLiveCardDetails();
+  setLiveCardDetails({
+    cardId: "stale-session-card",
+    kind: "send",
+    status: "running",
+  });
+
+  assert.equal(
+    sessionHasVisibleLiveCard({
+      sessionManager: {
+        getSessionId: () => {
+          throw new Error("stale id");
+        },
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    sessionHasVisibleLiveCard({
+      sessionManager: {
+        getSessionId: () => "session",
+        getEntries: () => {
+          throw new Error("stale entries");
+        },
+      },
+    }),
+    false,
+  );
+  clearLiveCardDetails();
+});
+
+test("live refresh contains stale mount and unmount failures", () => {
+  const mountFailure = startLiveRefresh(
+    {
+      mode: "tui",
+      ui: {
+        setWidget: () => {
+          throw new Error("stale mount");
+        },
+      },
+    },
+    runtime,
+    "mount-failure",
+    { autoPulse: false },
+  );
+  assert.doesNotThrow(() => mountFailure.refresh());
+
+  let mounted = false;
+  const unmountFailure = startLiveRefresh(
+    {
+      mode: "tui",
+      ui: {
+        setWidget: (_key, factory) => {
+          if (!factory && mounted) throw new Error("stale unmount");
+          mounted = true;
+        },
+      },
+    },
+    runtime,
+    "unmount-failure",
+    { autoPulse: false },
+  );
+  unmountFailure.refresh();
+  assert.doesNotThrow(() => unmountFailure());
+});
+
+test("managed runtime disposal stops live timer repaint fibers", async () => {
+  const ownedRuntime = createExtensionRuntime();
+  let renders = 0;
+  const stop = startLiveRefresh(
+    {
+      mode: "tui",
+      ui: {
+        setWidget: (_key, factory) => factory?.({ requestRender: () => renders++ }, {}),
+      },
+    },
+    ownedRuntime,
+    "owned-timer",
+    { pulseIntervalMs: 250 },
+  );
+
+  stop.refresh();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.ok(renders > 0);
+    await ownedRuntime.dispose();
+    const settledRenders = renders;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(renders, settledRenders);
+  } finally {
+    await ownedRuntime.dispose();
+  }
 });
 
 test("live panel gives every active session one compact detailed row", async () => {
@@ -196,6 +285,20 @@ test("live panel gives every active session one compact detailed row", async () 
       updatedAt: Date.now() - 1_000,
       activities: [],
     },
+    {
+      cardId: "compact-agentless",
+      kind: "send",
+      status: "running",
+      livePanel: true,
+      callerSessionId: "parent-session",
+      sessionId: "child-three",
+      agentName: "agentless",
+      async: true,
+      message: "Handle an unassigned task",
+      startedAt: Date.now() - 1_000,
+      updatedAt: Date.now() - 1_000,
+      activities: [],
+    },
   ];
   let panel;
   const ctx = {
@@ -215,7 +318,7 @@ test("live panel gives every active session one compact detailed row", async () 
   };
 
   for (const card of cards) setLiveCardDetails(card);
-  const stop = startSessionLiveCardRefresh(ctx);
+  const stop = startSessionLiveCardRefresh(ctx, runtime);
 
   try {
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -227,6 +330,7 @@ test("live panel gives every active session one compact detailed row", async () 
     assert.match(researcherRows[0], /\[ASYNC\].*\(child-on\).*\[read\] src\/ui\.ts.*idle.*total/);
     assert.equal(builderRows.length, 1);
     assert.match(builderRows[0], /\[SYNC\].*\(child-tw\).*Queued: Continue the terminal fix.*idle.*total/);
+    assert.equal(lines.filter((line) => line.includes("agent (child-th)")).length, 1);
   } finally {
     stop();
     for (const card of cards) clearLiveCardDetails(card);
@@ -306,7 +410,7 @@ test("live card updates stay in the visible panel without clearing terminal scro
   tui.addChild(filler);
   tui.addChild(editor);
   tui.start();
-  const stop = startSessionLiveCardRefresh(ctx);
+  const stop = startSessionLiveCardRefresh(ctx, runtime);
 
   try {
     await new Promise((resolve) => setTimeout(resolve, 140));
@@ -321,14 +425,20 @@ test("live card updates stay in the visible panel without clearing terminal scro
     await new Promise((resolve) => setTimeout(resolve, 140));
 
     assert.equal(tui.fullRedraws, redrawsBeforeUpdate);
-    assert.equal(writes.some((value) => value.includes("\x1b[3J")), false);
+    assert.equal(
+      writes.some((value) => value.includes("\x1b[3J")),
+      false,
+    );
     assert.match(writes.join(""), /\[read\].*src\/ui\.ts/);
 
     writes.length = 0;
     await new Promise((resolve) => setTimeout(resolve, 1_100));
 
     assert.equal(tui.fullRedraws, redrawsBeforeUpdate);
-    assert.equal(writes.some((value) => value.includes("\x1b[3J")), false);
+    assert.equal(
+      writes.some((value) => value.includes("\x1b[3J")),
+      false,
+    );
     assert.match(writes.join(""), /idle.*total/);
   } finally {
     stop();
@@ -346,25 +456,11 @@ function renderCard(details) {
   );
 }
 
-test("running cards and their repaint loop remain live until explicitly settled", () => {
-  const originalSetTimeout = globalThis.setTimeout;
-  const originalSetInterval = globalThis.setInterval;
-  const originalClearTimeout = globalThis.clearTimeout;
-  const originalClearInterval = globalThis.clearInterval;
-  const timers = [];
+test("running cards and their repaint loop remain live until explicitly settled", async () => {
   const cardId = "long-silent-run";
 
-  globalThis.setTimeout = (callback, ms) => {
-    const timer = { callback, ms, unref() {} };
-    timers.push(timer);
-    return timer;
-  };
-  globalThis.setInterval = (callback, ms) => ({ callback, ms, unref() {} });
-  globalThis.clearTimeout = () => {};
-  globalThis.clearInterval = () => {};
-
   try {
-    setLiveCardDetails({ cardId, kind: "send", status: "running" });
+    setLiveCardDetails({ cardId, kind: "send", status: "running" }, { runtime });
     const ctx = {
       mode: "tui",
       ui: { setWidget() {} },
@@ -381,26 +477,18 @@ test("running cards and their repaint loop remain live until explicitly settled"
         ],
       },
     };
-    const stop = startSessionLiveCardRefresh(ctx);
+    const stop = startSessionLiveCardRefresh(ctx, runtime);
 
+    await new Promise((resolve) => setTimeout(resolve, 120));
     assert.equal(getLiveCardDetails({ cardId })?.status, "running");
-    assert.equal(
-      timers.some(({ ms }) => ms === 10 * 60_000),
-      false,
-    );
 
     stop();
-    setLiveCardDetails({ cardId, status: "done", completedAt: Date.now() });
-    assert.equal(
-      timers.some(({ ms }) => ms === 60_000),
-      true,
-    );
+    setLiveCardDetails({ cardId, status: "done", completedAt: Date.now() }, { runtime, ttlMs: 1_000 });
+    setLiveCardDetails({ cardId, status: "done" }, { runtime, ttlMs: 100 });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(getLiveCardDetails({ cardId }), undefined);
   } finally {
     clearLiveCardDetails({ cardId });
-    globalThis.setTimeout = originalSetTimeout;
-    globalThis.setInterval = originalSetInterval;
-    globalThis.clearTimeout = originalClearTimeout;
-    globalThis.clearInterval = originalClearInterval;
   }
 });
 
@@ -425,7 +513,7 @@ test("resumed sessions with visible live cards refresh from live updates", async
   };
 
   setLiveCardDetails({ cardId, kind: "send", status: "running" });
-  const stop = startSessionLiveCardRefresh(ctx);
+  const stop = startSessionLiveCardRefresh(ctx, runtime);
 
   await new Promise((resolve) => setTimeout(resolve, 0));
   const rendered = calls.length;
@@ -457,7 +545,7 @@ test("sessions without live cards do not repaint while idle", async () => {
     },
   };
 
-  const stop = startSessionLiveCardRefresh(ctx);
+  const stop = startSessionLiveCardRefresh(ctx, runtime);
   await new Promise((resolve) => setTimeout(resolve, 1_100));
 
   assert.equal(calls.length, 1);

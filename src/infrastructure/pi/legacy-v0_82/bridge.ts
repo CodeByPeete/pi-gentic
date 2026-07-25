@@ -1,11 +1,7 @@
 import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  defaultAgentDir,
-  getActiveState,
-  isRecord,
-} from "../../../catalog.js";
+import { defaultAgentDir, getActiveState, isRecord } from "../../../catalog.js";
 import { reportRuntimeDiagnostic } from "../../../diagnostics.js";
 import type {
   PiAgentRuntimeHost,
@@ -16,10 +12,7 @@ import type {
   PiSessionManager,
   PiTheme,
 } from "../../../pi-types.js";
-import {
-  HostCapabilityUnavailable,
-  HostVersionUnsupported,
-} from "../../../domain/errors.js";
+import { HostCapabilityUnavailable, HostVersionUnsupported } from "../../../domain/errors.js";
 
 type LegacyRecord = Record<string, any>;
 
@@ -99,17 +92,13 @@ async function importFirst(specifiers: string[]): Promise<PiCodingAgentPeer> {
   for (const specifier of [...new Set(specifiers)]) {
     try {
       const peer = await import(specifier);
-      const resolved = specifier.startsWith("file:")
-        ? specifier
-        : import.meta.resolve(specifier);
+      const resolved = specifier.startsWith("file:") ? specifier : import.meta.resolve(specifier);
       const version = await peerPackageVersion(resolved);
       const diagnostics: string[] = [];
       let theme: PiTheme | undefined;
 
       try {
-        const themeModule = await import(
-          new URL("./modes/interactive/theme/theme.js", resolved).href,
-        );
+        const themeModule = await import(new URL("./modes/interactive/theme/theme.js", resolved).href);
         theme = themeModule.theme;
       } catch (error) {
         diagnostics.push(`Could not load the Pi theme: ${String(error)}`);
@@ -130,10 +119,7 @@ async function importFirst(specifiers: string[]): Promise<PiCodingAgentPeer> {
 }
 
 async function peerPackageVersion(resolvedIndex: string) {
-  const packageModule = await import(
-    new URL("../package.json", resolvedIndex).href,
-    { with: { type: "json" } },
-  );
+  const packageModule = await import(new URL("../package.json", resolvedIndex).href, { with: { type: "json" } });
   const manifest = packageModule.default;
 
   if (!isRecord(manifest) || typeof manifest.version !== "string")
@@ -206,38 +192,27 @@ export function hasAgentCallsForSession(sessionId: unknown) {
 }
 
 function hasCancellableAgentCallsForSession(sessionId: unknown) {
-  return activeCallsForSession(sessionId).some(
-    (call) => call.isCancellable?.() !== false,
-  );
+  return activeCallsForSession(sessionId).some((call) => call.isCancellable?.() !== false);
 }
 
-export async function abortAgentCall(
-  callId: string,
-  options: LegacyRecord = {},
-) {
+export async function abortAgentCall(callId: string, options: LegacyRecord = {}) {
   const call = getLiveRuntimeState().activeCalls.get(callId);
 
   return abortCalls(call ? [call] : [], options);
 }
 
-export async function abortAgentCallsForSession(
-  sessionId: unknown,
-  options: LegacyRecord = {},
-) {
+export async function abortAgentCallsForSession(sessionId: unknown, options: LegacyRecord = {}) {
   return abortCalls(activeCallsForSession(sessionId), options);
 }
 
 function activeCallsForSession(sessionId: unknown) {
   return [...getLiveRuntimeState().activeCalls.values()].filter(
-    (call) =>
-      call.callerSessionId === sessionId || call.targetSessionId === sessionId,
+    (call) => call.callerSessionId === sessionId || call.targetSessionId === sessionId,
   );
 }
 
 async function abortCalls(calls: AgentCall[], options: LegacyRecord = {}) {
-  const state = isAbortState(options.state)
-    ? options.state
-    : { sessions: new Set(), calls: new Set() };
+  const state = isAbortState(options.state) ? options.state : { sessions: new Set(), calls: new Set() };
   let aborted = 0;
 
   for (const call of calls) {
@@ -280,8 +255,7 @@ export async function installLiveSessionBridge() {
 
     assertLegacyHostCompatible(peer);
     for (const diagnostic of peer.diagnostics ?? []) {
-      if (!state.compatibilityDiagnostics.includes(diagnostic))
-        state.compatibilityDiagnostics.push(diagnostic);
+      if (!state.compatibilityDiagnostics.includes(diagnostic)) state.compatibilityDiagnostics.push(diagnostic);
     }
     installRuntimeSwitchBridge(state, peer);
     installRuntimeNewSessionBridge(state, peer);
@@ -294,8 +268,7 @@ export async function installLiveSessionBridge() {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
-    if (!state.compatibilityDiagnostics.includes(message))
-      state.compatibilityDiagnostics.push(message);
+    if (!state.compatibilityDiagnostics.includes(message)) state.compatibilityDiagnostics.push(message);
   }
 }
 
@@ -342,61 +315,49 @@ function installRuntimeSwitchBridge(
   if (state.bridgeInstalled) return;
   state.bridgeInstalled = true;
   state.hostSwitchSession = AgentSessionRuntime.prototype.switchSession as LiveRuntimeState["hostSwitchSession"];
-  AgentSessionRuntime.prototype.switchSession =
-    async function switchSessionWithLiveRuntime(
-      sessionPath: string,
-      options?: LegacyRecord,
-    ) {
-      const switchOptions = withVisibleContextTracking(state, this, options);
+  AgentSessionRuntime.prototype.switchSession = async function switchSessionWithLiveRuntime(
+    sessionPath: string,
+    options?: LegacyRecord,
+  ) {
+    const switchOptions = withVisibleContextTracking(state, this, options);
 
-      if (
-        typeof sessionPath !== "string" ||
-        !sessionPath.startsWith(LIVE_SESSION_PREFIX)
-      ) {
-        const restore = parkCurrentLiveRuntimeForSwitch(state, this);
-
-        try {
-          return await state.hostSwitchSession?.call(
-            this,
-            sessionPath,
-            switchOptions,
-          );
-        } finally {
-          restore();
-        }
-      }
-
-      const sessionId = sessionPath.slice(LIVE_SESSION_PREFIX.length);
-      const live = state.liveRuntimes.get(sessionId) as
-        | { runtime: PiAgentRuntimeHost; metadata?: LegacyRecord }
-        | undefined;
-
-      if (!live)
-        throw new Error(`No live pi-gentic session ${sessionId} is available.`);
-      const targetSessionFile = live.runtime.session.sessionFile;
-      const beforeResult = await this.emitBeforeSwitch(
-        "resume",
-        targetSessionFile,
-      );
-
-      if (beforeResult.cancelled) return beforeResult;
+    if (typeof sessionPath !== "string" || !sessionPath.startsWith(LIVE_SESSION_PREFIX)) {
       const restore = parkCurrentLiveRuntimeForSwitch(state, this);
 
       try {
-        await this.teardownCurrent("resume", targetSessionFile);
+        return await state.hostSwitchSession?.call(this, sessionPath, switchOptions);
       } finally {
         restore();
       }
-      this.apply({
-        session: live.runtime.session,
-        services: live.runtime.services,
-        diagnostics: live.runtime.diagnostics,
-        modelFallbackMessage: live.runtime.modelFallbackMessage,
-      });
-      await this.finishSessionReplacement(switchOptions.withSession);
+    }
 
-      return { cancelled: false };
-    };
+    const sessionId = sessionPath.slice(LIVE_SESSION_PREFIX.length);
+    const live = state.liveRuntimes.get(sessionId) as
+      | { runtime: PiAgentRuntimeHost; metadata?: LegacyRecord }
+      | undefined;
+
+    if (!live) throw new Error(`No live pi-gentic session ${sessionId} is available.`);
+    const targetSessionFile = live.runtime.session.sessionFile;
+    const beforeResult = await this.emitBeforeSwitch("resume", targetSessionFile);
+
+    if (beforeResult.cancelled) return beforeResult;
+    const restore = parkCurrentLiveRuntimeForSwitch(state, this);
+
+    try {
+      await this.teardownCurrent("resume", targetSessionFile);
+    } finally {
+      restore();
+    }
+    this.apply({
+      session: live.runtime.session,
+      services: live.runtime.services,
+      diagnostics: live.runtime.diagnostics,
+      modelFallbackMessage: live.runtime.modelFallbackMessage,
+    });
+    await this.finishSessionReplacement(switchOptions.withSession);
+
+    return { cancelled: false };
+  };
 }
 
 function installRuntimeNewSessionBridge(
@@ -405,28 +366,19 @@ function installRuntimeNewSessionBridge(
 ) {
   if (state.newSessionBridgeInstalled) return;
   state.newSessionBridgeInstalled = true;
-  state.hostNewSession = AgentSessionRuntime.prototype
-    .newSession as LiveRuntimeState["hostNewSession"];
-  AgentSessionRuntime.prototype.newSession =
-    async function newSessionWithLiveRuntime(options?: LegacyRecord) {
-      const restore = parkCurrentLiveRuntimeForSwitch(state, this);
+  state.hostNewSession = AgentSessionRuntime.prototype.newSession as LiveRuntimeState["hostNewSession"];
+  AgentSessionRuntime.prototype.newSession = async function newSessionWithLiveRuntime(options?: LegacyRecord) {
+    const restore = parkCurrentLiveRuntimeForSwitch(state, this);
 
-      try {
-        return await state.hostNewSession?.call(
-          this,
-          withVisibleContextTracking(state, this, options),
-        );
-      } finally {
-        restore();
-      }
-    };
+    try {
+      return await state.hostNewSession?.call(this, withVisibleContextTracking(state, this, options));
+    } finally {
+      restore();
+    }
+  };
 }
 
-function withVisibleContextTracking(
-  state: LiveRuntimeState,
-  runtimeHost: LegacyRecord,
-  options: LegacyRecord = {},
-) {
+function withVisibleContextTracking(state: LiveRuntimeState, runtimeHost: LegacyRecord, options: LegacyRecord = {}) {
   const originalWithSession = options.withSession;
 
   return {
@@ -435,8 +387,7 @@ function withVisibleContextTracking(
       state.activeContext = nextCtx;
       state.activeSession = runtimeHost.session;
 
-      if (typeof originalWithSession === "function")
-        await originalWithSession(nextCtx);
+      if (typeof originalWithSession === "function") await originalWithSession(nextCtx);
     },
   };
 }
@@ -460,16 +411,11 @@ export function activeVisibleSession() {
   return getLiveRuntimeState().activeSession;
 }
 
-export function parkCurrentLiveRuntimeForSwitch(
-  state: LiveRuntimeState,
-  runtimeHost: LegacyRecord | undefined,
-) {
+export function parkCurrentLiveRuntimeForSwitch(state: LiveRuntimeState, runtimeHost: LegacyRecord | undefined) {
   const session = runtimeHost?.session;
   const sessionId = session?.sessionManager?.getSessionId?.();
   const tracked = sessionId ? getRuntimeSession(sessionId) : undefined;
-  const liveRuntime =
-    tracked?.runtimeHost ??
-    (session ? snapshotRuntimeHost(runtimeHost, session) : undefined);
+  const liveRuntime = tracked?.runtimeHost ?? (session ? snapshotRuntimeHost(runtimeHost, session) : undefined);
 
   if (
     !sessionId ||
@@ -485,11 +431,8 @@ export function parkCurrentLiveRuntimeForSwitch(
     ...(tracked ?? {}),
     runtimeHost: liveRuntime,
     session,
-    agentName:
-      tracked?.agentName ?? getActiveState(session.sessionManager).agentName,
-    parentSessionPath:
-      tracked?.parentSessionPath ??
-      session.sessionManager.getHeader?.()?.parentSession,
+    agentName: tracked?.agentName ?? getActiveState(session.sessionManager).agentName,
+    parentSessionPath: tracked?.parentSessionPath ?? session.sessionManager.getHeader?.()?.parentSession,
   });
 
   state.liveRuntimes.set(sessionId, {
@@ -504,10 +447,7 @@ export function parkCurrentLiveRuntimeForSwitch(
   };
 }
 
-function snapshotRuntimeHost(
-  runtimeHost: LegacyRecord | undefined,
-  session: LegacyRecord,
-) {
+function snapshotRuntimeHost(runtimeHost: LegacyRecord | undefined, session: LegacyRecord) {
   if (!runtimeHost) return undefined;
 
   return {
@@ -518,18 +458,12 @@ function snapshotRuntimeHost(
   } as PiAgentRuntimeHost;
 }
 
-function installSessionAbortBridge(
-  state: LiveRuntimeState,
-  { AgentSession }: Pick<PiCodingAgentPeer, "AgentSession">,
-) {
+function installSessionAbortBridge(state: LiveRuntimeState, { AgentSession }: Pick<PiCodingAgentPeer, "AgentSession">) {
   if (state.abortBridgeInstalled) return;
   state.abortBridgeInstalled = true;
-  state.hostAbortSession =
-    AgentSession.prototype.abort as LiveRuntimeState["hostAbortSession"];
+  state.hostAbortSession = AgentSession.prototype.abort as LiveRuntimeState["hostAbortSession"];
 
-  AgentSession.prototype.abort = async function abortWithPiGenticTargets(
-    ...args: unknown[]
-  ) {
+  AgentSession.prototype.abort = async function abortWithPiGenticTargets(...args: unknown[]) {
     const sessionId = this.sessionManager.getSessionId?.();
 
     await abortAgentCallsForSession(sessionId, {
@@ -547,17 +481,10 @@ function installSessionPromptBridge(
 ) {
   if (state.promptBridgeInstalled) return;
   state.promptBridgeInstalled = true;
-  state.hostPromptSession =
-    AgentSession.prototype.prompt as LiveRuntimeState["hostPromptSession"];
+  state.hostPromptSession = AgentSession.prototype.prompt as LiveRuntimeState["hostPromptSession"];
 
-  AgentSession.prototype.prompt = async function promptWithPiGenticRuntime(
-    ...args: unknown[]
-  ) {
-    return trackSessionPrompt(
-      this,
-      () => state.hostPromptSession?.apply(this, args),
-      args[0],
-    );
+  AgentSession.prototype.prompt = async function promptWithPiGenticRuntime(...args: unknown[]) {
+    return trackSessionPrompt(this, () => state.hostPromptSession?.apply(this, args), args[0]);
   };
 }
 
@@ -569,9 +496,7 @@ function installSessionDisposeBridge(
   state.disposeBridgeInstalled = true;
   const dispose = AgentSession.prototype.dispose;
 
-  AgentSession.prototype.dispose = function disposeWithPiGenticRuntimeCleanup(
-    ...args: unknown[]
-  ) {
+  AgentSession.prototype.dispose = function disposeWithPiGenticRuntimeCleanup(...args: unknown[]) {
     const sessionId = this.sessionManager?.getSessionId?.();
 
     try {
@@ -585,11 +510,7 @@ function installSessionDisposeBridge(
   };
 }
 
-export async function trackSessionPrompt<T>(
-  session: LegacyRecord,
-  run: () => Promise<T> | T,
-  prompt?: unknown,
-) {
+export async function trackSessionPrompt<T>(session: LegacyRecord, run: () => Promise<T> | T, prompt?: unknown) {
   const sessionId = session.sessionManager?.getSessionId?.();
   const lastMessage = promptLastMessage(prompt);
   const mark = () => {
@@ -610,8 +531,7 @@ export async function trackSessionPrompt<T>(
   } finally {
     mark();
 
-    if (sessionId && session.isStreaming !== true)
-      unregisterLiveRuntime(sessionId);
+    if (sessionId && session.isStreaming !== true) unregisterLiveRuntime(sessionId);
   }
 }
 
@@ -625,72 +545,58 @@ function installInteractiveSubmitBridge(
   state: LiveRuntimeState,
   { InteractiveMode }: Pick<PiCodingAgentPeer, "InteractiveMode">,
 ) {
-  if (
-    state.submitBridgeInstalled ||
-    !InteractiveMode?.prototype?.setupEditorSubmitHandler
-  )
-    return;
+  if (state.submitBridgeInstalled || !InteractiveMode?.prototype?.setupEditorSubmitHandler) return;
   state.submitBridgeInstalled = true;
   state.hostSetupEditorSubmitHandler = InteractiveMode.prototype
     .setupEditorSubmitHandler as LiveRuntimeState["hostSetupEditorSubmitHandler"];
-  InteractiveMode.prototype.setupEditorSubmitHandler =
-    function setupEditorSubmitHandlerWithPiGenticCommands(
-      ...args: unknown[]
-    ) {
-      const result = state.hostSetupEditorSubmitHandler?.apply(this, args);
-      const nativeSubmit = this.defaultEditor?.onSubmit;
+  InteractiveMode.prototype.setupEditorSubmitHandler = function setupEditorSubmitHandlerWithPiGenticCommands(
+    ...args: unknown[]
+  ) {
+    const result = state.hostSetupEditorSubmitHandler?.apply(this, args);
+    const nativeSubmit = this.defaultEditor?.onSubmit;
 
-      if (typeof nativeSubmit !== "function") return result;
-      this.defaultEditor.onSubmit = async (text: unknown) => {
-        const command = String(text ?? "").trim();
+    if (typeof nativeSubmit !== "function") return result;
+    this.defaultEditor.onSubmit = async (text: unknown) => {
+      const command = String(text ?? "").trim();
 
-        if (shouldPromptVisibleSessionBeforeNative(this, command)) {
-          await promptVisibleSessionNow(this, command, { addHistory: true });
-          return;
-        }
+      if (shouldPromptVisibleSessionBeforeNative(this, command)) {
+        await promptVisibleSessionNow(this, command, { addHistory: true });
+        return;
+      }
 
-        const fallbackAfterNative = shouldPromptVisibleSessionAfterNative(
-          this,
-          command,
-        );
-        const submittedEditor = this.editor;
-        const submittedText = editorText(submittedEditor);
-        const pendingInputs = Array.isArray(this.pendingUserInputs)
-          ? this.pendingUserInputs
-          : undefined;
-        const pendingInputCount = pendingInputs?.length ?? 0;
-        const addedPendingInputs = fallbackAfterNative && !pendingInputs;
-        if (addedPendingInputs) this.pendingUserInputs = [];
-        const result = await nativeSubmit(text);
+      const fallbackAfterNative = shouldPromptVisibleSessionAfterNative(this, command);
+      const submittedEditor = this.editor;
+      const submittedText = editorText(submittedEditor);
+      const pendingInputs = Array.isArray(this.pendingUserInputs) ? this.pendingUserInputs : undefined;
+      const pendingInputCount = pendingInputs?.length ?? 0;
+      const addedPendingInputs = fallbackAfterNative && !pendingInputs;
+      if (addedPendingInputs) this.pendingUserInputs = [];
+      const result = await nativeSubmit(text);
 
-        if (
-          fallbackAfterNative &&
-          shouldPromptVisibleSessionNow(this, command) &&
-          this.editor === submittedEditor &&
-          sameSubmittedText(editorText(submittedEditor), command) &&
-          sameSubmittedText(submittedText, command)
-        ) {
-          removeSubmittedPendingInput(this, command, pendingInputCount);
-          await promptVisibleSessionNow(this, command, {
-            addHistory: false,
-            flushPendingBash: false,
-          });
-        }
+      if (
+        fallbackAfterNative &&
+        shouldPromptVisibleSessionNow(this, command) &&
+        this.editor === submittedEditor &&
+        sameSubmittedText(editorText(submittedEditor), command) &&
+        sameSubmittedText(submittedText, command)
+      ) {
+        removeSubmittedPendingInput(this, command, pendingInputCount);
+        await promptVisibleSessionNow(this, command, {
+          addHistory: false,
+          flushPendingBash: false,
+        });
+      }
 
-        if (addedPendingInputs && this.pendingUserInputs?.length === 0)
-          delete this.pendingUserInputs;
-
-        return result;
-      };
+      if (addedPendingInputs && this.pendingUserInputs?.length === 0) delete this.pendingUserInputs;
 
       return result;
     };
+
+    return result;
+  };
 }
 
-function shouldPromptVisibleSessionBeforeNative(
-  mode: LegacyRecord,
-  text: string,
-) {
+function shouldPromptVisibleSessionBeforeNative(mode: LegacyRecord, text: string) {
   if (!shouldPromptVisibleSessionNow(mode, text)) return false;
 
   return !text.startsWith("/") || isVisibleExtensionCommand(mode, text);
@@ -698,9 +604,7 @@ function shouldPromptVisibleSessionBeforeNative(
 
 function shouldPromptVisibleSessionAfterNative(mode: LegacyRecord, text: string) {
   return Boolean(
-    text.startsWith("/") &&
-      !isVisibleExtensionCommand(mode, text) &&
-      shouldPromptVisibleSessionNow(mode, text),
+    text.startsWith("/") && !isVisibleExtensionCommand(mode, text) && shouldPromptVisibleSessionNow(mode, text),
   );
 }
 
@@ -709,28 +613,20 @@ export function shouldPromptVisibleSessionNow(mode: LegacyRecord, text: string) 
 
   return Boolean(
     String(text ?? "").trim() &&
-      session &&
-      session.isStreaming !== true &&
-      session.isCompacting !== true &&
-      typeof mode.onInputCallback !== "function" &&
-      hasOtherStreamingRuntime(session),
+    session &&
+    session.isStreaming !== true &&
+    session.isCompacting !== true &&
+    typeof mode.onInputCallback !== "function" &&
+    hasOtherStreamingRuntime(session),
   );
 }
 
 export function shouldRunVisibleExtensionCommandNow(mode: LegacyRecord, text: string) {
-  return Boolean(
-    shouldPromptVisibleSessionNow(mode, text) &&
-      isVisibleExtensionCommand(mode, text),
-  );
+  return Boolean(shouldPromptVisibleSessionNow(mode, text) && isVisibleExtensionCommand(mode, text));
 }
 
-async function promptVisibleSessionNow(
-  mode: LegacyRecord,
-  text: string,
-  options: LegacyRecord = {},
-) {
-  if (options.flushPendingBash !== false)
-    mode.flushPendingBashComponents?.();
+async function promptVisibleSessionNow(mode: LegacyRecord, text: string, options: LegacyRecord = {}) {
+  if (options.flushPendingBash !== false) mode.flushPendingBashComponents?.();
 
   if (options.addHistory !== false) mode.editor?.addToHistory?.(text);
   mode.editor?.setText?.("");
@@ -754,10 +650,7 @@ function isVisibleExtensionCommand(mode: LegacyRecord, text: string) {
   const extensionRunner = mode.session?.extensionRunner as LegacyRecord | undefined;
   const getCommand = extensionRunner?.getCommand;
 
-  return Boolean(
-    typeof getCommand === "function" &&
-      getCommand.call(extensionRunner, commandName),
-  );
+  return Boolean(typeof getCommand === "function" && getCommand.call(extensionRunner, commandName));
 }
 
 function hasOtherStreamingRuntime(session: LegacyRecord) {
@@ -765,19 +658,14 @@ function hasOtherStreamingRuntime(session: LegacyRecord) {
 
   return Boolean(
     visibleSessionId &&
-      listRuntimeSessions().some(
-        (runtime) =>
-          runtime.session?.isStreaming === true &&
-          runtime.session.sessionManager?.getSessionId?.() !== visibleSessionId,
-      ),
+    listRuntimeSessions().some(
+      (runtime) =>
+        runtime.session?.isStreaming === true && runtime.session.sessionManager?.getSessionId?.() !== visibleSessionId,
+    ),
   );
 }
 
-function removeSubmittedPendingInput(
-  mode: LegacyRecord,
-  submitted: string,
-  originalLength: number,
-) {
+function removeSubmittedPendingInput(mode: LegacyRecord, submitted: string, originalLength: number) {
   if (!Array.isArray(mode.pendingUserInputs)) return;
   const appended = mode.pendingUserInputs.slice(originalLength);
   if (appended.length === 1 && sameSubmittedText(appended[0], submitted))
@@ -818,109 +706,83 @@ function installInteractiveEscapeBridge(
   state: LiveRuntimeState,
   { InteractiveMode }: Pick<PiCodingAgentPeer, "InteractiveMode">,
 ) {
-  if (
-    state.escapeBridgeInstalled ||
-    !InteractiveMode?.prototype?.setupKeyHandlers
-  )
-    return;
+  if (state.escapeBridgeInstalled || !InteractiveMode?.prototype?.setupKeyHandlers) return;
   state.escapeBridgeInstalled = true;
   state.hostSetupKeyHandlers = InteractiveMode.prototype.setupKeyHandlers as LiveRuntimeState["hostSetupKeyHandlers"];
-  InteractiveMode.prototype.setupKeyHandlers =
-    function setupKeyHandlersWithPiGenticAbort(...args: unknown[]) {
-      const result = state.hostSetupKeyHandlers?.apply(this, args);
-      const nativeEscape = this.defaultEditor?.onEscape;
+  InteractiveMode.prototype.setupKeyHandlers = function setupKeyHandlersWithPiGenticAbort(...args: unknown[]) {
+    const result = state.hostSetupKeyHandlers?.apply(this, args);
+    const nativeEscape = this.defaultEditor?.onEscape;
 
-      if (typeof nativeEscape !== "function") return result;
-      this.defaultEditor.onEscape = () =>
-        handleInteractiveEscape({
-          sessionId: this.session?.sessionManager?.getSessionId?.(),
-          isStreaming: this.session?.isStreaming,
-          nativeEscape,
-        });
+    if (typeof nativeEscape !== "function") return result;
+    this.defaultEditor.onEscape = () =>
+      handleInteractiveEscape({
+        sessionId: this.session?.sessionManager?.getSessionId?.(),
+        isStreaming: this.session?.isStreaming,
+        nativeEscape,
+      });
 
-      return result;
-    };
+    return result;
+  };
 }
 
 function installInteractiveLiveSessionHydrationBridge(
   state: LiveRuntimeState,
   { InteractiveMode }: Pick<PiCodingAgentPeer, "InteractiveMode">,
 ) {
-  if (
-    state.liveHydrationBridgeInstalled ||
-    !InteractiveMode?.prototype?.renderCurrentSessionState
-  )
-    return;
+  if (state.liveHydrationBridgeInstalled || !InteractiveMode?.prototype?.renderCurrentSessionState) return;
   state.liveHydrationBridgeInstalled = true;
   state.hostRenderCurrentSessionState = InteractiveMode.prototype
     .renderCurrentSessionState as LiveRuntimeState["hostRenderCurrentSessionState"];
-  InteractiveMode.prototype.renderCurrentSessionState =
-    function renderCurrentSessionStateWithLiveHydration(...args: unknown[]) {
-      if (renderVisibleLiveSessionState(this)) return;
+  InteractiveMode.prototype.renderCurrentSessionState = function renderCurrentSessionStateWithLiveHydration(
+    ...args: unknown[]
+  ) {
+    if (renderVisibleLiveSessionState(this)) return;
 
-      const result = state.hostRenderCurrentSessionState?.apply(this, args);
-      replayCurrentStreamingMessage(this);
+    const result = state.hostRenderCurrentSessionState?.apply(this, args);
+    replayCurrentStreamingMessage(this);
 
-      return result;
-    };
+    return result;
+  };
 }
 
 export function renderVisibleLiveSessionState(mode: LegacyRecord) {
   const session = mode?.session;
   const liveMessages = liveAgentMessages(session);
 
-  if (
-    session?.isStreaming !== true ||
-    liveMessages.length === 0 ||
-    typeof mode.renderSessionContext !== "function"
-  )
+  if (session?.isStreaming !== true || liveMessages.length === 0 || typeof mode.renderSessionContext !== "function")
     return false;
 
   resetVisibleSessionState(mode);
   const sessionContext = safeSessionContext(session.sessionManager);
-  const persistedMessages = Array.isArray(sessionContext.messages)
-    ? sessionContext.messages
-    : [];
-  const hydration = reconcileVisibleSessionMessages(
-    persistedMessages,
-    liveMessages,
-  );
+  const persistedMessages = Array.isArray(sessionContext.messages) ? sessionContext.messages : [];
+  const hydration = reconcileVisibleSessionMessages(persistedMessages, liveMessages);
 
   mode.renderSessionContext(
     { ...sessionContext, messages: hydration.renderedMessages },
     { updateFooter: true, populateHistory: true },
   );
 
-  for (const message of hydration.liveOnlyMessages)
-    replayLiveOnlyMessage(mode, message);
+  for (const message of hydration.liveOnlyMessages) replayLiveOnlyMessage(mode, message);
 
-  for (const toolCall of unresolvedToolCalls(liveMessages))
-    replayToolExecutionStart(mode, toolCall);
+  for (const toolCall of unresolvedToolCalls(liveMessages)) replayToolExecutionStart(mode, toolCall);
 
   return true;
 }
 
-function reconcileVisibleSessionMessages(
-  persistedMessages: LegacyRecord[],
-  liveMessages: LegacyRecord[],
-) {
+function reconcileVisibleSessionMessages(persistedMessages: LegacyRecord[], liveMessages: LegacyRecord[]) {
   const renderedMessages: LegacyRecord[] = [];
   let liveIndex = 0;
 
   for (const persistedMessage of persistedMessages) {
     const liveMessage = liveMessages[liveIndex];
 
-    if (
-      liveMessage &&
-      messageSignature(persistedMessage) === messageSignature(liveMessage)
-    ) {
+    if (liveMessage && messageSignature(persistedMessage) === messageSignature(liveMessage)) {
       renderedMessages.push(persistedMessage);
       liveIndex += 1;
       continue;
     }
 
-    if (isPersistedUiMessage(persistedMessage))
-      renderedMessages.push(persistedMessage);
+    if (isPersistedUiMessage(persistedMessage)) renderedMessages.push(persistedMessage);
   }
 
   return {
@@ -958,11 +820,7 @@ function replayCurrentStreamingMessage(mode: LegacyRecord) {
   const agentState = session?.state ?? session?.agent?.state;
   const streamingMessage = agentState?.streamingMessage;
 
-  if (
-    session?.isStreaming !== true ||
-    streamingMessage?.role !== "assistant" ||
-    typeof mode.handleEvent !== "function"
-  )
+  if (session?.isStreaming !== true || streamingMessage?.role !== "assistant" || typeof mode.handleEvent !== "function")
     return false;
 
   replayStreamingMessage(mode, streamingMessage);
@@ -986,14 +844,10 @@ function replayToolExecutionStart(mode: LegacyRecord, toolCall: LegacyRecord) {
 
 function liveAgentMessages(session: LegacyRecord) {
   const agentState = session?.state ?? session?.agent?.state;
-  const messages = Array.isArray(agentState?.messages)
-    ? agentState.messages
-    : [];
+  const messages = Array.isArray(agentState?.messages) ? agentState.messages : [];
   const streamingMessage = agentState?.streamingMessage;
 
-  return streamingMessage && !messages.includes(streamingMessage)
-    ? [...messages, streamingMessage]
-    : messages;
+  return streamingMessage && !messages.includes(streamingMessage) ? [...messages, streamingMessage] : messages;
 }
 
 function safeSessionContext(sessionManager: LegacyRecord) {
@@ -1048,11 +902,9 @@ function unresolvedToolCalls(messages: LegacyRecord[]) {
 
   for (const message of messages) {
     if (message?.role === "assistant")
-      for (const toolCall of messageToolCalls(message))
-        unresolved.set(toolCall.id, toolCall);
+      for (const toolCall of messageToolCalls(message)) unresolved.set(toolCall.id, toolCall);
 
-    if (message?.role === "toolResult" && message.toolCallId)
-      unresolved.delete(message.toolCallId);
+    if (message?.role === "toolResult" && message.toolCallId) unresolved.delete(message.toolCallId);
   }
 
   return [...unresolved.values()];
@@ -1071,11 +923,8 @@ export async function createLiveRuntime({
   cwd: string;
   sessionManager: PiSessionManager;
 }): Promise<PiAgentRuntimeHost> {
-  const {
-    createAgentSessionFromServices,
-    createAgentSessionRuntime,
-    createAgentSessionServices,
-  } = await loadPiCodingAgentPeer();
+  const { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices } =
+    await loadPiCodingAgentPeer();
   const agentDir = defaultAgentDir();
   const createRuntime = async (options: LegacyRecord) => {
     const services = await createAgentSessionServices({
@@ -1106,10 +955,7 @@ export async function createLiveRuntime({
   return runtime;
 }
 
-export function registerLiveRuntime(
-  runtime: LegacyRecord,
-  metadata: LegacyRecord = {},
-) {
+export function registerLiveRuntime(runtime: LegacyRecord, metadata: LegacyRecord = {}) {
   const sessionId = runtime.session.sessionManager.getSessionId();
 
   state.liveRuntimes.set(sessionId, { runtime, metadata });
@@ -1119,17 +965,6 @@ export function registerLiveRuntime(
 
 export function unregisterLiveRuntime(sessionId: string) {
   state.liveRuntimes.delete(sessionId);
-}
-
-export function getLiveRuntime(sessionId: string) {
-  return state.liveRuntimes.get(sessionId);
-}
-
-export function listLiveRuntimes() {
-  return [...state.liveRuntimes.entries()].map(([sessionId, value]) => ({
-    sessionId,
-    ...value,
-  }));
 }
 
 export function getRuntimeSession(sessionId: string) {
@@ -1161,9 +996,7 @@ const RUNTIME_ACTIVITY_EVENTS = new Set([
 
 export function isSessionActivityEvent(event: unknown) {
   return Boolean(
-    event &&
-      typeof event === "object" &&
-      RUNTIME_ACTIVITY_EVENTS.has(String((event as LegacyRecord).type ?? "")),
+    event && typeof event === "object" && RUNTIME_ACTIVITY_EVENTS.has(String((event as LegacyRecord).type ?? "")),
   );
 }
 
@@ -1205,14 +1038,6 @@ export function setRuntimeSession(sessionId: string, runtime: PiRuntimeSession) 
   return next;
 }
 
-export function updateRuntimeSession(sessionId: string, patch: Partial<PiRuntimeSession>) {
-  const existing = getLiveRuntimeState().runtimeSessions.get(sessionId);
-
-  if (!existing) return undefined;
-
-  return setRuntimeSession(sessionId, { ...existing, ...patch });
-}
-
 export function listRuntimeSessions() {
   return [...getLiveRuntimeState().runtimeSessions.values()];
 }
@@ -1224,10 +1049,7 @@ export function deleteRuntimeSession(sessionId: string) {
   runtimeSessions.delete(sessionId);
 }
 
-export function pruneRuntimeSessions({
-  maxEntries = 100,
-  maxIdleMs = 12 * 60 * 60_000,
-} = {}) {
+export function pruneRuntimeSessions({ maxEntries = 100, maxIdleMs = 12 * 60 * 60_000 } = {}) {
   const now = Date.now();
   const runtimeSessions = getLiveRuntimeState().runtimeSessions;
 
@@ -1235,8 +1057,7 @@ export function pruneRuntimeSessions({
     const running = runtime.session?.isStreaming === true;
     const lastSeenAt = Number(runtime.lastSeenAt ?? 0);
 
-    if (!running && lastSeenAt && now - lastSeenAt > maxIdleMs)
-      deleteRuntimeSession(sessionId);
+    if (!running && lastSeenAt && now - lastSeenAt > maxIdleMs) deleteRuntimeSession(sessionId);
   }
 
   const entries = [...runtimeSessions.entries()];
@@ -1244,60 +1065,37 @@ export function pruneRuntimeSessions({
   if (entries.length <= maxEntries) return;
   const removable = entries
     .filter(([, runtime]) => runtime.session?.isStreaming !== true)
-    .sort(
-      ([, a], [, b]) => Number(a.lastSeenAt ?? 0) - Number(b.lastSeenAt ?? 0),
-    );
+    .sort(([, a], [, b]) => Number(a.lastSeenAt ?? 0) - Number(b.lastSeenAt ?? 0));
 
-  for (const [sessionId] of removable.slice(
-    0,
-    Math.max(0, entries.length - maxEntries),
-  ))
+  for (const [sessionId] of removable.slice(0, Math.max(0, entries.length - maxEntries)))
     deleteRuntimeSession(sessionId);
 }
 
-export function persistSessionImmediately(
-  sessionManager: PiSessionManager,
-) {
+export function persistSessionImmediately(sessionManager: PiSessionManager) {
   const legacyManager = sessionManager as unknown as LegacyRecord;
 
-  if (typeof legacyManager._rewriteFile === "function")
-    legacyManager._rewriteFile();
+  if (typeof legacyManager._rewriteFile === "function") legacyManager._rewriteFile();
   legacyManager.flushed = true;
 }
 
-export function resolveModelFromCatalog(
-  modelCatalog: LegacyRecord,
-  modelName: string,
-) {
+export function resolveModelFromCatalog(modelCatalog: LegacyRecord, modelName: string) {
   if (modelName.includes("/")) {
     const [provider, id] = modelName.split("/", 2);
 
-    return (
-      modelCatalog.find?.(provider, id) ??
-      modelCatalog.getModel?.(provider, id)
-    );
+    return modelCatalog.find?.(provider, id) ?? modelCatalog.getModel?.(provider, id);
   }
 
-  const available =
-    modelCatalog.getAvailableSnapshot?.() ?? modelCatalog.getAvailable?.();
-  const models = Array.isArray(available)
-    ? available
-    : (modelCatalog.getModels?.() ?? []);
+  const available = modelCatalog.getAvailableSnapshot?.() ?? modelCatalog.getAvailable?.();
+  const models = Array.isArray(available) ? available : (modelCatalog.getModels?.() ?? []);
 
   return (
     models.find((model: LegacyRecord) => model.id === modelName) ??
-    models.find((model: LegacyRecord) =>
-      model.id.toLowerCase().includes(modelName.toLowerCase()),
-    )
+    models.find((model: LegacyRecord) => model.id.toLowerCase().includes(modelName.toLowerCase()))
   );
 }
 
-export function inheritedModelForPolicy(
-  policy: LegacyRecord,
-  inheritedModel: LegacyRecord | undefined,
-) {
-  if (policy?.model || !inheritedModel?.provider || !inheritedModel?.id)
-    return undefined;
+export function inheritedModelForPolicy(policy: LegacyRecord, inheritedModel: LegacyRecord | undefined) {
+  if (policy?.model || !inheritedModel?.provider || !inheritedModel?.id) return undefined;
   return { provider: inheritedModel.provider, id: inheritedModel.id };
 }
 
@@ -1322,9 +1120,6 @@ export async function applyInheritedModel(
   return model;
 }
 
-function modelsEqual(
-  a: LegacyRecord | undefined,
-  b: LegacyRecord | undefined,
-) {
+function modelsEqual(a: LegacyRecord | undefined, b: LegacyRecord | undefined) {
   return a?.provider === b?.provider && a?.id === b?.id;
 }

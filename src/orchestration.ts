@@ -1,9 +1,6 @@
-import {
-  SessionManager,
-  type AgentToolUpdateCallback,
-} from "@earendil-works/pi-coding-agent";
+import { SessionManager, type AgentToolUpdateCallback } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
-import { Effect, Exit, Schema } from "effect";
+import { Duration, Effect, Exit, Schema } from "effect";
 import {
   activeAgentName,
   appendActiveState,
@@ -47,10 +44,7 @@ import {
   type SessionId as SessionIdValue,
 } from "./domain/identifiers.js";
 import { DelegationFibers } from "./infrastructure/runtime/DelegationFibers.js";
-import {
-  RuntimeMetadata,
-  RuntimeRegistry,
-} from "./infrastructure/runtime/RuntimeRegistry.js";
+import { RuntimeMetadata, RuntimeRegistry } from "./infrastructure/runtime/RuntimeRegistry.js";
 import {
   abortAgentCall,
   activeVisibleContext,
@@ -74,20 +68,16 @@ import {
   assertSessionMessagingScope,
   assignTreeDepths,
   buildSessionTree,
-  cachedPersistedSessions,
   currentSessionSummary,
   enrichSessionSummaries,
-  listSessionSummariesFast,
   resolveCurrentSessionDepth,
   resolveSessionReference,
   runtimeSessionSummary,
   sessionDiscoveryScope,
   withRuntimeState,
 } from "./sessions.js";
-import {
-  extensionRuntime,
-  type ExtensionRuntime,
-} from "./runtime/ExtensionRuntime.js";
+import { prepareWorktreeEffect, type ExtensionRuntime } from "./runtime/ExtensionRuntime.js";
+import { AgentCallFailed } from "./domain/errors.js";
 import type {
   PiAgentRuntimeHost,
   PiAgentSession,
@@ -148,15 +138,10 @@ type DeliveryQueue = "followUp" | "steer";
 
 type SessionController = Pick<
   PiAgentSession,
-  | "isStreaming"
-  | "sessionManager"
-  | "subscribe"
-  | "sendCustomMessage"
-  | "sendUserMessage"
+  "isStreaming" | "sessionManager" | "subscribe" | "sendCustomMessage" | "sendUserMessage"
 > & {
   createReplacedSessionContext?: () => PiContext;
 };
-
 
 interface ReturnDeliveryParameters {
   pi: PiApi;
@@ -200,21 +185,14 @@ export function abortActor(ctx: PiContext) {
   return agentName ? `[${agentName}] agent` : "caller session";
 }
 
-export function shouldDeferSendCompletion({
-  async,
-  awaitCompletion,
-}: SendCompletionOptions = {}) {
+export function shouldDeferSendCompletion({ async, awaitCompletion }: SendCompletionOptions = {}) {
   return async === true || awaitCompletion === false;
 }
 
 export function resolveReturnDelivery(
   options: SendCompletionOptions = {},
-):
-  | { kind: "callerMessage"; queue: DeliveryQueue }
-  | { kind: "toolResult"; queue?: undefined } {
-  return shouldDeferSendCompletion(options)
-    ? { kind: "callerMessage", queue: "steer" }
-    : { kind: "toolResult" };
+): { kind: "callerMessage"; queue: DeliveryQueue } | { kind: "toolResult"; queue?: undefined } {
+  return shouldDeferSendCompletion(options) ? { kind: "callerMessage", queue: "steer" } : { kind: "toolResult" };
 }
 
 export function sendPendingText({
@@ -253,16 +231,11 @@ export function sendConfirmationText(
 }
 
 export function sendStatusText(details: SendCardDetails = {}) {
-  if (details.status === "done")
-    return `Agent ${details.agentName ?? ""} answered.`
-      .replace(/\s+/g, " ")
-      .trim();
+  if (details.status === "done") return `Agent ${details.agentName ?? ""} answered.`.replace(/\s+/g, " ").trim();
 
-  if (details.status === "queued")
-    return `Queued message for ${details.agentName ?? "agent"}.`;
+  if (details.status === "queued") return `Queued message for ${details.agentName ?? "agent"}.`;
 
-  if (details.status === "stopped")
-    return details.error ?? "Agent stopped before answering.";
+  if (details.status === "stopped") return details.error ?? "Agent stopped before answering.";
 
   if (details.status === "error") return details.error ?? "Agent call failed.";
 
@@ -373,10 +346,7 @@ export async function deliverCardToCaller({
 
   try {
     if (liveTarget?.session?.sendCustomMessage) {
-      await liveTarget.session.sendCustomMessage(
-        message,
-        customDeliveryOptions(liveTarget.session, invoke, queue),
-      );
+      await liveTarget.session.sendCustomMessage(message, customDeliveryOptions(liveTarget.session, invoke, queue));
 
       return "live";
     }
@@ -397,12 +367,7 @@ export async function deliverCardToCaller({
   }
 
   try {
-    callerSessionManager.appendCustomMessageEntry?.(
-      CARD_MESSAGE_TYPE,
-      text,
-      true,
-      details,
-    );
+    callerSessionManager.appendCustomMessageEntry?.(CARD_MESSAGE_TYPE, text, true, details);
     persist?.(callerSessionManager);
 
     return "persisted";
@@ -465,10 +430,7 @@ function liveCallerSession(
   callerSessionId: string | undefined,
   visibleSession: SessionController | undefined,
 ) {
-  return (
-    visibleCallerSession(ctx, callerSessionId, visibleSession) ??
-    runningCallerSession(callerSessionId, ctx)
-  );
+  return visibleCallerSession(ctx, callerSessionId, visibleSession) ?? runningCallerSession(callerSessionId, ctx);
 }
 
 function visibleCallerSession(
@@ -481,13 +443,8 @@ function visibleCallerSession(
   return activeLiveSession(visibleSession, callerSessionId, ctx);
 }
 
-function runningCallerSession(
-  callerSessionId: string | undefined,
-  fallbackCtx?: PiContext,
-) {
-  const session = callerSessionId
-    ? getRuntimeSession(callerSessionId)?.session
-    : undefined;
+function runningCallerSession(callerSessionId: string | undefined, fallbackCtx?: PiContext) {
+  const session = callerSessionId ? getRuntimeSession(callerSessionId)?.session : undefined;
 
   if (session?.isStreaming !== true) return undefined;
 
@@ -499,18 +456,13 @@ function runningCallerSession(
   }
 }
 
-function activeLiveSession(
-  session: SessionController | undefined,
-  callerSessionId?: string,
-  fallbackCtx?: PiContext,
-) {
+function activeLiveSession(session: SessionController | undefined, callerSessionId?: string, fallbackCtx?: PiContext) {
   if (!session) return undefined;
 
   try {
     const sessionId = session.sessionManager?.getSessionId?.();
 
-    if (callerSessionId && sessionId && sessionId !== callerSessionId)
-      return undefined;
+    if (callerSessionId && sessionId && sessionId !== callerSessionId) return undefined;
 
     const ctx = replacedSessionContext(session) ?? fallbackCtx;
 
@@ -556,89 +508,89 @@ export function persistReturnForCaller({
       timestamp: Date.now(),
     });
   else
-    callerSessionManager.appendCustomMessageEntry?.(
-      "pi-gentic:return-context",
-      text,
-      true,
-      { kind: "returnContext" },
-    );
+    callerSessionManager.appendCustomMessageEntry?.("pi-gentic:return-context", text, true, { kind: "returnContext" });
 
   persist?.(callerSessionManager);
 }
 
-function waitForSessionTurnEnd(
-  session: SessionController,
-  signal?: AbortSignal,
-) {
+function waitForSessionTurnEnd(session: SessionController, runtime: ExtensionRuntime, signal?: AbortSignal) {
   if (session.isStreaming !== true) return Promise.resolve();
+  const settled = Effect.callback<void, AgentCallFailed>((resume) => {
+    const abort = () => resume(Effect.fail(AgentCallFailed.make({ message: "Agent call aborted." })));
+    const unsubscribe = session.subscribe((event: unknown) => {
+      if (isRecord(event) && event.type === "agent_settled") resume(Effect.yieldNow);
+    });
 
-  return new Promise<void>((resolve, reject) => {
-    let done = false;
-    let unsubscribe: (() => void) | undefined;
-    const interval = setInterval(() => {
-      if (session.isStreaming !== true) finish();
-    }, 250);
-    const abort = () => finish(new Error("Agent call aborted."));
-    const finish = (error?: Error) => {
-      if (done) return;
-      done = true;
-      clearInterval(interval);
-      unsubscribe?.();
-      signal?.removeEventListener?.("abort", abort);
-      if (error) reject(error);
-      else resolve();
-    };
-
-    interval.unref?.();
     signal?.addEventListener?.("abort", abort, { once: true });
-    unsubscribe = session.subscribe((event: unknown) => {
-      if (isRecord(event) && event.type === "agent_settled")
-        queueMicrotask(() => finish());
+
+    return Effect.sync(() => {
+      unsubscribe();
+      signal?.removeEventListener?.("abort", abort);
     });
   });
+  const idle = Effect.suspend(function waitUntilIdle(): Effect.Effect<void> {
+    return session.isStreaming !== true
+      ? Effect.void
+      : Effect.sleep(Duration.millis(250)).pipe(Effect.andThen(Effect.suspend(waitUntilIdle)));
+  });
+
+  return runtime.runPromise(Effect.raceFirst(settled, idle));
 }
 
 export function promptSessionAndWaitForTurnEnd(
   session: SessionController,
+  runtime: ExtensionRuntime,
   prompt: () => Promise<unknown>,
   signal?: AbortSignal,
 ) {
   if (typeof session.subscribe !== "function") return prompt();
 
-  return new Promise<void>((resolve, reject) => {
-    let done = false;
-    let promptStarted = false;
-    let unsubscribe: (() => void) | undefined;
-    const abort = () => finish(new Error("Agent call aborted."));
-    const finish = (error?: Error) => {
-      if (done) return;
-      done = true;
-      unsubscribe?.();
-      signal?.removeEventListener?.("abort", abort);
-      if (error) reject(error);
-      else resolve();
-    };
+  return runtime.runPromise(
+    Effect.callback<void, AgentCallFailed>(function (resume) {
+      const dispatcher = this.makeDispatcher();
+      let active = true;
+      let promptStarted = false;
+      let cleanup = () => {};
+      const complete = (effect: Effect.Effect<void, AgentCallFailed>) => {
+        if (!active) return;
+        active = false;
+        cleanup();
+        resume(effect);
+      };
+      const abort = () => complete(Effect.fail(AgentCallFailed.make({ message: "Agent call aborted." })));
+      const unsubscribe = session.subscribe?.((event: unknown) => {
+        if (promptStarted && isRecord(event) && event.type === "agent_settled")
+          dispatcher.scheduleTask(() => complete(Effect.void), 0);
+      });
 
-    signal?.addEventListener?.("abort", abort, { once: true });
-    unsubscribe = session.subscribe((event: unknown) => {
-      if (promptStarted && isRecord(event) && event.type === "agent_settled")
-        queueMicrotask(() => finish());
-    });
+      cleanup = () => {
+        unsubscribe?.();
+        signal?.removeEventListener?.("abort", abort);
+      };
+      signal?.addEventListener?.("abort", abort, { once: true });
+      promptStarted = true;
+      void prompt().then(
+        () => complete(Effect.void),
+        (error: unknown) =>
+          complete(
+            Effect.fail(
+              AgentCallFailed.make({
+                message: error instanceof Error ? error.message : String(error),
+                cause: error,
+              }),
+            ),
+          ),
+      );
 
-    Promise.resolve()
-      .then(() => {
-        promptStarted = true;
-        return prompt();
-      })
-      .then(() => finish())
-      .catch((error) => finish(error));
-  });
+      return Effect.sync(() => {
+        active = false;
+        cleanup();
+      });
+    }),
+  );
 }
 
-export function sendUserMessageOptions(
-  ctx: PiContext | undefined,
-  queue: DeliveryQueue = "followUp",
-) {
+export function sendUserMessageOptions(ctx: PiContext | undefined, queue: DeliveryQueue = "followUp") {
   try {
     return ctx?.isIdle?.() === false ? { deliverAs: queue } : undefined;
   } catch (error) {
@@ -651,32 +603,19 @@ export function isTargetSlashCommand(message: unknown, session: unknown = {}) {
   return Boolean(resolveTargetSlashCommand(message, session));
 }
 
-export function resolveTargetSlashCommand(
-  message: unknown,
-  session: unknown = {},
-) {
+export function resolveTargetSlashCommand(message: unknown, session: unknown = {}) {
   const name = slashCommandName(message);
 
   if (!name) return undefined;
 
-  return (
-    targetSlashCommands(session).find((command) => command.name === name) ??
-    fallbackSlashCommand(name, session)
-  );
+  return targetSlashCommands(session).find((command) => command.name === name) ?? fallbackSlashCommand(name, session);
 }
 
-export async function prepareTargetPromptForSend(
-  session: SessionController,
-  message: string,
-  context: string,
-) {
+export async function prepareTargetPromptForSend(session: SessionController, message: string, context: string) {
   const command = resolveTargetSlashCommand(message, session);
 
   if (!command) return { text: context };
-  if (
-    startsAgentTurn(command) &&
-    typeof session.sendCustomMessage === "function"
-  )
+  if (startsAgentTurn(command) && typeof session.sendCustomMessage === "function")
     await session.sendCustomMessage(sendContextMessage(context), {
       triggerTurn: false,
       deliverAs: session.isStreaming === true ? "steer" : "nextTurn",
@@ -686,10 +625,7 @@ export async function prepareTargetPromptForSend(
 }
 
 export function slashCommandDeliveryText(command: UnknownRecord, sessionId: unknown) {
-  return [
-    `Command /${command.name} delivered to session`,
-    `${shortSessionId(sessionId)}.`,
-  ].join(" ");
+  return [`Command /${command.name} delivered to session`, `${shortSessionId(sessionId)}.`].join(" ");
 }
 
 function startsAgentTurn(command: UnknownRecord) {
@@ -716,22 +652,14 @@ function targetSlashCommands(session: unknown) {
   try {
     if (!isRecord(session)) return [];
     const context =
-      typeof session.createReplacedSessionContext === "function"
-        ? session.createReplacedSessionContext()
-        : undefined;
+      typeof session.createReplacedSessionContext === "function" ? session.createReplacedSessionContext() : undefined;
     const contextCommands =
-      isRecord(context) && typeof context.getCommands === "function"
-        ? context.getCommands()
-        : undefined;
-    const commands =
-      contextCommands ??
-      (typeof session.getCommands === "function" ? session.getCommands() : []);
+      isRecord(context) && typeof context.getCommands === "function" ? context.getCommands() : undefined;
+    const commands = contextCommands ?? (typeof session.getCommands === "function" ? session.getCommands() : []);
 
     return Array.isArray(commands)
       ? commands
-          .filter(
-            (command) => typeof command?.name === "string" && command.name,
-          )
+          .filter((command) => typeof command?.name === "string" && command.name)
           .map((command) => ({ ...command, name: String(command.name) }))
       : [];
   } catch (error) {
@@ -741,10 +669,7 @@ function targetSlashCommands(session: unknown) {
 }
 
 function fallbackSlashCommand(name: string, session: unknown) {
-  if (
-    name.startsWith("skill:") &&
-    skillNames(session).has(name.slice("skill:".length))
-  )
+  if (name.startsWith("skill:") && skillNames(session).has(name.slice("skill:".length)))
     return { name, source: "skill" };
 
   if (promptTemplateNames(session).has(name)) return { name, source: "prompt" };
@@ -755,17 +680,11 @@ function fallbackSlashCommand(name: string, session: unknown) {
 function skillNames(session: unknown) {
   if (!isRecord(session) || !isRecord(session.resourceLoader)) return new Set<string>();
   const loaded =
-    typeof session.resourceLoader.getSkills === "function"
-      ? session.resourceLoader.getSkills()
-      : undefined;
+    typeof session.resourceLoader.getSkills === "function" ? session.resourceLoader.getSkills() : undefined;
   const skills = isRecord(loaded) ? loaded.skills : undefined;
 
   return new Set(
-    Array.isArray(skills)
-      ? skills
-          .map((skill) => skill?.name)
-          .filter((name) => typeof name === "string")
-      : [],
+    Array.isArray(skills) ? skills.map((skill) => skill?.name).filter((name) => typeof name === "string") : [],
   );
 }
 
@@ -773,18 +692,11 @@ function promptTemplateNames(session: unknown) {
   const prompts = isRecord(session) ? session.promptTemplates : undefined;
 
   return new Set(
-    Array.isArray(prompts)
-      ? prompts
-          .map((prompt) => prompt?.name)
-          .filter((name) => typeof name === "string")
-      : [],
+    Array.isArray(prompts) ? prompts.map((prompt) => prompt?.name).filter((name) => typeof name === "string") : [],
   );
 }
 
-function customMessageOptions(
-  ctx: PiContext,
-  queue: DeliveryQueue = "followUp",
-) {
+function customMessageOptions(ctx: PiContext, queue: DeliveryQueue = "followUp") {
   return {
     triggerTurn: false,
     ...sendUserMessageOptions(ctx, queue),
@@ -797,8 +709,7 @@ function customDeliveryOptions(
   queue: DeliveryQueue = "followUp",
 ) {
   const streaming =
-    ("isStreaming" in target && target.isStreaming === true) ||
-    ("isIdle" in target && target.isIdle?.() === false);
+    ("isStreaming" in target && target.isStreaming === true) || ("isIdle" in target && target.isIdle?.() === false);
 
   return streaming ? { deliverAs: queue } : { triggerTurn: invoke === true };
 }
@@ -812,9 +723,7 @@ export function persistAgentCardState(
   if (typeof sessionManager.appendCustomEntry !== "function") return false;
   const snapshot = {
     ...details,
-    activities: Array.isArray(details.activities)
-      ? [...details.activities]
-      : details.activities,
+    activities: Array.isArray(details.activities) ? [...details.activities] : details.activities,
   };
 
   const decoded = Schema.decodeUnknownExit(PersistedCardDetailsSchema)(snapshot);
@@ -830,10 +739,7 @@ export function persistAgentCardState(
   return true;
 }
 
-export function contextStillActive(
-  ctx: PiContext,
-  callerSessionId?: string,
-) {
+export function contextStillActive(ctx: PiContext, callerSessionId?: string) {
   try {
     void ctx.cwd;
     const activeSessionId = ctx.sessionManager.getSessionId();
@@ -859,15 +765,9 @@ export function createSessionActivityMonitor(
   } = {
     ...baseDetails,
     activities: [],
-    updatedAt:
-      typeof baseDetails.updatedAt === "number"
-        ? baseDetails.updatedAt
-        : Date.now(),
+    updatedAt: typeof baseDetails.updatedAt === "number" ? baseDetails.updatedAt : Date.now(),
   };
-  const publishState = (
-    status = state.status,
-    updates: UnknownRecord = {},
-  ) => {
+  const publishState = (status = state.status, updates: UnknownRecord = {}) => {
     Object.assign(state, updates, { status });
 
     return publish({ ...state, activities: [...state.activities] });
@@ -885,8 +785,7 @@ export function createSessionActivityMonitor(
 
       if (state.status === "queued") {
         const message = isRecord(event.message) ? event.message : undefined;
-        if (event.type !== "message_start" || message?.role !== "user")
-          return;
+        if (event.type !== "message_start" || message?.role !== "user") return;
         touch();
         publishState("running");
         return;
@@ -900,10 +799,7 @@ export function createSessionActivityMonitor(
     finish(updates: UnknownRecord = {}) {
       const { activities = [], ...details } = updates;
 
-      state.activities = mergeActivities(
-        state.activities,
-        Array.isArray(activities) ? activities : [],
-      );
+      state.activities = mergeActivities(state.activities, Array.isArray(activities) ? activities : []);
 
       return publishState("done", {
         ...details,
@@ -912,10 +808,7 @@ export function createSessionActivityMonitor(
       });
     },
     stop(status: string, updates: UnknownRecord = {}) {
-      state.activities = mergeActivities(
-        state.activities,
-        Array.isArray(updates.activities) ? updates.activities : [],
-      );
+      state.activities = mergeActivities(state.activities, Array.isArray(updates.activities) ? updates.activities : []);
 
       return publishState(status, {
         completedAt: Date.now(),
@@ -932,10 +825,7 @@ export function createSessionActivityMonitor(
   };
 }
 
-function recordRunResult(
-  runtime: PiRuntimeSession,
-  details: UnknownRecord,
-) {
+function recordRunResult(runtime: PiRuntimeSession, details: UnknownRecord) {
   runtime.lastActivities = Array.isArray(details.activities)
     ? details.activities.filter(isRecord)
     : (runtime.lastActivities ?? []);
@@ -944,10 +834,7 @@ function recordRunResult(
   return details;
 }
 
-function completeSessionActivities(
-  monitor: { activities: UnknownRecord[] },
-  session: PiAgentSession,
-) {
+function completeSessionActivities(monitor: { activities: UnknownRecord[] }, session: PiAgentSession) {
   return mergeActivities(monitor.activities, collectSessionActivities(session));
 }
 
@@ -957,8 +844,7 @@ export function collectSessionActivities(session: PiAgentSession) {
   if (!Array.isArray(messages)) return [];
   return messages.flatMap((message) => {
     if (!isRecord(message)) return [];
-    if (message.role === "assistant")
-      return assistantMessageActivities(message);
+    if (message.role === "assistant") return assistantMessageActivities(message);
 
     if (message.role === "toolResult")
       return [
@@ -978,34 +864,23 @@ export function collectSessionActivities(session: PiAgentSession) {
 export function mergeActivities(...activityLists: unknown[][]) {
   const merged: UnknownRecord[] = [];
 
-  for (const activity of activityLists.flat().filter(isRecord))
-    upsertActivity(merged, activity);
+  for (const activity of activityLists.flat().filter(isRecord)) upsertActivity(merged, activity);
 
   return merged;
 }
 
 export function lastRuntimeActivities(runtime: PiRuntimeSession) {
-  return mergeActivities(
-    collectSessionActivities(runtime.session),
-    runtime.lastActivities ?? [],
-  );
+  return mergeActivities(collectSessionActivities(runtime.session), runtime.lastActivities ?? []);
 }
 
-export function latestActivityLines(
-  runtime: PiRuntimeSession,
-  count = 3,
-) {
-  return lastRuntimeActivities(runtime)
-    .slice(-count)
-    .map(formatActivityLine)
-    .filter(Boolean);
+export function latestActivityLines(runtime: PiRuntimeSession, count = 3) {
+  return lastRuntimeActivities(runtime).slice(-count).map(formatActivityLine).filter(Boolean);
 }
 
 export function formatActivityLine(activity: UnknownRecord | undefined) {
   if (!activity) return undefined;
 
-  if (activity.type === "assistant")
-    return `assistant ${truncateInline(activity.text, 160)}`;
+  if (activity.type === "assistant") return `assistant ${truncateInline(activity.text, 160)}`;
   const status = activity.status ? ` (${activity.status})` : "";
 
   return `[${activity.name ?? activity.type}] ${truncateInline(activity.summary ?? activity.text ?? "", 160)}${status}`.trim();
@@ -1043,11 +918,9 @@ function eventToActivity(event: UnknownRecord) {
 
   const message = isRecord(event.message) ? event.message : undefined;
 
-  if (event.type === "message_update" && message?.role === "assistant")
-    return assistantActivity(message);
+  if (event.type === "message_update" && message?.role === "assistant") return assistantActivity(message);
 
-  if (event.type === "message_end" && message?.role === "assistant")
-    return assistantActivity(message);
+  if (event.type === "message_end" && message?.role === "assistant") return assistantActivity(message);
   return undefined;
 }
 
@@ -1060,12 +933,7 @@ function assistantMessageActivities(message: UnknownRecord) {
       id: "assistant",
       type: "assistant",
       text,
-      status:
-        message.stopReason === "error"
-          ? "error"
-          : message.stopReason === "aborted"
-            ? "aborted"
-            : undefined,
+      ...(["error", "aborted"].includes(String(message.stopReason)) ? { status: message.stopReason } : {}),
     });
   else if (message.stopReason === "aborted")
     activities.push({
@@ -1104,15 +972,9 @@ function assistantActivity(message: UnknownRecord) {
   return text ? { id: "assistant", type: "assistant", text } : undefined;
 }
 
-function upsertActivity(
-  activities: UnknownRecord[],
-  activity: UnknownRecord,
-) {
+function upsertActivity(activities: UnknownRecord[], activity: UnknownRecord) {
   const key = activity.id ?? `${activity.type}:${activity.name ?? ""}`;
-  const index = activities.findIndex(
-    (item: UnknownRecord) =>
-      (item.id ?? `${item.type}:${item.name ?? ""}`) === key,
-  );
+  const index = activities.findIndex((item: UnknownRecord) => (item.id ?? `${item.type}:${item.name ?? ""}`) === key);
 
   if (index === -1) activities.push(activity);
   else activities[index] = { ...activities[index], ...activity };
@@ -1155,25 +1017,15 @@ function truncateInline(text: unknown, length: number) {
     .replace(/\s+/g, " ")
     .trim();
 
-  return normalized.length > length
-    ? `${normalized.slice(0, Math.max(0, length - 1))}…`
-    : normalized;
+  return normalized.length > length ? `${normalized.slice(0, Math.max(0, length - 1))}…` : normalized;
 }
 
-export function sessionRunOutcome(
-  runtime: PiRuntimeSession,
-  { request, error }: UnknownRecord = {},
-) {
+export function sessionRunOutcome(runtime: PiRuntimeSession, { request, error }: UnknownRecord = {}) {
   const session = runtime.session;
   const assistant = lastAssistantMessage(session.agent.state.messages);
   const text = assistantText(assistant);
 
-  if (
-    text &&
-    assistant?.stopReason !== "aborted" &&
-    assistant?.stopReason !== "error"
-  )
-    return { status: "done", text };
+  if (text && assistant?.stopReason !== "aborted" && assistant?.stopReason !== "error") return { status: "done", text };
 
   if (assistant?.stopReason === "aborted")
     return {
@@ -1221,18 +1073,14 @@ function stoppedRunReason(assistant: UnknownRecord | undefined) {
   return "The assistant turn ended without a final answer.";
 }
 
-function recentAssistantError(
-  messages: unknown[],
-  terminalAssistant: UnknownRecord | undefined,
-) {
+function recentAssistantError(messages: unknown[], terminalAssistant: UnknownRecord | undefined) {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
 
     if (message === terminalAssistant) continue;
     if (!isRecord(message)) continue;
     if (["user", "custom"].includes(String(message.role))) break;
-    if (message.role !== "assistant" || message.stopReason !== "error")
-      continue;
+    if (message.role !== "assistant" || message.stopReason !== "error") continue;
     if (typeof message.errorMessage === "string") return message.errorMessage;
   }
 
@@ -1247,33 +1095,19 @@ export function sessionOutcomeText(
   const session = runtime.session;
   const sessionId = shortSessionId(session.sessionManager.getSessionId?.());
   const agent = runtime.agentName ? ` [${runtime.agentName}]` : "";
-  const lastAbort = isRecord(runtime.lastAbort)
-    ? runtime.lastAbort
-    : undefined;
-  const actor =
-    lastAbort?.actor ??
-    (kind === "aborted" ? "user in that session" : undefined);
+  const lastAbort = isRecord(runtime.lastAbort) ? runtime.lastAbort : undefined;
+  const actor = lastAbort?.actor ?? (kind === "aborted" ? "user in that session" : undefined);
   const activityLines = latestActivityLines(runtime).map((line) => `- ${line}`);
   const details = [
-    kind === "aborted"
-      ? `Session ${sessionId}${agent} was aborted while handling your request.`
-      : undefined,
+    kind === "aborted" ? `Session ${sessionId}${agent} was aborted while handling your request.` : undefined,
     kind === "aborted" ? `Aborted by: ${actor}.` : undefined,
-    kind === "error"
-      ? `Session ${sessionId}${agent} failed while handling your request.`
-      : undefined,
+    kind === "error" ? `Session ${sessionId}${agent} failed while handling your request.` : undefined,
     kind === "error" ? `Error: ${error || "Unknown error"}` : undefined,
-    kind === "stopped"
-      ? `Session ${sessionId}${agent} stopped before returning a final answer.`
-      : undefined,
+    kind === "stopped" ? `Session ${sessionId}${agent} stopped before returning a final answer.` : undefined,
     kind === "stopped" && reason ? `Reason: ${reason}` : undefined,
-    kind === "stopped" && recentError
-      ? `Recent model error: ${recentError}`
-      : undefined,
+    kind === "stopped" && recentError ? `Recent model error: ${recentError}` : undefined,
     request ? `Request: ${request}` : undefined,
-    activityLines.length
-      ? `Last activity:\n${activityLines.join("\n")}`
-      : undefined,
+    activityLines.length ? `Last activity:\n${activityLines.join("\n")}` : undefined,
   ].filter(Boolean);
 
   return details.join("\n");
@@ -1313,9 +1147,7 @@ export function sessionStatus(runtime: PiRuntimeSession) {
     : undefined;
   const lastActivityAt = runtime.lastActivityAt ?? runtime.createdAt;
   const inactiveMs = elapsedMs(now, lastActivityAt);
-  const runningMs = running
-    ? elapsedMs(now, runtime.runStartedAt ?? runtime.streamingStartedAt)
-    : undefined;
+  const runningMs = running ? elapsedMs(now, runtime.runStartedAt ?? runtime.streamingStartedAt) : undefined;
   const pendingMessages = Number(runtime.session.pendingMessageCount ?? 0);
   const status = {
     sessionId: runtime.session.sessionManager.getSessionId(),
@@ -1323,10 +1155,7 @@ export function sessionStatus(runtime: PiRuntimeSession) {
     running,
     state: running ? "running" : pendingMessages > 0 ? "queued" : "idle",
     pendingMessages,
-    pendingText:
-      pendingMessages === 1
-        ? "1 queued message"
-        : `${pendingMessages} queued messages`,
+    pendingText: pendingMessages === 1 ? "1 queued message" : `${pendingMessages} queued messages`,
     inactiveMs,
     inactiveText: formatDuration(inactiveMs),
     runningMs: runningMs ?? null,
@@ -1344,21 +1173,13 @@ export function formatSessionStatus(status: UnknownRecord) {
     `State: ${status.state ?? (status.running ? "running" : "idle")}`,
     status.runningText ? `Running for: ${status.runningText}` : undefined,
     `Last activity: ${status.inactiveText ?? formatDuration(Number(status.inactiveMs ?? 0))} ago`,
-    Number(status.pendingMessages ?? 0) > 0
-      ? `Queued messages: ${status.pendingMessages}`
-      : undefined,
+    Number(status.pendingMessages ?? 0) > 0 ? `Queued messages: ${status.pendingMessages}` : undefined,
   ];
-  const activities = Array.isArray(status.lastActivities)
-    ? status.lastActivities
-    : [];
+  const activities = Array.isArray(status.lastActivities) ? status.lastActivities : [];
 
   if (activities.length > 0) {
     lines.push("Recent activity:");
-    lines.push(
-      ...activities.map(
-        (activity: UnknownRecord) => `- ${formatStatusActivity(activity)}`,
-      ),
-    );
+    lines.push(...activities.map((activity: UnknownRecord) => `- ${formatStatusActivity(activity)}`));
   }
 
   return lines.filter(Boolean).join("\n");
@@ -1372,29 +1193,21 @@ function elapsedMs(now: number, value: unknown) {
         ? new Date(value).getTime()
         : undefined;
 
-  return typeof time === "number" && Number.isFinite(time)
-    ? Math.max(0, now - time)
-    : 0;
+  return typeof time === "number" && Number.isFinite(time) ? Math.max(0, now - time) : 0;
 }
 
 function formatStatusActivity(activity: unknown) {
   if (!isRecord(activity)) return String(activity ?? "");
 
-  if (activity.type === "tool")
-    return `[${activity.name ?? "tool"}] ${activity.status ?? ""}`.trim();
-  return String(
-    activity.text ?? activity.summary ?? activity.type ?? "activity",
-  )
+  if (activity.type === "tool") return `[${activity.name ?? "tool"}] ${activity.status ?? ""}`.trim();
+  return String(activity.text ?? activity.summary ?? activity.type ?? "activity")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 export { prepareWorktree };
 
-function registerRuntimeHost(
-  runtimeHost: PiAgentRuntimeHost,
-  metadata: UnknownRecord = {},
-) {
+function registerRuntimeHost(runtimeHost: PiAgentRuntimeHost, metadata: UnknownRecord = {}) {
   const session = runtimeHost.session;
   const sessionManager = session.sessionManager;
   const runtime: PiRuntimeSession = {
@@ -1431,10 +1244,8 @@ function terminalDelegationState(
       completedAt,
       answer: result.answer,
     });
-  if (result.details.status === "aborted")
-    return DelegationAborted.make({ ...identity, completedAt, reason });
-  if (result.details.status === "stopped")
-    return DelegationStopped.make({ ...identity, completedAt, reason });
+  if (result.details.status === "aborted") return DelegationAborted.make({ ...identity, completedAt, reason });
+  if (result.details.status === "stopped") return DelegationStopped.make({ ...identity, completedAt, reason });
   return DelegationFailed.make({ ...identity, completedAt, reason });
 }
 
@@ -1453,10 +1264,7 @@ function isCustomPiMessage(value: unknown): value is {
 }
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
-  return (
-    typeof value === "string" &&
-    ["minimal", "low", "medium", "high", "xhigh", "max"].includes(value)
-  );
+  return typeof value === "string" && ["minimal", "low", "medium", "high", "xhigh", "max"].includes(value);
 }
 
 export class PiGenticOrchestrator {
@@ -1464,7 +1272,7 @@ export class PiGenticOrchestrator {
   currentAgentName?: string;
   runtime: ExtensionRuntime;
 
-  constructor(pi: PiApi, runtime: ExtensionRuntime = extensionRuntime) {
+  constructor(pi: PiApi, runtime: ExtensionRuntime) {
     this.pi = pi;
     this.runtime = runtime;
     this.currentAgentName = undefined;
@@ -1489,17 +1297,14 @@ export class PiGenticOrchestrator {
     state = getActiveState(ctx.sessionManager),
     resources: { tools?: string[]; skills?: string[] } = {},
   ) {
-    const activeAgent = config.agents.find(
-      (agent) => agent.name === state.agentName,
-    );
+    const activeAgent = config.agents.find((agent) => agent.name === state.agentName);
 
     return resolveSessionPolicy({
       settings: config.settings,
       activeAgent,
       overrides: state.overrides,
       allAgents: config.agents.map((agent) => agent.name),
-      allTools:
-        resources.tools ?? this.pi.getAllTools().map((tool) => tool.name),
+      allTools: resources.tools ?? this.pi.getAllTools().map((tool) => tool.name),
       allSkills: resources.skills ?? currentSkillNames(ctx),
     });
   }
@@ -1508,14 +1313,9 @@ export class PiGenticOrchestrator {
     return filterAvailableAgents(config, this.resolvePolicy(ctx, config));
   }
 
-  assertAgentAvailable(
-    ctx: PiContext,
-    agentName: unknown,
-    config: Configuration = this.load(ctx),
-  ) {
+  assertAgentAvailable(ctx: PiContext, agentName: unknown, config: Configuration = this.load(ctx)) {
     const configured = config.agents.find(
-      (agent) =>
-        agent.name.toLowerCase() === String(agentName ?? "").toLowerCase(),
+      (agent) => agent.name.toLowerCase() === String(agentName ?? "").toLowerCase(),
     );
 
     if (!configured)
@@ -1526,10 +1326,7 @@ export class PiGenticOrchestrator {
     return assertAvailableAgent(agentName, this.availableAgents(ctx, config));
   }
 
-  async applyCurrentPolicy(
-    ctx: PiContext,
-    options: { running?: boolean } = {},
-  ) {
+  async applyCurrentPolicy(ctx: PiContext, options: { running?: boolean } = {}) {
     const config = this.load(ctx);
     const state = getActiveState(ctx.sessionManager);
     const policy = this.resolvePolicy(ctx, config, state, {
@@ -1544,8 +1341,7 @@ export class PiGenticOrchestrator {
       if (model) await this.pi.setModel(model);
     }
 
-    if (isThinkingLevel(policy.thinking))
-      this.pi.setThinkingLevel(policy.thinking);
+    if (isThinkingLevel(policy.thinking)) this.pi.setThinkingLevel(policy.thinking);
 
     if (policy.theme && ctx.mode === "tui") ctx.ui.setTheme(policy.theme);
     this.setTitle(ctx, options.running === true);
@@ -1585,15 +1381,10 @@ export class PiGenticOrchestrator {
     }
   }
 
-  applyPolicySnapshot(
-    ctx: PiContext,
-    resources: { tools?: string[]; skills?: string[] } = {},
-  ) {
+  applyPolicySnapshot(ctx: PiContext, resources: { tools?: string[]; skills?: string[] } = {}) {
     const config = this.load(ctx);
     const state = getActiveState(ctx.sessionManager);
-    const activeAgent = config.agents.find(
-      (agent) => agent.name === state.agentName,
-    );
+    const activeAgent = config.agents.find((agent) => agent.name === state.agentName);
     const policy = this.resolvePolicy(ctx, config, state, {
       ...resources,
       skills: resources.skills ?? skillContext(ctx).names,
@@ -1607,18 +1398,10 @@ export class PiGenticOrchestrator {
     const config = this.load(ctx);
     const agentName = configuredDefaultAgent(config.settings);
 
-    if (!agentName || !shouldApplyDefaultAgent(event, ctx.sessionManager))
-      return undefined;
+    if (!agentName || !shouldApplyDefaultAgent(event, ctx.sessionManager)) return undefined;
 
-    if (
-      !config.agents.some(
-        (agent) => agent.name.toLowerCase() === agentName.toLowerCase(),
-      )
-    ) {
-      ctx.ui.notify(
-        `pi-gentic defaultAgent "${agentName}" is not configured.`,
-        "warning",
-      );
+    if (!config.agents.some((agent) => agent.name.toLowerCase() === agentName.toLowerCase())) {
+      ctx.ui.notify(`pi-gentic defaultAgent "${agentName}" is not configured.`, "warning");
       await this.applyCurrentPolicy(ctx);
 
       return undefined;
@@ -1629,10 +1412,7 @@ export class PiGenticOrchestrator {
 
   async cycleAgent(ctx: PiContext) {
     const config = this.load(ctx);
-    const agentName = nextAgentName(
-      activeAgentName(ctx.sessionManager),
-      config.agents,
-    );
+    const agentName = nextAgentName(activeAgentName(ctx.sessionManager), config.agents);
 
     return this.loadAgent(ctx, agentName ?? "clear");
   }
@@ -1653,23 +1433,14 @@ export class PiGenticOrchestrator {
           agentName: "agentless",
           sessionId: ctx.sessionManager.getSessionId(),
           configuration: compactPolicy(policy),
-          systemPrompt: this.resolvedPromptForCard(
-            ctx,
-            config,
-            policy,
-            undefined,
-          ),
+          systemPrompt: this.resolvedPromptForCard(ctx, config, policy, undefined),
         }),
       };
     }
 
     const agent =
       options.enforceAccess === false
-        ? config.agents.find(
-            (item) =>
-              String(item.name).toLowerCase() ===
-              String(agentName).toLowerCase(),
-          )
+        ? config.agents.find((item) => String(item.name).toLowerCase() === String(agentName).toLowerCase())
         : this.assertAgentAvailable(ctx, agentName, config);
 
     if (!agent)
@@ -1705,43 +1476,27 @@ export class PiGenticOrchestrator {
       baseSystemPrompt,
       config: { ...config, activeAgent },
       policy,
-      skillEntries: skillContext(ctx, parseSkillEntries(baseSystemPrompt))
-        .entries,
+      skillEntries: skillContext(ctx, parseSkillEntries(baseSystemPrompt)).entries,
     });
   }
 
-  async send(
-    ctx: PiContext,
-    input: SendInput,
-    callbacks: SendCallbacks = {},
-  ) {
+  async send(ctx: PiContext, input: SendInput, callbacks: SendCallbacks = {}) {
     const config = this.load(ctx);
 
     if (input.agent) this.assertAgentAvailable(ctx, input.agent, config);
     const callerState = getActiveState(ctx.sessionManager);
     const callerAgent = callerState.agentName;
     const defaults = this.resolvePolicy(ctx, config, callerState).agentsTool;
-    const invokeDefaults = isRecord(defaults.invokeMeLater)
-      ? defaults.invokeMeLater
-      : {};
-    const targetAsync = input.sessionId
-      ? true
-      : chooseBoolean(input.async, chooseBoolean(defaults.async, false));
-    const targetFork = chooseBoolean(
-      input.fork,
-      chooseBoolean(defaults.fork, false),
-    );
+    const invokeDefaults = isRecord(defaults.invokeMeLater) ? defaults.invokeMeLater : {};
+    const targetAsync = input.sessionId ? true : chooseBoolean(input.async, chooseBoolean(defaults.async, false));
+    const targetFork = chooseBoolean(input.fork, chooseBoolean(defaults.fork, false));
     const cwd = await this.resolveSendCwd(ctx, {
       ...input,
-      cwd:
-        input.cwd ??
-        (typeof defaults.cwd === "string" ? defaults.cwd : undefined),
+      cwd: input.cwd ?? (typeof defaults.cwd === "string" ? defaults.cwd : undefined),
     });
     const invokeMeLater = chooseBoolean(
       input.invokeMeLater,
-      targetAsync
-        ? invokeDefaults.async !== false
-        : invokeDefaults.withSession !== false,
+      targetAsync ? invokeDefaults.async !== false : invokeDefaults.withSession !== false,
     );
     const startedAt = Date.now();
     const returnDelivery = resolveReturnDelivery({
@@ -1770,41 +1525,28 @@ export class PiGenticOrchestrator {
         : {}),
     });
     await this.runtime.runPromise(
-      Effect.flatMap(RuntimeRegistry, (registry) =>
-        registry.register(runtimeMetadata, target),
-      ),
+      Effect.flatMap(RuntimeRegistry, (registry) => registry.register(runtimeMetadata, target)),
     );
     const callerCwd = ctx.cwd;
-    const details = this.cardDetails(
-      "send",
-      targetBusy ? "queued" : "running",
-      {
-        cardId: `send:${targetSessionId}:${startedAt}`,
-        livePanel: true,
-        callerSessionId,
-        async: targetAsync,
-        agentName: target.agentName,
-        sessionId: targetSessionId,
-        message: input.message,
-        queued: targetBusy,
-        startedAt,
-        updatedAt: readyAt,
-        activities: [],
-      },
-    );
+    const details = this.cardDetails("send", targetBusy ? "queued" : "running", {
+      cardId: `send:${targetSessionId}:${startedAt}`,
+      livePanel: true,
+      callerSessionId,
+      async: targetAsync,
+      agentName: target.agentName,
+      sessionId: targetSessionId,
+      message: input.message,
+      queued: targetBusy,
+      startedAt,
+      updatedAt: readyAt,
+      activities: [],
+    });
     let terminalStatePersisted = false;
     const publish = (nextDetails: UnknownRecord, options: UnknownRecord = {}) => {
-      const liveDetails = setLiveCardDetails(nextDetails) ?? nextDetails;
+      const liveDetails = setLiveCardDetails(nextDetails, { runtime: this.runtime }) ?? nextDetails;
 
-      if (
-        !terminalStatePersisted &&
-        returnDelivery.kind === "callerMessage"
-      )
-        terminalStatePersisted = persistAgentCardState(
-          callerSessionManager,
-          liveDetails,
-          persistSessionImmediately,
-        );
+      if (!terminalStatePersisted && returnDelivery.kind === "callerMessage")
+        terminalStatePersisted = persistAgentCardState(callerSessionManager, liveDetails, persistSessionImmediately);
 
       if (options.refresh !== false) callbacks.onRefresh?.(liveDetails);
 
@@ -1829,42 +1571,35 @@ export class PiGenticOrchestrator {
       `delegation:${callerSessionId}:${targetSessionId}:${startedAt}`,
     );
     let aborting = false;
+    const abortTarget = async (options: UnknownRecord = {}) => {
+      if (aborting) return;
+      aborting = true;
+      try {
+        target.lastAbort = {
+          actor: typeof options.actor === "string" ? options.actor : abortActor(ctx),
+          at: Date.now(),
+        };
+        if (options.skipSessionAbort !== targetSessionId) await target.session.abort();
+      } finally {
+        aborting = false;
+      }
+    };
     const activeCall = registerAgentCall({
       id: delegationId,
       callerSessionId,
       targetSessionId,
       isCancellable: () => target.session.isStreaming === true,
       abort: async (options: UnknownRecord = {}) => {
-        if (aborting) return;
-        aborting = true;
-        try {
-          target.lastAbort = {
-            actor:
-              typeof options.actor === "string"
-                ? options.actor
-                : abortActor(ctx),
-            at: Date.now(),
-          };
-          if (options.skipSessionAbort !== targetSessionId)
-            await target.session.abort();
-          await this.runtime.runPromise(
-            Effect.flatMap(DelegationFibers, (fibers) =>
-              fibers.abort(delegationId),
-            ),
-          );
-        } finally {
-          aborting = false;
-        }
+        await abortTarget(options);
+        await this.runtime.runPromise(Effect.flatMap(DelegationFibers, (fibers) => fibers.abort(delegationId)));
       },
     });
-    const abortFromSignal = () =>
-      void abortAgentCall(activeCall.id, { actor: abortActor(ctx) });
+    const abortFromSignal = () => void abortTarget({ actor: abortActor(ctx) });
     callbacks.signal?.addEventListener?.("abort", abortFromSignal, {
       once: true,
     });
     const run = async (operationSignal?: AbortSignal) => {
-      const abortFromOperation = () =>
-        void abortAgentCall(activeCall.id, { actor: abortActor(ctx) });
+      const abortFromOperation = () => void abortAgentCall(activeCall.id, { actor: abortActor(ctx) });
       operationSignal?.addEventListener("abort", abortFromOperation, {
         once: true,
       });
@@ -1872,9 +1607,7 @@ export class PiGenticOrchestrator {
       target.lastActivityAt = new Date(readyAt).toISOString();
       const monitor = createSessionActivityMonitor(details, (nextDetails) => {
         target.lastActivityAt = new Date(
-          typeof nextDetails.updatedAt === "number"
-            ? nextDetails.updatedAt
-            : Date.now(),
+          typeof nextDetails.updatedAt === "number" ? nextDetails.updatedAt : Date.now(),
         ).toISOString();
         target.lastActivities = Array.isArray(nextDetails.activities)
           ? nextDetails.activities.filter(isRecord)
@@ -1884,38 +1617,24 @@ export class PiGenticOrchestrator {
       });
       const unsubscribe =
         typeof target.session.subscribe === "function"
-          ? target.session.subscribe((event: unknown) =>
-              monitor.observe(event),
-            )
+          ? target.session.subscribe((event: unknown) => monitor.observe(event))
           : undefined;
 
       try {
-        const receipt = buildReceiptText(
-          callerAgent,
-          callerSessionId,
-          input.message,
-        );
-        const targetPrompt = await prepareTargetPromptForSend(
-          target.session,
-          input.message,
-          receipt,
-        );
+        const receipt = buildReceiptText(callerAgent, callerSessionId, input.message);
+        const targetPrompt = await prepareTargetPromptForSend(target.session, input.message, receipt);
         await promptSessionAndWaitForTurnEnd(
           target.session,
+          this.runtime,
           () =>
             target.session.prompt(
               targetPrompt.text,
-              target.session.isStreaming
-                ? { streamingBehavior: "steer" }
-                : undefined,
+              target.session.isStreaming ? { streamingBehavior: "steer" } : undefined,
             ),
           callbacks.signal,
         );
         if (targetPrompt.command && !startsAgentTurn(targetPrompt.command)) {
-          const answer = slashCommandDeliveryText(
-            targetPrompt.command,
-            targetSessionId,
-          );
+          const answer = slashCommandDeliveryText(targetPrompt.command, targetSessionId);
           const completed = recordRunResult(
             target,
             monitor.finish({
@@ -1926,7 +1645,7 @@ export class PiGenticOrchestrator {
 
           return { answer, details: completed };
         }
-        if (targetBusy) await waitForSessionTurnEnd(target.session, callbacks.signal);
+        if (targetBusy) await waitForSessionTurnEnd(target.session, this.runtime, callbacks.signal);
         const outcome = sessionRunOutcome(target, { request: input.message });
         const completed = recordRunResult(
           target,
@@ -1941,9 +1660,7 @@ export class PiGenticOrchestrator {
               }),
         );
         const returnText =
-          outcome.status === "done"
-            ? buildReturnText(target.agentName, targetSessionId, outcome.text)
-            : outcome.text;
+          outcome.status === "done" ? buildReturnText(target.agentName, targetSessionId, outcome.text) : outcome.text;
         if (returnDelivery.kind === "callerMessage") {
           await this.deliverCallerCard(ctx, {
             callerSessionId,
@@ -1996,9 +1713,7 @@ export class PiGenticOrchestrator {
           unregisterLiveRuntime(targetSessionId);
           try {
             await this.runtime.runPromise(
-              Effect.flatMap(RuntimeRegistry, (registry) =>
-                registry.remove(runtimeMetadata.sessionId),
-              ),
+              Effect.flatMap(RuntimeRegistry, (registry) => registry.remove(runtimeMetadata.sessionId)),
             );
           } catch (error) {
             reportRuntimeDiagnostic("runtime-registry-removal", error);
@@ -2017,8 +1732,7 @@ export class PiGenticOrchestrator {
         startedAt: readyAt,
       };
       const operation = Effect.tryPromise<DelegationState, string>({
-        try: async (signal) =>
-          terminalDelegationState(identity, await run(signal)),
+        try: async (signal) => terminalDelegationState(identity, await run(signal)),
         catch: getErrorMessage,
       }).pipe(
         Effect.catch((message) =>
@@ -2059,11 +1773,7 @@ export class PiGenticOrchestrator {
         ),
       );
 
-      await this.runtime.runPromise(
-        Effect.flatMap(DelegationFibers, (fibers) =>
-          fibers.run(delegationId, operation),
-        ),
-      );
+      await this.runtime.runPromise(Effect.flatMap(DelegationFibers, (fibers) => fibers.run(delegationId, operation)));
 
       return {
         text: sendPendingText({
@@ -2090,42 +1800,20 @@ export class PiGenticOrchestrator {
   }
 
   async prepareWorktree(ctx: PiContext, input: SendInput) {
-    return prepareWorktree({ ...input, repoCwd: ctx.cwd });
+    return this.runtime.runPromise(prepareWorktreeEffect({ ...input, repoCwd: ctx.cwd }));
   }
 
-  async applyRequestedTargetPolicy(
-    session: PiAgentSession,
-    input: SendInput,
-    config: Configuration,
-  ) {
-    if (input.agent)
-      return this.loadAgentIntoSession(
-        session,
-        input.agent,
-        input.overrides,
-        config,
-      );
+  async applyRequestedTargetPolicy(session: PiAgentSession, input: SendInput, config: Configuration) {
+    if (input.agent) return this.loadAgentIntoSession(session, input.agent, input.overrides, config);
 
-    if (input.overrides)
-      return this.applySessionOverrides(session, input.overrides, config);
+    if (input.overrides) return this.applySessionOverrides(session, input.overrides, config);
   }
 
-  async resolveTargetSession(
-    ctx: PiContext,
-    input: SendInput,
-    config: Configuration,
-  ): Promise<PiRuntimeSession> {
+  async resolveTargetSession(ctx: PiContext, input: SendInput, config: Configuration): Promise<PiRuntimeSession> {
     if (input.sessionId) {
-      const session = await this.getOrOpenSession(
-        ctx,
-        input.sessionId,
-        input.cwd,
-      );
+      const session = await this.getOrOpenSession(ctx, input.sessionId, input.cwd);
 
-      assertDifferentSession(
-        ctx.sessionManager.getSessionId(),
-        session.session.sessionManager.getSessionId(),
-      );
+      assertDifferentSession(ctx.sessionManager.getSessionId(), session.session.sessionManager.getSessionId());
       await this.assertCanMessageSession(ctx, session, config);
 
       await this.applyRequestedTargetPolicy(session.session, input, config);
@@ -2138,11 +1826,7 @@ export class PiGenticOrchestrator {
     await this.applyRequestedTargetPolicy(session.session, input, config);
 
     if (!input.agent && !input.overrides)
-      await this.applyAgentlessPolicyToNewSession(
-        session.session,
-        config,
-        ctx.model,
-      );
+      await this.applyAgentlessPolicyToNewSession(session.session, config, ctx.model);
 
     if (typeof input.agent === "string") session.agentName = input.agent;
 
@@ -2160,11 +1844,7 @@ export class PiGenticOrchestrator {
     });
   }
 
-  async assertCanMessageSession(
-    ctx: PiContext,
-    target: PiRuntimeSession,
-    config: Configuration,
-  ) {
+  async assertCanMessageSession(ctx: PiContext, target: PiRuntimeSession, config: Configuration) {
     if (config.settings.sessionMessagingScope === "all") return;
     const sessionDir = ctx.sessionManager.getSessionDir();
     const persisted = await listDiscoverySessionSources(ctx.cwd, sessionDir);
@@ -2172,10 +1852,7 @@ export class PiGenticOrchestrator {
     assertSessionMessagingScope(
       currentSessionSummary(ctx),
       runtimeSessionSummary(target),
-      [
-        ...persisted,
-        ...listRuntimeSessions().map(runtimeSessionSummary),
-      ],
+      [...persisted, ...listRuntimeSessions().map(runtimeSessionSummary)],
       { scope: config.settings.sessionMessagingScope },
     );
   }
@@ -2201,19 +1878,14 @@ export class PiGenticOrchestrator {
     const parentSession = ctx.sessionManager.getSessionFile();
 
     if (input.fork && parentSession) {
-      sessionManager = SessionManager.forkFrom(
-        parentSession,
-        input.cwd ?? ctx.cwd,
-        sessionDir,
-      );
+      sessionManager = SessionManager.forkFrom(parentSession, input.cwd ?? ctx.cwd, sessionDir);
     } else {
       sessionManager = SessionManager.create(input.cwd ?? ctx.cwd, sessionDir, {
         parentSession,
       });
     }
 
-    if (typeof sessionManager.appendSessionInfo === "function")
-      sessionManager.appendSessionInfo(input.message);
+    if (typeof sessionManager.appendSessionInfo === "function") sessionManager.appendSessionInfo(input.message);
     persistSessionImmediately(sessionManager);
     const runtimeHost = await createLiveRuntime({
       cwd: input.cwd ?? ctx.cwd,
@@ -2227,25 +1899,16 @@ export class PiGenticOrchestrator {
       lastMessage: input.message,
       createdAt: new Date().toISOString(),
     };
-    setRuntimeSession(
-      runtimeHost.session.sessionManager.getSessionId(),
-      runtime,
-    );
+    setRuntimeSession(runtimeHost.session.sessionManager.getSessionId(), runtime);
 
     return runtime;
   }
 
-  async getOrOpenSession(
-    ctx: PiContext,
-    reference: unknown,
-    cwd?: string,
-  ): Promise<PiRuntimeSession> {
+  async getOrOpenSession(ctx: PiContext, reference: unknown, cwd?: string): Promise<PiRuntimeSession> {
     const runtimeMatches = listRuntimeSessions().filter((runtime) =>
       matchesSession(runtime.session.sessionManager.getSessionId(), reference),
     );
-    const runtimeIds = new Set(
-      runtimeMatches.map((runtime) => runtime.session.sessionManager.getSessionId()),
-    );
+    const runtimeIds = new Set(runtimeMatches.map((runtime) => runtime.session.sessionManager.getSessionId()));
 
     if (runtimeIds.size === 1) {
       const runtime = runtimeMatches[0];
@@ -2253,24 +1916,13 @@ export class PiGenticOrchestrator {
     }
 
     if (runtimeIds.size > 1)
-      throw new Error(
-        `Ambiguous session reference "${reference}" matches ${runtimeIds.size} sessions.`,
-      );
-    const listedSessions = await SessionManager.list(
-      cwd ?? ctx.cwd,
-      ctx.sessionManager.getSessionDir(),
-    );
-    const sessions = listedSessions.flatMap((session) =>
-      isRecord(session) ? [session] : [],
-    );
+      throw new Error(`Ambiguous session reference "${reference}" matches ${runtimeIds.size} sessions.`);
+    const listedSessions = await SessionManager.list(cwd ?? ctx.cwd, ctx.sessionManager.getSessionDir());
+    const sessions = listedSessions.flatMap((session) => (isRecord(session) ? [session] : []));
     const resolved = resolveSessionReference(sessions, reference);
     if (!resolved || typeof resolved.path !== "string")
       throw new Error(`Session "${String(reference)}" has no persisted path.`);
-    const sessionManager = SessionManager.open(
-      resolved.path,
-      ctx.sessionManager.getSessionDir(),
-      cwd,
-    );
+    const sessionManager = SessionManager.open(resolved.path, ctx.sessionManager.getSessionDir(), cwd);
     const runtimeHost = await createLiveRuntime({
       cwd: cwd ?? sessionManager.getCwd(),
       sessionManager,
@@ -2288,9 +1940,7 @@ export class PiGenticOrchestrator {
   ) {
     const agent = accessContext
       ? this.assertAgentAvailable(accessContext, agentName, config)
-      : config.agents.find(
-          (item) => item.name.toLowerCase() === agentName.toLowerCase(),
-        );
+      : config.agents.find((item) => item.name.toLowerCase() === agentName.toLowerCase());
 
     if (!agent) throw new Error(`Unknown agent "${agentName}".`);
     appendActiveState(session.sessionManager, {
@@ -2304,11 +1954,7 @@ export class PiGenticOrchestrator {
     });
   }
 
-  async applySessionOverrides(
-    session: PiAgentSession,
-    overrides: unknown,
-    config: Configuration,
-  ) {
+  async applySessionOverrides(session: PiAgentSession, overrides: unknown, config: Configuration) {
     const state = getActiveState(session.sessionManager);
 
     appendActiveState(session.sessionManager, {
@@ -2319,24 +1965,17 @@ export class PiGenticOrchestrator {
     return this.applyPolicyToAgentSession(session, config);
   }
 
-  async applyPolicyToAgentSession(
-    session: PiAgentSession,
-    config: Configuration,
-  ) {
+  async applyPolicyToAgentSession(session: PiAgentSession, config: Configuration) {
     const policy = this.resolveAgentSessionPolicy(session, config);
     session.setActiveToolsByName(policy.resources.tools);
 
     if (policy.model) {
-      const model = resolveModelFromCatalog(
-        session.modelRuntime,
-        policy.model,
-      );
+      const model = resolveModelFromCatalog(session.modelRuntime, policy.model);
 
       if (model) await session.setModel(model);
     }
 
-    if (isThinkingLevel(policy.thinking))
-      session.setThinkingLevel(policy.thinking);
+    if (isThinkingLevel(policy.thinking)) session.setThinkingLevel(policy.thinking);
 
     return policy;
   }
@@ -2352,14 +1991,9 @@ export class PiGenticOrchestrator {
     return policy;
   }
 
-  resolveAgentSessionPolicy(
-    session: PiAgentSession,
-    config: Configuration,
-  ) {
+  resolveAgentSessionPolicy(session: PiAgentSession, config: Configuration) {
     const state = getActiveState(session.sessionManager);
-    const activeAgent = config.agents.find(
-      (agent) => agent.name === state.agentName,
-    );
+    const activeAgent = config.agents.find((agent) => agent.name === state.agentName);
 
     return resolveSessionPolicy({
       settings: config.settings,
@@ -2367,15 +2001,12 @@ export class PiGenticOrchestrator {
       overrides: state.overrides,
       allAgents: config.agents.map((agent) => agent.name),
       allTools: session.getAllTools().map((tool) => tool.name),
-      allSkills: session.resourceLoader
-        .getSkills()
-        .skills.map((skill) => skill.name),
+      allSkills: session.resourceLoader.getSkills().skills.map((skill) => skill.name),
     });
   }
 
   async status(ctx: PiContext, sessionId: unknown) {
-    if (!sessionId)
-      throw new Error('Field "sessionId" is required for status.');
+    if (!sessionId) throw new Error('Field "sessionId" is required for status.');
     const runtime = await this.getOrOpenSession(ctx, sessionId);
 
     return sessionStatus(runtime);
@@ -2397,16 +2028,7 @@ export class PiGenticOrchestrator {
 
   async deliverCallerCard(
     ctx: PiContext,
-    {
-      callerSessionId,
-      callerSessionManager,
-      callerCwd,
-      config,
-      text,
-      details,
-      invoke,
-      queue,
-    }: CallerCardParameters,
+    { callerSessionId, callerSessionManager, callerCwd, config, text, details, invoke, queue }: CallerCardParameters,
   ) {
     return deliverCardToCaller({
       pi: activeVisibleExtension() ?? this.pi,
@@ -2438,9 +2060,7 @@ export class PiGenticOrchestrator {
     queue = "steer",
   }: CallerInvocationParameters) {
     const sessionId = callerSessionManager.getSessionId();
-    const existing = findRuntimeSession(
-      (runtime) => runtime.session.sessionManager.getSessionId() === sessionId,
-    );
+    const existing = findRuntimeSession((runtime) => runtime.session.sessionManager.getSessionId() === sessionId);
     const runtime = await this.runtimeForCallerInvocation({
       existing,
       callerSessionManager,
@@ -2448,15 +2068,11 @@ export class PiGenticOrchestrator {
     });
 
     await this.applyPolicyToAgentSession(runtime.session, config);
-    if (!isCustomPiMessage(message))
-      throw new Error("Caller delivery requires a structured Pi message.");
+    if (!isCustomPiMessage(message)) throw new Error("Caller delivery requires a structured Pi message.");
     runtime.lastMessage = String(message.content ?? "");
     runtime.lastActivityAt = new Date().toISOString();
     void runtime.session
-      .sendCustomMessage(
-        message,
-        customDeliveryOptions(runtime.session, true, queue),
-      )
+      .sendCustomMessage(message, customDeliveryOptions(runtime.session, true, queue))
       .catch((error: unknown) => {
         runtime.lastActivityAt = new Date().toISOString();
         runtime.session.sessionManager.appendCustomMessageEntry?.(
@@ -2483,10 +2099,7 @@ export class PiGenticOrchestrator {
       : this.createRuntimeForSessionManager(callerSessionManager, callerCwd);
   }
 
-  async createRuntimeForSessionManager(
-    sessionManager: PiSessionManager,
-    cwd?: string,
-  ): Promise<PiRuntimeSession> {
+  async createRuntimeForSessionManager(sessionManager: PiSessionManager, cwd?: string): Promise<PiRuntimeSession> {
     persistSessionImmediately(sessionManager);
     const runtimeHost = await createLiveRuntime({
       cwd: cwd ?? sessionManager.getCwd(),
@@ -2498,27 +2111,13 @@ export class PiGenticOrchestrator {
     });
   }
 
-  async discoverSessions(
-    ctx: PiContext,
-    input: { rx?: number; ry?: number; all?: boolean },
-  ) {
+  async discoverSessions(ctx: PiContext, input: { rx?: number; ry?: number; all?: boolean }) {
     const policy = this.resolvePolicy(ctx, this.load(ctx));
-    const rx = parseIntegerRadius(
-      input.rx,
-      "rx",
-      typeof policy.agentsTool.rx === "number" ? policy.agentsTool.rx : 0,
-    );
-    const ry = parseIntegerRadius(
-      input.ry,
-      "ry",
-      typeof policy.agentsTool.ry === "number" ? policy.agentsTool.ry : 0,
-    );
+    const rx = parseIntegerRadius(input.rx, "rx", typeof policy.agentsTool.rx === "number" ? policy.agentsTool.rx : 0);
+    const ry = parseIntegerRadius(input.ry, "ry", typeof policy.agentsTool.ry === "number" ? policy.agentsTool.ry : 0);
     const current = currentSessionSummary(ctx);
     const sessionDir = ctx.sessionManager.getSessionDir();
-    const persisted = await cachedPersistedSessions(
-      `${ctx.cwd ?? ""}\n${sessionDir ?? ""}`,
-      () => listDiscoverySessionSources(ctx.cwd, sessionDir),
-    );
+    const persisted = await listDiscoverySessionSources(ctx.cwd, sessionDir);
     const tree = buildSessionTree(current, persisted, listRuntimeSessions());
     const related = sessionDiscoveryScope(tree, current ?? {}, {
       rx,
@@ -2543,13 +2142,7 @@ export class PiGenticOrchestrator {
   }
 }
 
-async function listDiscoverySessionSources(
-  cwd: string,
-  sessionDir?: string,
-) {
-  const fast = listSessionSummariesFast(sessionDir);
-
-  if (fast.length > 0) return fast;
+async function listDiscoverySessionSources(cwd: string, sessionDir?: string) {
   const sessions = await SessionManager.list(cwd, sessionDir);
 
   return sessions.flatMap((session) => (isRecord(session) ? [session] : []));
@@ -2580,9 +2173,7 @@ function skillContext(ctx: PiContext, parsedEntries: UnknownRecord[] = []) {
       parsedEntries,
     ),
   );
-  const names = entries
-    .map((skill) => skill.name)
-    .filter((name): name is string => typeof name === "string");
+  const names = entries.map((skill) => skill.name).filter((name): name is string => typeof name === "string");
 
   return { entries, names: names.length > 0 ? names : currentSkillNames(ctx) };
 }
@@ -2613,10 +2204,5 @@ function matchesSession(sessionId: unknown, reference: unknown) {
   const id = String(sessionId).toLowerCase();
   const query = String(reference).toLowerCase();
 
-  return (
-    id === query ||
-    id.startsWith(query) ||
-    id.includes(query) ||
-    shortSessionId(id) === query
-  );
+  return id === query || id.startsWith(query) || id.includes(query) || shortSessionId(id) === query;
 }

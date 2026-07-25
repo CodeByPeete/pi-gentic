@@ -13,8 +13,6 @@ export interface PrepareWorktreeRequest {
 export class WorktreeManager extends Context.Service<
   WorktreeManager,
   {
-    readonly prepare: (
-      request: PrepareWorktreeRequest,
-    ) => Effect.Effect<string, WorktreeError>;
+    readonly prepare: (request: PrepareWorktreeRequest) => Effect.Effect<string, WorktreeError>;
   }
 >()("pi-gentic/WorktreeManager") {}

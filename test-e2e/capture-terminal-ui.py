@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import pathlib
@@ -61,7 +62,12 @@ def write_test_agents(root):
         )
 
 
-def reset_output():
+def reset_output(clear_artifacts=True):
+    global raw_chunks, screen, stop_reader, stream
+    screen = pyte.Screen(COLS, ROWS)
+    stream = pyte.ByteStream(screen)
+    raw_chunks = []
+    stop_reader = False
     OUTPUT.mkdir(parents=True, exist_ok=True)
     if SESSION_DIR.exists():
         shutil.rmtree(SESSION_DIR)
@@ -78,10 +84,11 @@ def reset_output():
     write_test_agents(INTERACTIVE_WORK_DIR)
     if LAG_SESSION_SOURCE is not None and LAG_SESSION_SOURCE.exists():
         shutil.copyfile(LAG_SESSION_SOURCE, LAG_SESSION_FILE)
-    for path in OUTPUT.glob("*.png"):
-        path.unlink()
-    for path in OUTPUT.glob("*.txt"):
-        path.unlink()
+    if clear_artifacts:
+        for path in OUTPUT.glob("*.png"):
+            path.unlink()
+        for path in OUTPUT.glob("*.txt"):
+            path.unlink()
 
 
 def reader(proc):
@@ -560,6 +567,50 @@ def capture_completed_card_answer():
         stop(proc)
 
 
+def capture_resume_500_sessions():
+    reset_output(clear_artifacts=False)
+    start = datetime.datetime(2026, 7, 23, tzinfo=datetime.timezone.utc)
+    for index in range(500):
+        session_id = f"019f{index:04x}-aaaa-7000-8000-{index:012x}"
+        timestamp = start + datetime.timedelta(seconds=index)
+        filename_timestamp = timestamp.strftime("%Y-%m-%dT%H-%M-%S-000Z")
+        fixture = SESSION_DIR / f"{filename_timestamp}_{session_id}.jsonl"
+        entries = [
+            {"type": "session", "version": 3, "id": session_id, "timestamp": timestamp.isoformat().replace("+00:00", "Z"), "cwd": str(INTERACTIVE_WORK_DIR)},
+            {"type": "message", "message": {"role": "user", "content": f"Fixture session {index}"}},
+        ]
+        fixture.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
+
+    proc = spawn()
+    started_at = time.monotonic()
+    try:
+        proc.write("/resume\r")
+        wait_for(
+            "500-session resume first render",
+            lambda text: "Resume Session" in text and "019f01f3" in text,
+            timeout=10,
+        )
+        first_render_ms = round((time.monotonic() - started_at) * 1000, 1)
+        wait_for(
+            "500-session resume enrichment",
+            lambda text: "Fixture session 499" in text,
+            timeout=20,
+        )
+        enriched_ms = round((time.monotonic() - started_at) * 1000, 1)
+        if first_render_ms >= 2000:
+            raise AssertionError(f"500-session resume first render took {first_render_ms}ms")
+        screenshot = render_png("resume-500-sessions-terminal.png")
+        evidence = OUTPUT / "resume-500-sessions-check.txt"
+        evidence.write_text(
+            f"session_count=500\nfirst_render_ms={first_render_ms}\nenriched_ms={enriched_ms}\n",
+            encoding="utf-8",
+        )
+        print(screenshot)
+        print(evidence)
+    finally:
+        stop(proc)
+
+
 def capture_completion_deduplication():
     receipt = "completion-deduplication-receipt"
     request = f"reply with the exact text {receipt}"
@@ -656,6 +707,7 @@ def main():
     global stop_reader, screen, stream
     if "--deterministic" in sys.argv:
         capture_completed_card_answer()
+        capture_resume_500_sessions()
         return
     if os.environ.get("PI_E2E_ABORT_ONLY") == "1":
         capture_abort_after_session_switch()

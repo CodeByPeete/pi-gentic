@@ -28,10 +28,8 @@ describe("Agents tool contract", () => {
   it.effect("rejects missing fields required by one action", () =>
     decodeAgentsToolInput({ action: "send" }).pipe(
       Effect.match({
-        onFailure: (error) =>
-          Effect.sync(() => assert.match(error.message, /message/i)),
-        onSuccess: () =>
-          Effect.die("send without a message unexpectedly decoded"),
+        onFailure: (error) => Effect.sync(() => assert.match(error.message, /message/i)),
+        onSuccess: () => Effect.die("send without a message unexpectedly decoded"),
       }),
     ),
   );
@@ -67,9 +65,7 @@ describe("Agents tool contract", () => {
         { action: "abort", sessionId: "session-3" },
         { action: "discoverSessions", rx: 2, ry: 3 },
       ] as const;
-      const actions = yield* Effect.all(
-        inputs.map((input) => decodeAgentsToolInput(input)),
-      );
+      const actions = yield* Effect.all(inputs.map((input) => decodeAgentsToolInput(input)));
 
       assert.deepEqual(actions.map(agentsActionName), [
         "list",
@@ -109,17 +105,8 @@ describe("Agents tool contract", () => {
   );
 
   it("keeps synchronous compatibility decoding strict", () => {
-    assert.throws(
-      () => normalizeAgentsToolInputSync(null),
-      /JSON object/i,
-    );
-    assert.throws(
-      () => normalizeAgentsToolInputSync({ action: " " }),
-      /required field/i,
-    );
-    assert.strictEqual(
-      agentsActionName(normalizeAgentsToolInputSync({ action: " abort " })),
-      "abort",
-    );
+    assert.throws(() => normalizeAgentsToolInputSync(null), /JSON object/i);
+    assert.throws(() => normalizeAgentsToolInputSync({ action: " " }), /required field/i);
+    assert.strictEqual(agentsActionName(normalizeAgentsToolInputSync({ action: " abort " })), "abort");
   });
 });

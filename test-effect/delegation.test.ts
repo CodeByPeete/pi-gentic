@@ -21,10 +21,7 @@ const queued = DelegationQueued.make({
 describe("Delegation transitions", () => {
   it.effect("moves from queued through running to completed", () =>
     Effect.sync(() => {
-      const running = transitionDelegation(
-        queued,
-        StartDelegation.make({ startedAt: 200 }),
-      );
+      const running = transitionDelegation(queued, StartDelegation.make({ startedAt: 200 }));
       assert.isTrue(Result.isSuccess(running));
       if (Result.isFailure(running)) return;
       const completed = transitionDelegation(
@@ -42,10 +39,7 @@ describe("Delegation transitions", () => {
 
   it.effect("classifies every terminal outcome explicitly", () =>
     Effect.sync(() => {
-      const running = transitionDelegation(
-        queued,
-        StartDelegation.make({ startedAt: 200 }),
-      );
+      const running = transitionDelegation(queued, StartDelegation.make({ startedAt: 200 }));
       assert.isTrue(Result.isSuccess(running));
       if (Result.isFailure(running)) return;
 
@@ -60,20 +54,13 @@ describe("Delegation transitions", () => {
         return Result.isSuccess(result) ? result.success._tag : "invalid";
       });
 
-      assert.deepStrictEqual(tags, [
-        "DelegationFailed",
-        "DelegationStopped",
-        "DelegationAborted",
-      ]);
+      assert.deepStrictEqual(tags, ["DelegationFailed", "DelegationStopped", "DelegationAborted"]);
     }),
   );
 
   it.effect("aborts a queued delegation before it starts", () =>
     Effect.sync(() => {
-      const aborted = transitionDelegation(
-        queued,
-        AbortDelegation.make({ completedAt: 150, reason: "cancelled" }),
-      );
+      const aborted = transitionDelegation(queued, AbortDelegation.make({ completedAt: 150, reason: "cancelled" }));
 
       assert.isTrue(Result.isSuccess(aborted));
       if (Result.isSuccess(aborted)) {
@@ -85,10 +72,7 @@ describe("Delegation transitions", () => {
 
   it.effect("rejects a terminal event while still queued", () =>
     Effect.sync(() => {
-      const invalid = transitionDelegation(
-        queued,
-        CompleteDelegation.make({ completedAt: 150, answer: "too early" }),
-      );
+      const invalid = transitionDelegation(queued, CompleteDelegation.make({ completedAt: 150, answer: "too early" }));
 
       assert.isTrue(Result.isFailure(invalid));
       if (Result.isFailure(invalid)) {
@@ -100,10 +84,7 @@ describe("Delegation transitions", () => {
 
   it.effect("rejects a transition out of a terminal state", () =>
     Effect.sync(() => {
-      const running = transitionDelegation(
-        queued,
-        StartDelegation.make({ startedAt: 200 }),
-      );
+      const running = transitionDelegation(queued, StartDelegation.make({ startedAt: 200 }));
       assert.isTrue(Result.isSuccess(running));
       if (Result.isFailure(running)) return;
       const completed = transitionDelegation(
@@ -112,10 +93,7 @@ describe("Delegation transitions", () => {
       );
       assert.isTrue(Result.isSuccess(completed));
       if (Result.isFailure(completed)) return;
-      const invalid = transitionDelegation(
-        completed.success,
-        StartDelegation.make({ startedAt: 400 }),
-      );
+      const invalid = transitionDelegation(completed.success, StartDelegation.make({ startedAt: 400 }));
 
       assert.isTrue(Result.isFailure(invalid));
       if (Result.isFailure(invalid)) {

@@ -2,10 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber } from "effect";
 import type { DelegationState } from "../src/domain/delegation.js";
 import { DelegationFibers } from "../src/infrastructure/runtime/DelegationFibers.js";
-import {
-  createExtensionRuntime,
-  shouldDisposeExtensionRuntime,
-} from "../src/runtime/ExtensionRuntime.js";
+import { createExtensionRuntime, shouldDisposeExtensionRuntime } from "../src/runtime/ExtensionRuntime.js";
 
 describe("ExtensionRuntime", () => {
   it("survives native session replacement and closes at host shutdown", () => {
@@ -20,9 +17,7 @@ describe("ExtensionRuntime", () => {
     const runtime = createExtensionRuntime();
     const operation: Effect.Effect<DelegationState> = Effect.never;
     const fiber = await runtime.runPromise(
-      Effect.flatMap(DelegationFibers, (delegations) =>
-        delegations.run("dispose-test", operation),
-      ),
+      Effect.flatMap(DelegationFibers, (delegations) => delegations.run("dispose-test", operation)),
     );
 
     await runtime.dispose();

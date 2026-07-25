@@ -3,21 +3,15 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import {
-  buildManualSkillMessage,
-  completeSkill,
-  parseSkillCommand,
-} from "../dist/interface.js";
+import { buildManualSkillMessage, completeSkill, parseSkillCommand } from "../dist/interface.js";
 import {
   loadConfiguration,
   normalizeAgentDefinition,
   parseMarkdownDefinition,
+  systemPromptSkillEntries,
 } from "../dist/catalog.js";
 import { loadAvailableSkills } from "../dist/catalog.js";
-import {
-  assertCanCreateSubagent,
-  resolveSessionPolicy,
-} from "../dist/catalog.js";
+import { assertCanCreateSubagent, resolveSessionPolicy } from "../dist/catalog.js";
 
 function tempRoot() {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-test-"));
@@ -26,9 +20,7 @@ function tempRoot() {
 }
 
 test("markdown parser extracts frontmatter and body", () => {
-  const parsed = parseMarkdownDefinition(
-    "---\nname: scout\nskills:\n  - read\n---\nBody",
-  );
+  const parsed = parseMarkdownDefinition("---\nname: scout\nskills:\n  - read\n---\nBody");
 
   assert.equal(parsed.frontmatter.name, "scout");
 
@@ -66,6 +58,55 @@ test("agent normalization accepts models alias", () => {
   assert.equal(agent.model, "provider/model");
 });
 
+test("agent normalization preserves typed tool defaults", () => {
+  const agent = normalizeAgentDefinition({
+    name: "typed",
+    maxSubagentDepth: "3",
+    agentsTool: {
+      async: true,
+      fork: false,
+      cwd: "workspace",
+      invokeMeLater: { async: false, withSession: true },
+      rx: "2",
+      ry: 4.8,
+      open: true,
+    },
+  });
+
+  assert.deepEqual(agent.agentsTool, {
+    async: true,
+    fork: false,
+    cwd: "workspace",
+    invokeMeLater: { async: false, withSession: true },
+    rx: 2,
+    ry: 4,
+    open: true,
+  });
+  assert.equal(agent.maxSubagentDepth, 3);
+  assert.deepEqual(
+    systemPromptSkillEntries({
+      getSystemPromptOptions: () => ({
+        skills: [
+          {
+            name: "debug",
+            description: "Debug issues",
+            filePath: "/skills/debug/SKILL.md",
+            disableModelInvocation: true,
+          },
+        ],
+      }),
+    }),
+    [
+      {
+        name: "debug",
+        description: "Debug issues",
+        location: "/skills/debug/SKILL.md",
+        disableModelInvocation: true,
+      },
+    ],
+  );
+});
+
 test("agent normalization accepts comma-separated tools", () => {
   const agent = normalizeAgentDefinition({ name: "a", tools: "read, grep" });
 
@@ -75,10 +116,7 @@ test("agent normalization accepts comma-separated tools", () => {
 test("agent normalization ignores unnamed definitions", () => {
   const diagnostics = [];
 
-  assert.equal(
-    normalizeAgentDefinition({ description: "missing" }, "x", diagnostics),
-    undefined,
-  );
+  assert.equal(normalizeAgentDefinition({ description: "missing" }, "x", diagnostics), undefined);
 
   assert.equal(diagnostics.length, 1);
 });
@@ -107,6 +145,48 @@ test("configuration loads global settings and markdown agents", () => {
   }
 });
 
+test("configuration reports unreadable agent roots and malformed definitions", () => {
+  const { dir, cleanup } = tempRoot();
+
+  try {
+    const unreadableRoot = path.join(dir, "unreadable");
+    mkdirSync(unreadableRoot, { recursive: true });
+    writeFileSync(path.join(unreadableRoot, "agents"), "not a directory");
+    const unreadable = loadConfiguration({ roots: [unreadableRoot] });
+    assert.match(unreadable.diagnostics[0].message, /Could not read agents directory/);
+
+    const malformedRoot = path.join(dir, "malformed");
+    mkdirSync(path.join(malformedRoot, "agents"), { recursive: true });
+    writeFileSync(path.join(malformedRoot, "agents", "broken.md"), "---\nname: [unterminated\n---\nbody");
+    const malformed = loadConfiguration({ roots: [malformedRoot] });
+    assert.equal(malformed.agents.length, 0);
+    assert.match(malformed.diagnostics[0].message, /Could not load agent/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("configuration reports malformed settings and missing project roots", () => {
+  const { dir, cleanup } = tempRoot();
+
+  try {
+    const root = path.join(dir, "malformed-settings");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(path.join(root, "settings.json"), "{ invalid json");
+    const malformed = loadConfiguration({ roots: [root] });
+    assert.match(malformed.diagnostics[0].message, /Could not parse JSON/);
+
+    const missing = loadConfiguration({
+      agentDir: path.join(dir, "agent"),
+      cwd: path.join(dir, "missing", "project"),
+      projectTrusted: true,
+    });
+    assert.equal(missing.roots.length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
 test("configuration leaves defaultAgent undefined when it is not configured", () => {
   const config = loadConfiguration({ roots: [] });
 
@@ -125,10 +205,7 @@ test("configuration accepts top-level opt out for cross-tree messaging", () => {
   try {
     const root = path.join(dir, "extensions", "pi-gentic");
     mkdirSync(root, { recursive: true });
-    writeFileSync(
-      path.join(root, "settings.json"),
-      JSON.stringify({ sessionMessagingScope: "all" }),
-    );
+    writeFileSync(path.join(root, "settings.json"), JSON.stringify({ sessionMessagingScope: "all" }));
 
     const config = loadConfiguration({ agentDir: dir, cwd: dir });
 
@@ -138,35 +215,53 @@ test("configuration accepts top-level opt out for cross-tree messaging", () => {
   }
 });
 
+test("skill discovery reports unresolved, malformed, and duplicate definitions", () => {
+  const { dir, cleanup } = tempRoot();
+
+  try {
+    const firstRoot = path.join(dir, "skills-one");
+    const secondRoot = path.join(dir, "skills-two");
+    const writeSkill = (root, folder, frontmatter) => {
+      const skillDir = path.join(root, folder);
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(path.join(skillDir, "SKILL.md"), `---\n${frontmatter}\n---\nInstructions`);
+    };
+    writeSkill(firstRoot, "invalid", "name: invalid name\ndescription: Invalid");
+    writeSkill(firstRoot, "missing-description", "name: missing-description");
+    writeSkill(firstRoot, "duplicate", "name: duplicate\ndescription: First");
+    writeSkill(secondRoot, "duplicate", "name: duplicate\ndescription: Second");
+    writeSkill(secondRoot, "malformed", "name: [unterminated");
+    writeFileSync(path.join(dir, "package.json"), "{ invalid json");
+    const diagnostics = [];
+    const skills = loadAvailableSkills({
+      cwd: dir,
+      agentDir: dir,
+      projectTrusted: true,
+      skillRoots: [firstRoot, secondRoot],
+      skills: ["missing-skill-path"],
+      diagnostics,
+    });
+
+    assert.equal(skills.filter((skill) => skill.name === "duplicate").length, 1);
+    assert.ok(diagnostics.some(({ message }) => /Could not resolve configured skill/.test(message)));
+    assert.ok(
+      diagnostics.some(({ message }) => /invalid name|no description|duplicate|Could not load skill/.test(message)),
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("project agents override global agents", () => {
   const { dir, cleanup } = tempRoot();
 
   try {
-    const globalRoot = path.join(
-      dir,
-      "agent",
-      "extensions",
-      "pi-gentic",
-      "agents",
-    );
-    const projectRoot = path.join(
-      dir,
-      "work",
-      ".pi",
-      "extensions",
-      "pi-gentic",
-      "agents",
-    );
+    const globalRoot = path.join(dir, "agent", "extensions", "pi-gentic", "agents");
+    const projectRoot = path.join(dir, "work", ".pi", "extensions", "pi-gentic", "agents");
     mkdirSync(globalRoot, { recursive: true });
     mkdirSync(projectRoot, { recursive: true });
-    writeFileSync(
-      path.join(globalRoot, "a.md"),
-      "---\nname: same\ndescription: global\n---\nglobal",
-    );
-    writeFileSync(
-      path.join(projectRoot, "a.md"),
-      "---\nname: same\ndescription: project\n---\nproject",
-    );
+    writeFileSync(path.join(globalRoot, "a.md"), "---\nname: same\ndescription: global\n---\nglobal");
+    writeFileSync(path.join(projectRoot, "a.md"), "---\nname: same\ndescription: project\n---\nproject");
     const config = loadConfiguration({
       agentDir: path.join(dir, "agent"),
       cwd: path.join(dir, "work"),
@@ -203,10 +298,7 @@ test("available skills resolve from discovered skill files", () => {
     const skills = loadAvailableSkills({
       agentDir,
       cwd,
-      skillRoots: [
-        path.join(agentDir, "skills"),
-        path.join(cwd, ".agents", "skills"),
-      ],
+      skillRoots: [path.join(agentDir, "skills"), path.join(cwd, ".agents", "skills")],
     });
 
     assert.deepEqual(
@@ -226,10 +318,7 @@ test("skill discovery reflects files added after the first read", () => {
   try {
     const root = path.join(dir, "skills");
     mkdirSync(path.join(root, "first"), { recursive: true });
-    writeFileSync(
-      path.join(root, "first", "SKILL.md"),
-      "---\nname: first\ndescription: First\n---\nFirst.",
-    );
+    writeFileSync(path.join(root, "first", "SKILL.md"), "---\nname: first\ndescription: First\n---\nFirst.");
 
     assert.deepEqual(
       loadAvailableSkills({ skillRoots: [root] }).map((skill) => skill.name),
@@ -237,10 +326,7 @@ test("skill discovery reflects files added after the first read", () => {
     );
 
     mkdirSync(path.join(root, "second"));
-    writeFileSync(
-      path.join(root, "second", "SKILL.md"),
-      "---\nname: second\ndescription: Second\n---\nSecond.",
-    );
+    writeFileSync(path.join(root, "second", "SKILL.md"), "---\nname: second\ndescription: Second\n---\nSecond.");
 
     assert.deepEqual(
       loadAvailableSkills({ skillRoots: [root] }).map((skill) => skill.name),
@@ -258,25 +344,16 @@ test("skill discovery follows root markdown and folder SKILL rules", () => {
     const root = path.join(dir, "skills");
     mkdirSync(path.join(root, "folder-skill"), { recursive: true });
     mkdirSync(path.join(root, "nested"), { recursive: true });
-    writeFileSync(
-      path.join(root, "root-skill.md"),
-      "---\nname: root-skill\ndescription: Root skill\n---\nRoot.",
-    );
+    writeFileSync(path.join(root, "root-skill.md"), "---\nname: root-skill\ndescription: Root skill\n---\nRoot.");
     writeFileSync(
       path.join(root, "folder-skill", "SKILL.md"),
       "---\nname: folder-skill\ndescription: Folder skill\n---\nFolder.",
     );
-    writeFileSync(
-      path.join(root, "nested", "ignored.md"),
-      "---\nname: ignored\ndescription: Ignored\n---\nIgnored.",
-    );
+    writeFileSync(path.join(root, "nested", "ignored.md"), "---\nname: ignored\ndescription: Ignored\n---\nIgnored.");
 
     const skills = loadAvailableSkills({ skillRoots: [root] });
 
-    assert.deepEqual(
-      skills.map((skill) => skill.name).sort(),
-      ["folder-skill", "root-skill"],
-    );
+    assert.deepEqual(skills.map((skill) => skill.name).sort(), ["folder-skill", "root-skill"]);
   } finally {
     cleanup();
   }
@@ -293,10 +370,7 @@ test("settings skills and package skills are discovered", () => {
     mkdirSync(path.join(packageRoot, "skills", "package-skill"), {
       recursive: true,
     });
-    writeFileSync(
-      explicit,
-      "---\nname: explicit-skill\ndescription: Explicit skill\n---\nExplicit.",
-    );
+    writeFileSync(explicit, "---\nname: explicit-skill\ndescription: Explicit skill\n---\nExplicit.");
     writeFileSync(
       path.join(packageRoot, "package.json"),
       JSON.stringify({ name: "skill-package", pi: { skills: ["skills"] } }),
@@ -339,14 +413,8 @@ test("skill validation reports invalid definitions and duplicate names", () => {
       path.join(root, "a", "SKILL.md"),
       "---\nname: duplicate\ndescription: First\nallowed-tools: read grep\ndisable-model-invocation: true\n---\nFirst.",
     );
-    writeFileSync(
-      path.join(root, "b", "SKILL.md"),
-      "---\nname: duplicate\ndescription: Second\n---\nSecond.",
-    );
-    writeFileSync(
-      path.join(root, "missing", "SKILL.md"),
-      "---\nname: invalid name\n---\nMissing description.",
-    );
+    writeFileSync(path.join(root, "b", "SKILL.md"), "---\nname: duplicate\ndescription: Second\n---\nSecond.");
+    writeFileSync(path.join(root, "missing", "SKILL.md"), "---\nname: invalid name\n---\nMissing description.");
     const diagnostics = [];
     const skills = loadAvailableSkills({ skillRoots: [root], diagnostics });
 
@@ -370,9 +438,7 @@ test("skill command parsing, completions, and manual prompt formatting", () => {
     message: "write tests",
   });
 
-  assert.deepEqual(completeSkill("td", { skills: ["tdd", "review"] }), [
-    { value: "tdd", label: "tdd" },
-  ]);
+  assert.deepEqual(completeSkill("td", { skills: ["tdd", "review"] }), [{ value: "tdd", label: "tdd" }]);
 
   assert.match(
     buildManualSkillMessage(
@@ -397,14 +463,8 @@ test("noSkills suppresses discovery but keeps explicit settings skills", () => {
     const explicit = path.join(dir, "explicit", "SKILL.md");
     mkdirSync(path.join(root, "normal"), { recursive: true });
     mkdirSync(path.dirname(explicit), { recursive: true });
-    writeFileSync(
-      path.join(root, "normal", "SKILL.md"),
-      "---\nname: normal\ndescription: Normal\n---\nNormal.",
-    );
-    writeFileSync(
-      explicit,
-      "---\nname: explicit\ndescription: Explicit\n---\nExplicit.",
-    );
+    writeFileSync(path.join(root, "normal", "SKILL.md"), "---\nname: normal\ndescription: Normal\n---\nNormal.");
+    writeFileSync(explicit, "---\nname: explicit\ndescription: Explicit\n---\nExplicit.");
 
     const skills = loadAvailableSkills({
       noSkills: true,
@@ -487,13 +547,7 @@ test("policy merges system prompt file filters like other access lanes", () => {
     allSkills: [],
   });
 
-  assert.deepEqual(policy.systemPromptFiles, [
-    "*",
-    "!*.secret.md",
-    "+local.md",
-    "!@agent/SYSTEM.md",
-    "-local.md",
-  ]);
+  assert.deepEqual(policy.systemPromptFiles, ["*", "!*.secret.md", "+local.md", "!@agent/SYSTEM.md", "-local.md"]);
 });
 
 test("policy uses agentless defaults without active agent", () => {

@@ -1,14 +1,5 @@
-import {
-  Effect,
-  FileSystem,
-  Layer,
-  Path,
-  Semaphore,
-} from "effect";
-import {
-  WorktreeManager,
-  type PrepareWorktreeRequest,
-} from "../../application/WorktreeManager.js";
+import { Effect, FileSystem, Layer, Path, Semaphore } from "effect";
+import { WorktreeManager, type PrepareWorktreeRequest } from "../../application/WorktreeManager.js";
 import {
   GitCommandFailed,
   PathOutsideAllowedRoot,
@@ -25,34 +16,26 @@ export const WorktreeManagerLive = Layer.effect(
     const git = yield* GitClient;
     const repositoryLocks = new Map<string, Semaphore.Semaphore>();
 
-    const pathFailure = (
-      message: string,
-      worktreePath: string,
-      cause: unknown,
-    ) =>
+    const pathFailure = (message: string, worktreePath: string, cause: unknown) =>
       WorktreePathConflict.make({
         message,
         worktreePath,
         cause,
       });
 
-    const gitResult = Effect.fn("WorktreeManager.gitResult")(function* (
-      cwd: string,
-      args: ReadonlyArray<string>,
-    ) {
+    const gitResult = Effect.fn("WorktreeManager.gitResult")(function* (cwd: string, args: ReadonlyArray<string>) {
       return yield* git.run(cwd, args);
     });
 
-    const requireGitSuccess = Effect.fn(
-      "WorktreeManager.requireGitSuccess",
-    )(function* (cwd: string, args: ReadonlyArray<string>) {
+    const requireGitSuccess = Effect.fn("WorktreeManager.requireGitSuccess")(function* (
+      cwd: string,
+      args: ReadonlyArray<string>,
+    ) {
       const result = yield* gitResult(cwd, args);
 
       if (result.exitCode !== 0) {
         return yield* GitCommandFailed.make({
-          message:
-            result.stderr ||
-            `Git command failed with exit code ${result.exitCode}: git ${args.join(" ")}`,
+          message: result.stderr || `Git command failed with exit code ${result.exitCode}: git ${args.join(" ")}`,
           cwd,
           args: [...args],
           exitCode: result.exitCode,
@@ -63,18 +46,11 @@ export const WorktreeManagerLive = Layer.effect(
       return result;
     });
 
-    const repositoryRoot = Effect.fn(
-      "WorktreeManager.repositoryRoot",
-    )(function* (repoCwd: unknown, repo: unknown) {
+    const repositoryRoot = Effect.fn("WorktreeManager.repositoryRoot")(function* (repoCwd: unknown, repo: unknown) {
       const base = nonEmptyString(repoCwd) ?? process.cwd();
       const source = nonEmptyString(repo);
-      const repositoryPath = source
-        ? path.resolve(base, source)
-        : path.resolve(base);
-      const result = yield* gitResult(repositoryPath, [
-        "rev-parse",
-        "--show-toplevel",
-      ]).pipe(
+      const repositoryPath = source ? path.resolve(base, source) : path.resolve(base);
+      const result = yield* gitResult(repositoryPath, ["rev-parse", "--show-toplevel"]).pipe(
         Effect.catchTag("GitCommandFailed", (cause) =>
           WorktreeRepositoryInvalid.make({
             message: `Worktree repository must be a git repository: ${repositoryPath}`,
@@ -103,38 +79,28 @@ export const WorktreeManagerLive = Layer.effect(
       );
     });
 
-    const canonicalCandidate = Effect.fn(
-      "WorktreeManager.canonicalCandidate",
-    )(function* (
+    const canonicalCandidate = Effect.fn("WorktreeManager.canonicalCandidate")(function* (
       candidate: string,
       allowedRoots: ReadonlyArray<string>,
     ) {
       const canonicalRoots = yield* Effect.forEach(
         allowedRoots,
         (root) =>
-          fileSystem.realPath(root).pipe(
-            Effect.mapError((cause) =>
-              pathFailure(
-                `Cannot resolve allowed worktree root: ${root}`,
-                candidate,
-                cause,
+          fileSystem
+            .realPath(root)
+            .pipe(
+              Effect.mapError((cause) =>
+                pathFailure(`Cannot resolve allowed worktree root: ${root}`, candidate, cause),
               ),
             ),
-          ),
         { concurrency: "unbounded" },
       );
       let ancestor = candidate;
 
       while (
-        !(yield* fileSystem.exists(ancestor).pipe(
-          Effect.mapError((cause) =>
-            pathFailure(
-              `Cannot inspect worktree path: ${ancestor}`,
-              candidate,
-              cause,
-            ),
-          ),
-        ))
+        !(yield* fileSystem
+          .exists(ancestor)
+          .pipe(Effect.mapError((cause) => pathFailure(`Cannot inspect worktree path: ${ancestor}`, candidate, cause))))
       ) {
         const parent = path.dirname(ancestor);
 
@@ -148,19 +114,10 @@ export const WorktreeManagerLive = Layer.effect(
         ancestor = parent;
       }
 
-      const canonicalAncestor = yield* fileSystem.realPath(ancestor).pipe(
-        Effect.mapError((cause) =>
-          pathFailure(
-            `Cannot resolve worktree path: ${ancestor}`,
-            candidate,
-            cause,
-          ),
-        ),
-      );
-      const projected = path.resolve(
-        canonicalAncestor,
-        path.relative(ancestor, candidate),
-      );
+      const canonicalAncestor = yield* fileSystem
+        .realPath(ancestor)
+        .pipe(Effect.mapError((cause) => pathFailure(`Cannot resolve worktree path: ${ancestor}`, candidate, cause)));
+      const projected = path.resolve(canonicalAncestor, path.relative(ancestor, candidate));
 
       if (!canonicalRoots.some((root) => isDescendant(path, root, projected))) {
         return yield* PathOutsideAllowedRoot.make({
@@ -173,15 +130,8 @@ export const WorktreeManagerLive = Layer.effect(
       return projected;
     });
 
-    const registeredWorktrees = Effect.fn(
-      "WorktreeManager.registeredWorktrees",
-    )(function* (repoRoot: string) {
-      const result = yield* requireGitSuccess(repoRoot, [
-        "worktree",
-        "list",
-        "--porcelain",
-        "-z",
-      ]);
+    const registeredWorktrees = Effect.fn("WorktreeManager.registeredWorktrees")(function* (repoRoot: string) {
+      const result = yield* requireGitSuccess(repoRoot, ["worktree", "list", "--porcelain", "-z"]);
 
       return result.stdout
         .split("\0")
@@ -189,30 +139,18 @@ export const WorktreeManagerLive = Layer.effect(
         .map((line) => path.resolve(line.slice("worktree ".length)));
     });
 
-    const prepare = Effect.fn("WorktreeManager.prepare")(function* (
-      request: PrepareWorktreeRequest,
-    ) {
+    const prepare = Effect.fn("WorktreeManager.prepare")(function* (request: PrepareWorktreeRequest) {
       const repoRoot = yield* repositoryRoot(request.repoCwd, request.repo);
-      const worktreeRoot = path.join(
-        repoRoot,
-        ".agentfiles",
-        "worktrees",
-      );
+      const worktreeRoot = path.join(repoRoot, ".agentfiles", "worktrees");
       const branchInput = nonEmptyString(request.worktree);
       const explicitCwd = nonEmptyString(request.cwd);
-      const fallbackName = worktreeSlug(
-        branchInput ?? explicitCwd ?? nonEmptyString(request.message),
-      );
-      const worktreePath = explicitCwd
-        ? path.resolve(repoRoot, explicitCwd)
-        : path.join(worktreeRoot, fallbackName);
+      const fallbackName = worktreeSlug(branchInput ?? explicitCwd ?? nonEmptyString(request.message));
+      const worktreePath = explicitCwd ? path.resolve(repoRoot, explicitCwd) : path.join(worktreeRoot, fallbackName);
       const configuredRoots = (request.allowedWorktreeRoots ?? [])
         .map(nonEmptyString)
         .filter((root): root is string => root !== undefined)
         .map((root) => path.resolve(repoRoot, root));
-      const allowedRoots = explicitCwd
-        ? [repoRoot, ...configuredRoots]
-        : [worktreeRoot];
+      const allowedRoots = explicitCwd ? [repoRoot, ...configuredRoots] : [worktreeRoot];
       const gitMetadata = path.join(repoRoot, ".git");
 
       if (
@@ -229,15 +167,13 @@ export const WorktreeManagerLive = Layer.effect(
       }
 
       if (!explicitCwd) {
-        yield* fileSystem.makeDirectory(worktreeRoot, { recursive: true }).pipe(
-          Effect.mapError((cause) =>
-            pathFailure(
-              `Cannot create worktree root: ${worktreeRoot}`,
-              worktreePath,
-              cause,
+        yield* fileSystem
+          .makeDirectory(worktreeRoot, { recursive: true })
+          .pipe(
+            Effect.mapError((cause) =>
+              pathFailure(`Cannot create worktree root: ${worktreeRoot}`, worktreePath, cause),
             ),
-          ),
-        );
+          );
       }
 
       yield* canonicalCandidate(worktreePath, allowedRoots);
@@ -246,23 +182,17 @@ export const WorktreeManagerLive = Layer.effect(
 
       return yield* lock.withPermit(
         Effect.gen(function* () {
-          const existing = yield* fileSystem.exists(worktreePath).pipe(
-            Effect.mapError((cause) =>
-              pathFailure(
-                `Cannot inspect worktree path: ${worktreePath}`,
-                worktreePath,
-                cause,
+          const existing = yield* fileSystem
+            .exists(worktreePath)
+            .pipe(
+              Effect.mapError((cause) =>
+                pathFailure(`Cannot inspect worktree path: ${worktreePath}`, worktreePath, cause),
               ),
-            ),
-          );
+            );
           const registered = yield* registeredWorktrees(repoRoot);
 
           if (existing) {
-            if (
-              registered.some((entry) =>
-                isSamePath(path, entry, worktreePath),
-              )
-            ) {
+            if (registered.some((entry) => isSamePath(path, entry, worktreePath))) {
               yield* canonicalCandidate(worktreePath, allowedRoots);
               return worktreePath;
             }
@@ -273,14 +203,8 @@ export const WorktreeManagerLive = Layer.effect(
             });
           }
 
-          const branch =
-            branchInput ??
-            gitBranchName(path.basename(worktreePath) || fallbackName);
-          const branchCheck = yield* gitResult(repoRoot, [
-            "check-ref-format",
-            "--branch",
-            branch,
-          ]);
+          const branch = branchInput ?? gitBranchName(path.basename(worktreePath) || fallbackName);
+          const branchCheck = yield* gitResult(repoRoot, ["check-ref-format", "--branch", branch]);
 
           if (branchCheck.exitCode !== 0) {
             return yield* WorktreePathConflict.make({
@@ -290,12 +214,7 @@ export const WorktreeManagerLive = Layer.effect(
             });
           }
 
-          const branchLookup = yield* gitResult(repoRoot, [
-            "show-ref",
-            "--verify",
-            "--quiet",
-            `refs/heads/${branch}`,
-          ]);
+          const branchLookup = yield* gitResult(repoRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
           const addArgs =
             branchLookup.exitCode === 0
               ? ["worktree", "add", worktreePath, branch]
@@ -304,9 +223,7 @@ export const WorktreeManagerLive = Layer.effect(
           yield* canonicalCandidate(worktreePath, allowedRoots);
           const after = yield* registeredWorktrees(repoRoot);
 
-          if (
-            !after.some((entry) => isSamePath(path, entry, worktreePath))
-          ) {
+          if (!after.some((entry) => isSamePath(path, entry, worktreePath))) {
             return yield* WorktreePathConflict.make({
               message: `Created path is not a registered worktree of the expected repository: ${worktreePath}`,
               worktreePath,
@@ -323,9 +240,7 @@ export const WorktreeManagerLive = Layer.effect(
 );
 
 function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value.trim()
-    : undefined;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function worktreeSlug(value: unknown): string {
@@ -357,18 +272,11 @@ function hashText(value: string): string {
   return (hash >>> 0).toString(36).slice(0, 6);
 }
 
-function isDescendant(
-  path: Path.Path,
-  root: string,
-  candidate: string,
-): boolean {
+function isDescendant(path: Path.Path, root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
 
   return (
-    relative.length > 0 &&
-    relative !== ".." &&
-    !relative.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relative)
+    relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
   );
 }
 

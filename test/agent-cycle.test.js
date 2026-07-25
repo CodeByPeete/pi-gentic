@@ -24,15 +24,9 @@ test("agent cycle recovers from stale active agent names", () => {
 });
 
 test("default agent applies only to fresh startup and new sessions", () => {
-  assert.equal(
-    shouldApplyDefaultAgent({ reason: "startup" }, { getEntries: () => [] }),
-    true,
-  );
+  assert.equal(shouldApplyDefaultAgent({ reason: "startup" }, { getEntries: () => [] }), true);
 
-  assert.equal(
-    shouldApplyDefaultAgent({ reason: "new" }, { getEntries: () => [] }),
-    true,
-  );
+  assert.equal(shouldApplyDefaultAgent({ reason: "new" }, { getEntries: () => [] }), true);
 
   assert.equal(
     shouldApplyDefaultAgent(
@@ -45,10 +39,7 @@ test("default agent applies only to fresh startup and new sessions", () => {
     true,
   );
 
-  assert.equal(
-    shouldApplyDefaultAgent({ reason: "resume" }, { getEntries: () => [] }),
-    false,
-  );
+  assert.equal(shouldApplyDefaultAgent({ reason: "resume" }, { getEntries: () => [] }), false);
 
   assert.equal(
     shouldApplyDefaultAgent(
@@ -70,9 +61,7 @@ test("default agent applies only to fresh startup and new sessions", () => {
     shouldApplyDefaultAgent(
       { reason: "startup" },
       {
-        getEntries: () => [
-          { type: "message", message: { role: "user", content: "hello" } },
-        ],
+        getEntries: () => [{ type: "message", message: { role: "user", content: "hello" } }],
       },
     ),
     false,
@@ -110,10 +99,7 @@ test("persisted state readers ignore non-entry values", () => {
     agentName: undefined,
     overrides: undefined,
   });
-  assert.equal(
-    shouldApplyDefaultAgent({ reason: "startup" }, sessionManager),
-    true,
-  );
+  assert.equal(shouldApplyDefaultAgent({ reason: "startup" }, sessionManager), true);
 });
 
 test("active state persistence requires a writable native session", () => {
@@ -139,10 +125,7 @@ test("agent cycle shortcut uses a simple VSCode-friendly key", () => {
 });
 
 test("default agent setting accepts names and treats null or empty values as disabled", () => {
-  assert.equal(
-    configuredDefaultAgent({ defaultAgent: " researcher " }),
-    "researcher",
-  );
+  assert.equal(configuredDefaultAgent({ defaultAgent: " researcher " }), "researcher");
 
   assert.equal(configuredDefaultAgent({ defaultAgent: null }), undefined);
 

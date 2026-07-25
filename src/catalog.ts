@@ -798,11 +798,7 @@ export function resolveSessionPolicy({
       tools: applyFilterList(allTools, toolsFilter),
       skills: applyFilterList(allSkills, skillsFilter),
     },
-    resourceFilters: {
-      agents: [...agentsFilter],
-      tools: [...toolsFilter],
-      skills: [...skillsFilter],
-    },
+    toolFilters: [...toolsFilter],
     recipe: {
       agentReference: activeAgent?.name,
       overrides: overrides ?? undefined,

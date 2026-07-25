@@ -56,107 +56,6 @@ function createGitRepo(prefix = path.join(tmpdir(), "pi-gentic-worktree-repo-"))
   return repo;
 }
 
-function createToolSelection(initialToolNames) {
-  let observedToolNames = [...initialToolNames];
-  const writes = [];
-
-  return {
-    writes,
-    observe: () => observedToolNames,
-    replace: (toolNames) => {
-      observedToolNames = [...toolNames];
-    },
-    apply: (toolNames) => {
-      observedToolNames = [...toolNames];
-      writes.push([...toolNames]);
-    },
-  };
-}
-
-function createVisibleToolPolicyHarness({
-  registeredToolNames,
-  activeToolNames,
-  initialFilters = ["agents"],
-  modelSelection,
-}) {
-  const selection = createToolSelection(activeToolNames);
-  const sessionManager = { getEntries: () => [] };
-  const model = { provider: "openai", id: "next" };
-  let filters = initialFilters;
-  const pi = {
-    getAllTools: () => registeredToolNames.map((name) => ({ name })),
-    getActiveTools: selection.observe,
-    setActiveTools: selection.apply,
-    setModel: async () => {
-      if (modelSelection) selection.replace(modelSelection);
-    },
-  };
-  const orchestrator = new PiGenticOrchestrator(pi, effectRuntime);
-  const ctx = {
-    cwd: process.cwd(),
-    mode: "rpc",
-    getSystemPromptOptions: () => ({ skills: [] }),
-    isProjectTrusted: () => false,
-    modelRegistry: { getAvailable: () => [model] },
-    sessionManager,
-    ui: {},
-  };
-
-  orchestrator.load = () => ({ agents: [], settings: {} });
-  orchestrator.resolvePolicy = () => ({
-    model: modelSelection ? model.id : undefined,
-    resourceFilters: { tools: filters },
-    resources: { agents: [], tools: [], skills: [] },
-  });
-
-  return {
-    ctx,
-    orchestrator,
-    selection,
-    setFilters: (nextFilters) => {
-      filters = nextFilters;
-    },
-  };
-}
-
-function createManagedToolPolicyHarness({
-  registeredToolNames,
-  activeToolNames,
-  initialFilters = ["agents"],
-  modelSelection,
-}) {
-  const selection = createToolSelection(activeToolNames);
-  const model = { provider: "openai", id: "next" };
-  let filters = initialFilters;
-  const session = {
-    getAllTools: () => registeredToolNames.map((name) => ({ name })),
-    getActiveToolNames: selection.observe,
-    modelRuntime: { getAvailable: () => [model] },
-    sessionManager: { getEntries: () => [] },
-    setActiveToolsByName: selection.apply,
-    setModel: async () => {
-      if (modelSelection) selection.replace(modelSelection);
-    },
-    setThinkingLevel: () => {},
-  };
-  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
-
-  orchestrator.resolveAgentSessionPolicy = () => ({
-    model: modelSelection ? model.id : undefined,
-    resourceFilters: { tools: filters },
-    resources: { agents: [], tools: [], skills: [] },
-  });
-
-  return {
-    orchestrator,
-    selection,
-    session,
-    setFilters: (nextFilters) => {
-      filters = nextFilters;
-    },
-  };
-}
-
 test("terminal card persistence validates snapshots and copies activities", () => {
   assert.equal(persistAgentCardState({}, { status: "done" }), false);
   assert.equal(persistAgentCardState({}, { cardId: "card", status: "running" }), false);
@@ -1239,7 +1138,7 @@ test("prompt append ignores stale extension contexts during session replacement"
   assert.equal(orchestrator.buildPromptAppend(ctx, { systemPrompt: "Base prompt" }), undefined);
 });
 
-test("visible turn preparation reconciles tools before prompt construction", () => {
+test("visible tool policy runs before prompts and after model changes", async () => {
   let activeTools = ["exec_command", "agents"];
   const toolWrites = [];
   let runtimePreferenceWrites = 0;
@@ -1251,7 +1150,10 @@ test("visible turn preparation reconciles tools before prompt construction", () 
         activeTools = selection;
         toolWrites.push(selection);
       },
-      setModel: async () => runtimePreferenceWrites++,
+      setModel: async () => {
+        runtimePreferenceWrites++;
+        activeTools = ["exec_command", "agents"];
+      },
       setThinkingLevel: () => runtimePreferenceWrites++,
     },
     effectRuntime,
@@ -1261,6 +1163,7 @@ test("visible turn preparation reconciles tools before prompt construction", () 
     mode: "rpc",
     getSystemPromptOptions: () => ({ skills: [] }),
     isProjectTrusted: () => false,
+    modelRegistry: { getAvailable: () => [{ provider: "openai", id: "unused" }] },
     sessionManager: { getEntries: () => [] },
     ui: {},
   };
@@ -1278,36 +1181,13 @@ test("visible turn preparation reconciles tools before prompt construction", () 
   assert.deepEqual(orchestrator.buildPromptAppend(ctx, { systemPrompt: "Base prompt" }), {
     systemPrompt: "Base prompt",
   });
+  assert.deepEqual(orchestrator.applyPolicySnapshot(ctx).policy.resources.tools, ["agents"]);
   assert.deepEqual(toolWrites, [["agents"]]);
   assert.equal(runtimePreferenceWrites, 0);
-});
 
-test("policy snapshots report observed callable tools without mutating Pi", () => {
-  let writes = 0;
-  const orchestrator = new PiGenticOrchestrator(
-    {
-      getAllTools: () => ["read", "exec_command", "agents"].map((name) => ({ name })),
-      getActiveTools: () => ["exec_command", "agents"],
-      setActiveTools: () => writes++,
-    },
-    effectRuntime,
-  );
-  const ctx = {
-    cwd: process.cwd(),
-    getSystemPromptOptions: () => ({ skills: [] }),
-    isProjectTrusted: () => false,
-    sessionManager: { getEntries: () => [] },
-  };
-
-  orchestrator.load = () => ({
-    agents: [],
-    settings: { agentDefaults: {}, agentlessSession: {} },
-  });
-
-  const { policy } = orchestrator.applyPolicySnapshot(ctx);
-
-  assert.deepEqual(policy.resources.tools, ["exec_command", "agents"]);
-  assert.equal(writes, 0);
+  await orchestrator.applyCurrentPolicy(ctx);
+  assert.deepEqual(activeTools, ["agents"]);
+  assert.equal(runtimePreferenceWrites, 2);
 });
 
 test("orchestrator routes target, status, abort, and policy operations", async () => {
@@ -1530,7 +1410,7 @@ test("orchestrator applies runtime policy and discovers the current session", as
   orchestrator.resolveAgentSessionPolicy = () => ({
     model: "gpt-test",
     thinking: "high",
-    resourceFilters: { tools: ["read"] },
+    toolFilters: ["read"],
     resources: { tools: ["read"], agents: [], skills: [] },
   });
 
@@ -1650,79 +1530,6 @@ test("orchestrator applies runtime policy and discovers the current session", as
   } finally {
     await runtime.dispose();
   }
-});
-
-test("visible Session policy preserves and restores its ambient tool selection", async () => {
-  const { orchestrator, ctx, selection, setFilters } = createVisibleToolPolicyHarness({
-    registeredToolNames: ["read", "exec_command", "agents"],
-    activeToolNames: ["exec_command", "agents"],
-  });
-
-  const restricted = await orchestrator.applyCurrentPolicy(ctx);
-  setFilters(["*"]);
-  const released = await orchestrator.applyCurrentPolicy(ctx);
-  await orchestrator.applyCurrentPolicy(ctx);
-
-  assert.deepEqual(restricted.policy.resources.tools, ["agents"]);
-  assert.deepEqual(released.policy.resources.tools, ["exec_command", "agents"]);
-  assert.deepEqual(selection.writes, [["agents"], ["exec_command", "agents"]]);
-});
-
-test("visible Session policy adopts a newer complete host selection", async () => {
-  const { orchestrator, ctx, selection, setFilters } = createVisibleToolPolicyHarness({
-    registeredToolNames: ["exec_command", "view_image", "agents"],
-    activeToolNames: ["exec_command", "agents"],
-  });
-
-  await orchestrator.applyCurrentPolicy(ctx);
-  selection.replace(["view_image", "agents"]);
-  await orchestrator.applyCurrentPolicy(ctx);
-  setFilters(["*"]);
-  const released = await orchestrator.applyCurrentPolicy(ctx);
-
-  assert.deepEqual(released.policy.resources.tools, ["view_image", "agents"]);
-  assert.deepEqual(selection.writes, [["agents"], ["agents"], ["view_image", "agents"]]);
-});
-
-test("visible Session policy is applied after model-selection tool changes", async () => {
-  const { orchestrator, ctx, selection } = createVisibleToolPolicyHarness({
-    registeredToolNames: ["exec_command", "agents"],
-    activeToolNames: ["exec_command", "agents"],
-    modelSelection: ["exec_command", "agents"],
-  });
-
-  await orchestrator.applyCurrentPolicy(ctx);
-
-  assert.deepEqual(selection.observe(), ["agents"]);
-  assert.deepEqual(selection.writes.at(-1), ["agents"]);
-});
-
-test("managed Session policy uses the same ambient restoration semantics", async () => {
-  const { orchestrator, session, selection, setFilters } = createManagedToolPolicyHarness({
-    registeredToolNames: ["read", "exec_command", "agents"],
-    activeToolNames: ["exec_command", "agents"],
-  });
-
-  const restricted = await orchestrator.applyPolicyToAgentSession(session, {});
-  setFilters(["*"]);
-  const released = await orchestrator.applyPolicyToAgentSession(session, {});
-  await orchestrator.applyPolicyToAgentSession(session, {});
-
-  assert.deepEqual(restricted.resources.tools, ["agents"]);
-  assert.deepEqual(released.resources.tools, ["exec_command", "agents"]);
-  assert.deepEqual(selection.writes, [["agents"], ["exec_command", "agents"]]);
-});
-
-test("managed Session policy is applied after model-selection tool changes", async () => {
-  const { orchestrator, session, selection } = createManagedToolPolicyHarness({
-    registeredToolNames: ["exec_command", "agents"],
-    activeToolNames: ["exec_command", "agents"],
-    modelSelection: ["exec_command", "agents"],
-  });
-
-  await orchestrator.applyPolicyToAgentSession(session, {});
-
-  assert.deepEqual(selection.observe(), ["agents"]);
 });
 
 test("worktree preparation uses cwd as folder and empty worktree as branch from folder", async () => {

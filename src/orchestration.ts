@@ -43,11 +43,7 @@ import {
   type DelegationId as DelegationIdValue,
   type SessionId as SessionIdValue,
 } from "./domain/identifiers.js";
-import {
-  reconcileActiveToolSelection,
-  resolveActiveToolSelection,
-  type ToolPolicyState,
-} from "./domain/capabilities.js";
+import { reconcileActiveToolSelection, type ToolPolicyState } from "./domain/capabilities.js";
 import { DelegationFibers } from "./infrastructure/runtime/DelegationFibers.js";
 import { RuntimeMetadata, RuntimeRegistry } from "./infrastructure/runtime/RuntimeRegistry.js";
 import {
@@ -1414,13 +1410,13 @@ export class PiGenticOrchestrator {
   }
 
   private reconcileVisibleToolPolicy(ctx: PiContext, policy: SessionPolicy) {
-    const tools = this.reconcileSessionTools({
-      sessionManager: ctx.sessionManager,
-      registeredToolNames: this.pi.getAllTools().map((tool) => tool.name),
-      observedToolNames: this.pi.getActiveTools(),
-      filters: policy.resourceFilters.tools,
-      apply: (selection) => this.pi.setActiveTools(selection),
-    });
+    const tools = this.reconcileSessionTools(
+      ctx.sessionManager,
+      this.pi.getAllTools().map((tool) => tool.name),
+      this.pi.getActiveTools(),
+      policy.toolFilters,
+      (selection) => this.pi.setActiveTools(selection),
+    );
     const effectivePolicy = { ...policy, resources: { ...policy.resources, tools } };
 
     this.currentAgentName = effectivePolicy.agentName;
@@ -1428,19 +1424,13 @@ export class PiGenticOrchestrator {
     return effectivePolicy;
   }
 
-  private reconcileSessionTools({
-    sessionManager,
-    registeredToolNames,
-    observedToolNames,
-    filters,
-    apply,
-  }: {
-    sessionManager: PiSessionManager;
-    registeredToolNames: ReadonlyArray<string>;
-    observedToolNames: ReadonlyArray<string>;
-    filters: ReadonlyArray<string> | undefined;
-    apply: (selection: Array<string>) => void;
-  }) {
+  private reconcileSessionTools(
+    sessionManager: PiSessionManager,
+    registeredToolNames: ReadonlyArray<string>,
+    observedToolNames: ReadonlyArray<string>,
+    filters: ReadonlyArray<string> | undefined,
+    apply: (selection: Array<string>) => void,
+  ) {
     const reconciliation = reconcileActiveToolSelection({
       registeredToolNames,
       observedToolNames,
@@ -1498,22 +1488,10 @@ export class PiGenticOrchestrator {
     const config = this.load(ctx);
     const state = getActiveState(ctx.sessionManager);
     const activeAgent = config.agents.find((agent) => agent.name === state.agentName);
-    const registeredToolNames = this.pi.getAllTools().map((tool) => tool.name);
-    const resolvedPolicy = this.resolvePolicy(ctx, config, state, {
-      tools: registeredToolNames,
+    const policy = this.resolvePolicy(ctx, config, state, {
+      tools: this.pi.getActiveTools(),
       skills: resources.skills ?? skillContext(ctx).names,
     });
-    const policy = {
-      ...resolvedPolicy,
-      resources: {
-        ...resolvedPolicy.resources,
-        tools: resolveActiveToolSelection({
-          registeredToolNames,
-          ambientToolNames: this.pi.getActiveTools(),
-          filters: ["*"],
-        }),
-      },
-    };
     this.currentAgentName = policy.agentName;
 
     return { config, policy, activeAgent };
@@ -2120,13 +2098,13 @@ export class PiGenticOrchestrator {
     }
 
     if (isThinkingLevel(resolvedPolicy.thinking)) session.setThinkingLevel(resolvedPolicy.thinking);
-    const tools = this.reconcileSessionTools({
-      sessionManager: session.sessionManager,
-      registeredToolNames: session.getAllTools().map((tool) => tool.name),
-      observedToolNames: session.getActiveToolNames(),
-      filters: resolvedPolicy.resourceFilters.tools,
-      apply: (selection) => session.setActiveToolsByName(selection),
-    });
+    const tools = this.reconcileSessionTools(
+      session.sessionManager,
+      session.getAllTools().map((tool) => tool.name),
+      session.getActiveToolNames(),
+      resolvedPolicy.toolFilters,
+      (selection) => session.setActiveToolsByName(selection),
+    );
 
     return { ...resolvedPolicy, resources: { ...resolvedPolicy.resources, tools } };
   }

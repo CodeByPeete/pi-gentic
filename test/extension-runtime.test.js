@@ -37,7 +37,8 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   const commands = new Map();
   const renderers = new Map();
   const shortcuts = new Map();
-  const tools = [{ name: "native_tool" }];
+  const tools = [];
+  const getAllTools = () => [{ name: "native_tool" }, ...tools];
   let activeTools = ["native_tool"];
   const activeToolWrites = [];
   const notifications = [];
@@ -45,7 +46,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   const activeEntries = [];
   const pi = {
     events: { emit: () => {} },
-    getAllTools: () => tools,
+    getAllTools,
     getActiveTools: () => activeTools,
     getCommands: () => [...commands].map(([name, command]) => ({ name, ...command })),
     getShortcuts: () => [...shortcuts].map(([key, shortcut]) => ({ key, ...shortcut })),
@@ -103,8 +104,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
 
   assert.deepEqual([...commands.keys()].sort(), ["agent", "send", "skill"]);
   assert.equal(shortcuts.size, 1);
-  const agentsTool = tools.find((tool) => tool.name === "agents");
-  assert.ok(agentsTool);
+  assert.equal(tools[0].name, "agents");
   assert.equal(
     typeof renderers.get("pi-gentic:card")(
       { content: "done", details: { kind: "send", status: "done" } },
@@ -176,16 +176,10 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   await commands.get("send").handler("message --agent missing-agent", ctx);
   assert.match(notifications.flat().join("\n"), /No active agent|Usage/);
 
-  const toolResult = await agentsTool.execute(
-    "tool-call",
-    { action: "list" },
-    AbortSignal.timeout(1000),
-    () => {},
-    ctx,
-  );
+  const toolResult = await tools[0].execute("tool-call", { action: "list" }, AbortSignal.timeout(1000), () => {}, ctx);
   assert.equal(toolResult.isError, undefined);
   assert.ok(toolResult.content[0].text.length > 0);
-  const getResult = await agentsTool.execute(
+  const getResult = await tools[0].execute(
     "tool-get",
     { action: "get", agent: "fixture-reviewer" },
     AbortSignal.timeout(1000),
@@ -193,7 +187,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     ctx,
   );
   assert.match(getResult.content[0].text, /fixture-reviewer/);
-  const statusResult = await agentsTool.execute(
+  const statusResult = await tools[0].execute(
     "tool-status",
     { action: "status", sessionId: targetSessionId },
     AbortSignal.timeout(1000),
@@ -201,7 +195,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     ctx,
   );
   assert.equal(statusResult.isError, undefined);
-  const loadResult = await agentsTool.execute(
+  const loadResult = await tools[0].execute(
     "tool-load",
     { action: "load", agent: "clear" },
     AbortSignal.timeout(1000),
@@ -209,7 +203,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     ctx,
   );
   assert.equal(loadResult.isError, undefined);
-  const abortResult = await agentsTool.execute(
+  const abortResult = await tools[0].execute(
     "tool-abort",
     { action: "abort" },
     AbortSignal.timeout(1000),
@@ -218,7 +212,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   );
   assert.equal(abortResult.isError, undefined);
   assert.equal(ctx.aborted, true);
-  const discoverResult = await agentsTool.execute(
+  const discoverResult = await tools[0].execute(
     "tool-discover",
     { action: "discoverSessions", rx: 0, ry: 0 },
     AbortSignal.timeout(1000),
@@ -226,7 +220,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     ctx,
   );
   assert.equal(discoverResult.isError, undefined, discoverResult.content[0].text);
-  const toolError = await agentsTool.execute(
+  const toolError = await tools[0].execute(
     "tool-error",
     { action: "status" },
     AbortSignal.timeout(1000),
@@ -245,7 +239,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     throw new Error("stale models");
   };
   await commands.get("agent").handler("", ctx);
-  pi.getAllTools = () => tools;
+  pi.getAllTools = getAllTools;
   pi.getCommands = () => [...commands].map(([name, command]) => ({ name, ...command }));
   ctx.modelRegistry.getAvailable = () => [];
   reportRuntimeDiagnostic("extension-test", "warning fixture", "warning");

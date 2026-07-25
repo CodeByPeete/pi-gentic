@@ -528,7 +528,7 @@ test("policy applies runtime overrides", () => {
   assert.equal(policy.model, "b");
 
   assert.deepEqual(policy.resources.tools, ["read", "bash"]);
-  assert.deepEqual(policy.resourceFilters.tools, ["read", "+bash"]);
+  assert.deepEqual(policy.toolFilters, ["read", "+bash"]);
 });
 
 test("policy merges system prompt file filters like other access lanes", () => {

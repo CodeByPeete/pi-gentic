@@ -4,7 +4,6 @@ import { FastCheck } from "effect/testing";
 import {
   applyCapabilityFilter,
   reconcileActiveToolSelection,
-  resolveActiveToolSelection,
   resolveCapabilitySet,
 } from "../src/domain/capabilities.js";
 
@@ -17,164 +16,87 @@ const filters = FastCheck.array(
 );
 
 describe("CapabilitySet", () => {
-  it.effect("adopts the first observed active selection as ambient", () =>
+  it.effect("tracks, restores, replaces, and prunes ambient selections", () =>
     Effect.sync(() => {
-      assert.deepStrictEqual(
-        reconcileActiveToolSelection({
-          registeredToolNames: ["read", "exec_command", "agents"],
-          observedToolNames: ["exec_command", "agents"],
-          filters: ["*"],
-        }),
-        {
-          selection: ["exec_command", "agents"],
-          changed: false,
-          state: {
-            ambientToolNames: ["exec_command", "agents"],
-            appliedToolNames: ["exec_command", "agents"],
-          },
-        },
-      );
-    }),
-  );
-
-  it.effect("restores ambient tools when an explicit restriction is released", () =>
-    Effect.sync(() => {
+      const registeredToolNames = ["read", "exec_command", "view_image", "agents"];
       const restricted = reconcileActiveToolSelection({
-        registeredToolNames: ["read", "exec_command", "agents"],
+        registeredToolNames,
         observedToolNames: ["exec_command", "agents"],
         filters: ["agents"],
       });
       const released = reconcileActiveToolSelection({
-        registeredToolNames: ["read", "exec_command", "agents"],
+        registeredToolNames,
         observedToolNames: restricted.selection,
         filters: ["*"],
         previousState: restricted.state,
       });
-
-      assert.deepStrictEqual(restricted.selection, ["agents"]);
-      assert.deepStrictEqual(released.selection, ["exec_command", "agents"]);
-    }),
-  );
-
-  it.effect("adopts a newer complete observed selection as ambient", () =>
-    Effect.sync(() => {
-      const reconciliation = reconcileActiveToolSelection({
-        registeredToolNames: ["read", "exec_command", "view_image", "agents"],
+      const replaced = reconcileActiveToolSelection({
+        registeredToolNames,
         observedToolNames: ["view_image", "agents"],
         filters: ["*"],
-        previousState: {
-          ambientToolNames: ["exec_command", "agents"],
-          appliedToolNames: ["agents"],
-        },
+        previousState: restricted.state,
+      });
+      const pruned = reconcileActiveToolSelection({
+        registeredToolNames: ["agents"],
+        observedToolNames: ["agents"],
+        filters: ["*"],
+        previousState: restricted.state,
       });
 
-      assert.deepStrictEqual(reconciliation, {
-        selection: ["view_image", "agents"],
-        changed: false,
-        state: {
-          ambientToolNames: ["view_image", "agents"],
-          appliedToolNames: ["view_image", "agents"],
-        },
+      assert.deepStrictEqual(restricted, {
+        selection: ["agents"],
+        changed: true,
+        state: { ambientToolNames: ["exec_command", "agents"], appliedToolNames: ["agents"] },
       });
+      assert.deepStrictEqual(released.selection, ["exec_command", "agents"]);
+      assert.deepStrictEqual(replaced.state, {
+        ambientToolNames: ["view_image", "agents"],
+        appliedToolNames: ["view_image", "agents"],
+      });
+      assert.deepStrictEqual(pruned.state, { ambientToolNames: ["agents"], appliedToolNames: ["agents"] });
     }),
   );
 
-  it.effect("drops unavailable tools from remembered policy state", () =>
+  it.effect.each([
+    [
+      "preserves wildcard ambient tools",
+      ["read", "bash", "exec_command", "apply_patch", "agents"],
+      ["exec_command", "apply_patch", "agents"],
+      ["*"],
+      ["exec_command", "apply_patch", "agents"],
+    ],
+    ["subtracts exclusions", ["read", "write", "agents"], ["write", "agents"], ["!write"], ["agents"]],
+    [
+      "applies additions before removals",
+      ["read", "write", "agents", "view_image"],
+      ["agents"],
+      ["*", "+VIEW_IMAGE", "+write", "-view_image"],
+      ["agents", "write"],
+    ],
+    [
+      "selects patterns in catalog order",
+      ["write", "read_file", "read", "agents"],
+      ["agents", "write"],
+      ["read*", "+agents"],
+      ["read_file", "read", "agents"],
+    ],
+    ["selects nothing for an empty policy", ["read", "agents"], ["agents"], [], []],
+    [
+      "ignores unknown and duplicate names",
+      ["read", "agents"],
+      ["agents", "missing", "agents"],
+      ["*", "+missing", "+read", "+READ"],
+      ["agents", "read"],
+    ],
+  ])("%s", ([_name, registered, observed, filters, expected]) =>
     Effect.sync(() => {
-      assert.deepStrictEqual(
-        reconcileActiveToolSelection({
-          registeredToolNames: ["agents"],
-          observedToolNames: ["agents"],
-          filters: ["*"],
-          previousState: {
-            ambientToolNames: ["exec_command", "agents"],
-            appliedToolNames: ["agents"],
-          },
-        }),
-        {
-          selection: ["agents"],
-          changed: false,
-          state: { ambientToolNames: ["agents"], appliedToolNames: ["agents"] },
-        },
-      );
-    }),
-  );
+      const result = reconcileActiveToolSelection({
+        registeredToolNames: registered,
+        observedToolNames: observed,
+        filters,
+      });
 
-  it.effect("preserves an ambient adapter tool surface for wildcard policy", () =>
-    Effect.sync(() => {
-      assert.deepStrictEqual(
-        resolveActiveToolSelection({
-          registeredToolNames: ["read", "bash", "exec_command", "apply_patch", "agents"],
-          ambientToolNames: ["exec_command", "apply_patch", "agents"],
-          filters: ["*"],
-        }),
-        ["exec_command", "apply_patch", "agents"],
-      );
-    }),
-  );
-
-  it.effect("subtracts exclusion-only policy from the ambient tool selection", () =>
-    Effect.sync(() => {
-      assert.deepStrictEqual(
-        resolveActiveToolSelection({
-          registeredToolNames: ["read", "write", "agents"],
-          ambientToolNames: ["write", "agents"],
-          filters: ["!write"],
-        }),
-        ["agents"],
-      );
-    }),
-  );
-
-  it.effect("applies exact additions before exact removals", () =>
-    Effect.sync(() => {
-      assert.deepStrictEqual(
-        resolveActiveToolSelection({
-          registeredToolNames: ["read", "write", "agents", "view_image"],
-          ambientToolNames: ["agents"],
-          filters: ["*", "+VIEW_IMAGE", "+write", "-view_image"],
-        }),
-        ["agents", "write"],
-      );
-    }),
-  );
-
-  it.effect("selects plain patterns explicitly in registered catalog order", () =>
-    Effect.sync(() => {
-      assert.deepStrictEqual(
-        resolveActiveToolSelection({
-          registeredToolNames: ["write", "read_file", "read", "agents"],
-          ambientToolNames: ["agents", "write"],
-          filters: ["read*", "+agents"],
-        }),
-        ["read_file", "read", "agents"],
-      );
-    }),
-  );
-
-  it.effect("selects no tools for an empty filter list", () =>
-    Effect.sync(() => {
-      assert.deepStrictEqual(
-        resolveActiveToolSelection({
-          registeredToolNames: ["read", "agents"],
-          ambientToolNames: ["agents"],
-          filters: [],
-        }),
-        [],
-      );
-    }),
-  );
-
-  it.effect("ignores unknown and duplicate tool names", () =>
-    Effect.sync(() => {
-      assert.deepStrictEqual(
-        resolveActiveToolSelection({
-          registeredToolNames: ["read", "agents"],
-          ambientToolNames: ["agents", "missing", "agents"],
-          filters: ["*", "+missing", "+read", "+READ"],
-        }),
-        ["agents", "read"],
-      );
+      assert.deepStrictEqual(result.selection, expected);
     }),
   );
 
@@ -228,6 +150,7 @@ describe("CapabilitySet", () => {
       assert.deepStrictEqual(resolveCapabilitySet(["read", "write"], [["read"], []]), []);
       assert.deepStrictEqual(applyCapabilityFilter(["read", "write"], undefined), ["read", "write"]);
       assert.deepStrictEqual(applyCapabilityFilter(["read", "write"], ["read", "+write", "-read"]), ["write"]);
+      assert.deepStrictEqual(applyCapabilityFilter(["write", "read"], ["read", "+write"]), ["write", "read"]);
     }),
   );
 });

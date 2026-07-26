@@ -1,4 +1,6 @@
 import { statSync } from "node:fs";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,8 +13,9 @@ import type { PiTheme } from "../../../pi-types.js";
 import { getLiveRuntimeState, livePath, loadPiCodingAgentPeer } from "./bridge.js";
 import {
   enrichSessionSummary,
-  listAllSessionSkeletonsEffect,
-  listSessionSkeletonsEffect,
+  enrichSessionTreeSkeletonEffect,
+  listAllFastSessionSkeletonsEffect,
+  listFastSessionSkeletonsEffect,
   summarizeSession,
   withRuntimeState,
 } from "../../../sessions.js";
@@ -25,6 +28,7 @@ const SESSION_PRESENTATION = Symbol("pi-gentic.session-presentation");
 const REFRESH_INTERVAL_MS = 1000;
 const FAST_RESUME_THRESHOLD = 100;
 const RESUME_CACHE_CAPACITY = 4;
+const PERSISTED_RESUME_CACHE_VERSION = 1;
 const resumeRefreshers = new Set<(sessions?: LegacyRecord[]) => void>();
 const SessionListSchema = Schema.Array(Schema.Record(Schema.String, Schema.Json));
 const sessionListWorker = fileURLToPath(new URL("./session-list-worker.js", import.meta.url));
@@ -99,13 +103,17 @@ async function installSessionListCache(SessionManager: LegacyRecord, bridge: Res
   if (typeof nativeList !== "function" || typeof nativeListAll !== "function")
     throw new Error("Pi resume integration unavailable: session loaders are inaccessible.");
   [SessionManager.list, SessionManager.listAll] = await bridge.runtime.runPromise(
-    Effect.all([cachedSessionLoader("current", nativeList, bridge), cachedSessionLoader("all", nativeListAll, bridge)]),
+    Effect.all([
+      cachedSessionLoader("current", nativeList, nativeListAll, bridge),
+      cachedSessionLoader("all", nativeListAll, nativeListAll, bridge),
+    ]),
   );
 }
 
 function cachedSessionLoader(
   scope: "current" | "all",
   nativeLoader: (...args: unknown[]) => Promise<LegacyRecord[]>,
+  nativeListAll: (...args: unknown[]) => Promise<LegacyRecord[]>,
   bridge: ResumeBridgeState,
 ) {
   return Effect.gen(function* () {
@@ -126,20 +134,14 @@ function cachedSessionLoader(
             request.isolated
               ? loadSessionListIsolated(scope, request.args)
               : Effect.tryPromise({
-                  try: () => nativeLoader.apply(request.receiver, request.args),
+                  try: () => loadNativeSessionList(scope, nativeLoader, nativeListAll, request.receiver, request.args),
                   catch: resumeFailure(),
                 }).pipe(Effect.map((sessions) => sessions.map(enrichSessionSummary))),
           ),
           Effect.map(cloneSessions),
           Effect.map((sessions) => ({
             sessions,
-            snapshot:
-              sessions.length <= FAST_RESUME_THRESHOLD
-                ? snapshotSessionFiles(
-                    sessions,
-                    typeof requests.get(key)?.args[1] === "string" ? String(requests.get(key)?.args[1]) : undefined,
-                  )
-                : undefined,
+            snapshot: snapshotSessionFiles(sessions, sessionDirectoryArgument(scope, requests.get(key)?.args ?? [])),
           })),
           Effect.tap((entry) =>
             Effect.sync(() => {
@@ -147,6 +149,13 @@ function cachedSessionLoader(
               staleEntries.set(key, entry);
               if (staleEntries.size > RESUME_CACHE_CAPACITY) staleEntries.delete(staleEntries.keys().next().value!);
             }),
+          ),
+          Effect.tap((entry) =>
+            Effect.promise(() => writePersistedResumeEntry(key, entry)).pipe(
+              Effect.catchCause((cause) =>
+                Effect.sync(() => reportRuntimeDiagnostic("legacy-resume-cache-write", cause)),
+              ),
+            ),
           ),
           Effect.tap((entry) =>
             Effect.promise(() => publishSessionMetadata(bridge.runtime, entry.sessions)).pipe(
@@ -160,38 +169,39 @@ function cachedSessionLoader(
     });
 
     return async function loadCachedSessions(this: unknown, ...args: unknown[]) {
-      const key = `${scope}:${JSON.stringify(args.filter((argument) => typeof argument !== "function"))}`;
+      const key = sessionRequestKey(scope, args);
       const progress = [...args]
         .reverse()
         .find((argument): argument is (loaded: number, total: number) => void => typeof argument === "function");
-      const cached =
+      let cached =
         staleEntries.get(key) ??
         [...(await bridge.runtime.runPromise(Cache.entries(cache)))].find(([candidate]) => candidate === key)?.[1];
 
+      if (!cached) {
+        cached = await readPersistedResumeEntry(key);
+        if (cached) staleEntries.set(key, cached);
+      }
+
       if (cached) {
         const entry = cached;
-        if (!entry.snapshot) {
-          const skeletons = await quickSessionList(scope, args, bridge.runtime);
-          const cachedPaths = new Set(entry.sessions.map((session) => session.path));
-          const sessions = reconcileSessionMembership(entry.sessions, skeletons).map((session) =>
-            cachedPaths.has(session.path) ? session : { ...enrichSessionSummary(session), metadataPending: false },
-          );
-
-          progress?.(sessions.length, sessions.length);
-          requests.set(key, {
-            receiver: this,
-            args,
-            isolated: entry.sessions.length > FAST_RESUME_THRESHOLD,
-          });
-          void bridge.runtime.runPromise(Cache.refresh(cache, key)).catch(recordCompatibilityDiagnostic);
-          return cloneSessions(sessions);
-        }
-        if (sessionFilesUnchanged(entry.snapshot)) {
+        if (entry.snapshot && sessionFilesUnchanged(entry.snapshot)) {
           progress?.(entry.sessions.length, entry.sessions.length);
           return cloneSessions(entry.sessions);
         }
-        staleEntries.delete(key);
-        await bridge.runtime.runPromise(Cache.invalidate(cache, key));
+        const skeletons = await quickSessionList(scope, args, bridge.runtime);
+        const cachedPaths = new Set(entry.sessions.map((session) => session.path));
+        const sessions = reconcileSessionMembership(entry.sessions, skeletons).map((session) =>
+          cachedPaths.has(session.path) ? session : { ...enrichSessionSummary(session), metadataPending: false },
+        );
+
+        progress?.(sessions.length, sessions.length);
+        requests.set(key, {
+          receiver: this,
+          args,
+          isolated: sessions.length > FAST_RESUME_THRESHOLD,
+        });
+        void bridge.runtime.runPromise(Cache.refresh(cache, key)).catch(recordCompatibilityDiagnostic);
+        return cloneSessions(sessions);
       }
 
       const initial = await quickSessionList(scope, args, bridge.runtime);
@@ -215,15 +225,43 @@ function cachedSessionLoader(
   });
 }
 
+function sessionDirectoryArgument(scope: "current" | "all", args: unknown[]) {
+  const value = args[scope === "current" ? 1 : 0];
+  return typeof value === "string" ? value : undefined;
+}
+
+function sessionRequestKey(scope: "current" | "all", args: unknown[]) {
+  const directory = sessionDirectoryArgument(scope, args);
+  const sessionDir = directory ? path.resolve(directory) : undefined;
+
+  if (sessionDir) return `${scope}:${sessionDir}`;
+  return `${scope}:${JSON.stringify(args.filter((argument) => typeof argument !== "function"))}`;
+}
+
+function loadNativeSessionList(
+  scope: "current" | "all",
+  nativeLoader: (...args: unknown[]) => Promise<LegacyRecord[]>,
+  nativeListAll: (...args: unknown[]) => Promise<LegacyRecord[]>,
+  receiver: unknown,
+  args: unknown[],
+) {
+  const sessionDir = sessionDirectoryArgument(scope, args);
+  const progress = [...args].reverse().find((argument) => typeof argument === "function");
+
+  return scope === "current" && sessionDir
+    ? nativeListAll.apply(receiver, progress ? [sessionDir, progress] : [sessionDir])
+    : nativeLoader.apply(receiver, args);
+}
+
 async function quickSessionList(scope: "current" | "all", args: unknown[], runtime: ExtensionRuntime) {
   const sessionDir =
     typeof args[scope === "current" ? 1 : 0] === "string" ? String(args[scope === "current" ? 1 : 0]) : undefined;
   const cwd = scope === "current" && typeof args[0] === "string" ? args[0] : sessionDir;
 
   if (scope === "all" && !sessionDir)
-    return runtime.runPromise(listAllSessionSkeletonsEffect(path.join(defaultAgentDir(), "sessions")));
+    return runtime.runPromise(listAllFastSessionSkeletonsEffect(path.join(defaultAgentDir(), "sessions")));
   if (!cwd || !sessionDir) return [];
-  return runtime.runPromise(listSessionSkeletonsEffect(sessionDir, cwd));
+  return runtime.runPromise(listFastSessionSkeletonsEffect(sessionDir, cwd));
 }
 
 export function visibleSessionMembership(mode: LegacyRecord) {
@@ -238,11 +276,33 @@ export function visibleSessionMembership(mode: LegacyRecord) {
           new ResumeSessionListFailed({ message: "Could not resolve the visible session scope.", cause }),
       });
       const fileSystem = yield* FileSystem.FileSystem;
-      const membership = listSessionSkeletonsEffect(sessionDir, cwd);
-      const fallback = Stream.fromEffectSchedule(membership, Schedule.spaced(Duration.millis(250)));
+      let knownPaths = new Set<string>();
+      const initialMembership = listFastSessionSkeletonsEffect(sessionDir, cwd).pipe(
+        Effect.tap((sessions) =>
+          Effect.sync(() => {
+            knownPaths = new Set(sessions.map((session) => String(session.path)));
+          }),
+        ),
+      );
+      const membership = listFastSessionSkeletonsEffect(sessionDir, cwd).pipe(
+        Effect.flatMap((sessions) =>
+          Effect.forEach(
+            sessions,
+            (session) =>
+              knownPaths.has(String(session.path)) ? Effect.succeed(session) : enrichSessionTreeSkeletonEffect(session),
+            { concurrency: "unbounded" },
+          ),
+        ),
+        Effect.tap((sessions) =>
+          Effect.sync(() => {
+            knownPaths = new Set(sessions.map((session) => String(session.path)));
+          }),
+        ),
+      );
+      const fallback = Stream.fromEffectSchedule(initialMembership, Schedule.spaced(Duration.millis(250)));
 
-      if (!sessionDir) return Stream.fromEffect(membership);
-      return Stream.fromEffect(membership).pipe(
+      if (!sessionDir) return Stream.fromEffect(initialMembership);
+      return Stream.fromEffect(initialMembership).pipe(
         Stream.concat(
           fileSystem.watch(sessionDir).pipe(
             Stream.debounce(Duration.millis(50)),
@@ -270,7 +330,7 @@ export function visibleSessionMembership(mode: LegacyRecord) {
   );
 }
 
-const loadSessionListIsolated = Effect.fn("ResumeSession.listIsolated")(function* (
+export const loadSessionListIsolated = Effect.fn("ResumeSession.listIsolated")(function* (
   scope: "current" | "all",
   args: unknown[],
 ) {
@@ -281,7 +341,7 @@ const loadSessionListIsolated = Effect.fn("ResumeSession.listIsolated")(function
       ? { scope, cwd: String(args[0]), ...(sessionDir ? { sessionDir } : {}) }
       : { scope, ...(sessionDir ? { sessionDir } : {}) };
   const result = yield* runProcess(process.execPath, [sessionListWorker, JSON.stringify(request)], {
-    timeout: "30 seconds",
+    timeout: "120 seconds",
   }).pipe(Effect.mapError(resumeFailure("Isolated Pi session listing failed.")));
 
   if (result.exitCode !== 0)
@@ -301,6 +361,74 @@ const loadSessionListIsolated = Effect.fn("ResumeSession.listIsolated")(function
   return decoded.map((session): LegacyRecord => ({ ...session }));
 });
 
+function persistedResumeCachePath(key: string) {
+  const digest = createHash("sha256").update(key).digest("hex");
+  return path.join(defaultAgentDir(), "pi-gentic", "runtime", "resume-cache", `${digest}.json`);
+}
+
+async function readPersistedResumeEntry(key: string) {
+  const file = persistedResumeCachePath(key);
+
+  try {
+    const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
+    if (!isPersistedResumeEntry(parsed, key)) throw new Error("Persisted resume cache has an invalid structure.");
+
+    return {
+      sessions: cloneSessions(parsed.sessions),
+      snapshot: new Map(parsed.snapshot),
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+    reportRuntimeDiagnostic("legacy-resume-cache-read", error);
+    await rm(file, { force: true }).catch(() => undefined);
+    return undefined;
+  }
+}
+
+async function writePersistedResumeEntry(
+  key: string,
+  entry: { sessions: LegacyRecord[]; snapshot?: SessionFileSnapshot },
+) {
+  if (!entry.snapshot) return;
+  const file = persistedResumeCachePath(key);
+  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(
+    temporary,
+    JSON.stringify({
+      version: PERSISTED_RESUME_CACHE_VERSION,
+      key,
+      sessions: entry.sessions,
+      snapshot: [...entry.snapshot],
+    }),
+    "utf8",
+  );
+  await rename(temporary, file).catch(async (error) => {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  });
+}
+
+function isPersistedResumeEntry(
+  value: unknown,
+  key: string,
+): value is { version: number; key: string; sessions: LegacyRecord[]; snapshot: [string, string][] } {
+  if (!value || typeof value !== "object") return false;
+  const record = value as LegacyRecord;
+
+  return (
+    record.version === PERSISTED_RESUME_CACHE_VERSION &&
+    record.key === key &&
+    Array.isArray(record.sessions) &&
+    record.sessions.every((session: unknown) => session !== null && typeof session === "object") &&
+    Array.isArray(record.snapshot) &&
+    record.snapshot.every(
+      (item: unknown) =>
+        Array.isArray(item) && item.length === 2 && typeof item[0] === "string" && typeof item[1] === "string",
+    )
+  );
+}
+
 async function publishSessionMetadata(runtime: ExtensionRuntime, sessions: LegacyRecord[]) {
   await runtime.runPromise(
     Effect.sync(() => {
@@ -318,11 +446,22 @@ function cloneSessions(sessions: LegacyRecord[]): LegacyRecord[] {
 }
 
 function reconcileSessionMembership(cached: LegacyRecord[], skeletons: LegacyRecord[]) {
-  const paths = new Set(skeletons.map((session) => session.path));
-  const cachedPaths = new Set(cached.map((session) => session.path));
-  const added = skeletons.filter((session) => !cachedPaths.has(session.path));
+  const cachedByPath = new Map(cached.map((session) => [session.path, session]));
 
-  return [...added, ...cached.filter((session) => paths.has(session.path))];
+  return skeletons.map((skeleton) => {
+    const previous = cachedByPath.get(skeleton.path);
+    if (!previous) return skeleton;
+
+    return {
+      ...previous,
+      id: skeleton.id,
+      path: skeleton.path,
+      cwd: skeleton.cwd,
+      created: skeleton.created,
+      modified: skeleton.modified,
+      ...(skeleton.parentSessionPath ? { parentSessionPath: skeleton.parentSessionPath } : {}),
+    };
+  });
 }
 
 function sameSessionMembership(left: LegacyRecord[], right: LegacyRecord[]) {
@@ -496,13 +635,15 @@ export function decorateResumeSelector(
 
   list.setSessions = (sessions: LegacyRecord[], showCwd: boolean) => {
     const decorated = decorateSessions(sessions ?? []);
+    const query = String(list.searchInput?.getValue?.() ?? "");
     const flatThread =
       list.sortMode === "threaded" &&
       list.nameFilter === "all" &&
-      !String(list.searchInput?.getValue?.() ?? "").trim() &&
+      !query.trim() &&
       decorated.every((session) => !session.parentSessionPath);
     const result = flatThread ? setFlatThreadSessions(list, decorated, showCwd) : nativeSetSessions(decorated, showCwd);
 
+    if (query.trim()) nativeFilterSessions(query);
     syncRefreshTimer();
     return result;
   };

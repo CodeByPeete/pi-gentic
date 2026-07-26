@@ -522,12 +522,16 @@ test("aborted async sends persist terminal failures after the caller extension b
 
 test("foreground sends complete through the managed delegation runtime", async () => {
   const messages = [];
+  const delegationMarkers = [];
   const listeners = new Set();
   let unsubscribed = false;
   const session = {
     agent: { state: { messages } },
     isStreaming: true,
-    sessionManager: { getSessionId: () => "foreground-target" },
+    sessionManager: {
+      appendCustomMessageEntry: (...args) => delegationMarkers.push(args),
+      getSessionId: () => "foreground-target",
+    },
     subscribe: (listener) => {
       listeners.add(listener);
       return () => {
@@ -574,11 +578,17 @@ test("foreground sends complete through the managed delegation runtime", async (
         isIdle: () => true,
         sessionManager: {
           getEntries: () => [],
+          getSessionFile: () => "foreground-caller.jsonl",
           getSessionId: () => "foreground-caller",
         },
       },
       { message: "Complete this synchronously", async: false },
       {
+        call: {
+          toolCallId: "foreground-call",
+          callerEntryId: "foreground-entry",
+          parameters: { action: "send", message: "Complete this synchronously", async: false },
+        },
         onRefresh: (details) => refreshes.push(details),
         onUpdate: (update) => updates.push(update),
       },
@@ -590,6 +600,20 @@ test("foreground sends complete through the managed delegation runtime", async (
     assert.equal(unsubscribed, true);
     assert.equal(updates.length, 1);
     assert.ok(refreshes.some((details) => details.status === "done"));
+    assert.equal(delegationMarkers.length, 1);
+    assert.match(delegationMarkers[0][1], /Delegated from session/);
+    assert.deepEqual(delegationMarkers[0][3].call, {
+      toolCallId: "foreground-call",
+      callerEntryId: "foreground-entry",
+      parameters: { action: "send", message: "Complete this synchronously", async: false },
+      effectiveParameters: {
+        action: "send",
+        message: "Complete this synchronously",
+        async: false,
+        fork: false,
+        cwd: process.cwd(),
+      },
+    });
   } finally {
     deleteRuntimeSession("foreground-target");
   }
@@ -1600,6 +1624,25 @@ test("worktree preparation can use an explicit absolute source repository", asyn
   assert.equal(resolved.startsWith(path.join(repo, ".agentfiles", "worktrees")), true);
 
   assert.equal(existsSync(path.join(resolved, ".git")), true);
+});
+
+test("automatic worktree requests can identify the source repository through cwd", async () => {
+  const caller = mkdtempSync(path.join(tmpdir(), "pi-gentic-caller-"));
+  const repo = createGitRepo();
+  const runtime = createExtensionRuntime();
+  const orchestrator = new PiGenticOrchestrator({}, runtime);
+
+  try {
+    const resolved = await orchestrator.resolveSendCwd(
+      { cwd: caller },
+      { message: "Implement task", cwd: repo, worktree: true },
+    );
+
+    assert.equal(resolved.startsWith(path.join(repo, ".agentfiles", "worktrees")), true);
+    assert.equal(existsSync(path.join(resolved, ".git")), true);
+  } finally {
+    await runtime.dispose();
+  }
 });
 
 test("worktree preparation resolves relative repositories from the caller cwd", async () => {

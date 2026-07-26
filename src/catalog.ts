@@ -132,7 +132,7 @@ export function shortestUniqueSessionId(sessionId: unknown, sessionIds: unknown[
 export function buildReceiptText(callerAgent: unknown, callerSessionId: unknown, message: string) {
   const agentText = callerAgent ? `[${callerAgent}] agent` : "agent";
 
-  return `Message from ${agentText} from session ${String(callerSessionId ?? "")}:\n${message}\nOnly your final answer will be returned.`;
+  return `Message from ${agentText} from session ${String(callerSessionId ?? "")}:\n${message}\nComplete the task before answering. Only your final result will be returned.`;
 }
 
 export function buildReturnText(agent: unknown, sessionId: unknown, finalAnswer: string) {

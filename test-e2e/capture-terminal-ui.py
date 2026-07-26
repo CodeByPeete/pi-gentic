@@ -303,6 +303,14 @@ def screen_line(needle):
     return next((line for line in screen_text().splitlines() if needle in line), "")
 
 
+def session_line(needle):
+    return next((line for line in reversed(screen_text().splitlines()) if needle in line), "")
+
+
+def session_selected(needle):
+    return session_line(needle).lstrip().startswith((">", "›"))
+
+
 def tree_session_line(needle):
     return next((line for line in reversed(screen_text().splitlines()) if needle in line and ("└─" in line or "├─" in line)), "")
 
@@ -545,6 +553,22 @@ def capture_completed_card_answer():
         "updatedAt": 1784768000000,
         "completedAt": 1784768000000,
         "activities": [{"type": "tool", "name": "write", "summary": "result.json", "status": "done"}],
+        "call": {
+            "toolCallId": "tool-call-fixture",
+            "callerEntryId": "entry-fixture",
+            "parameters": {
+                "action": "send",
+                "agent": "builder",
+                "message": request,
+                "async": True,
+                "fork": False,
+                "cwd": str(INTERACTIVE_WORK_DIR),
+                "worktree": "task-branch",
+                "repo": str(INTERACTIVE_WORK_DIR),
+                "invokeMeLater": False,
+                "overrides": {"thinking": "high"},
+            },
+        },
     }
     fixture = SESSION_DIR / f"2026-07-23T00-00-00-000Z_{session_id}.jsonl"
     entries = [
@@ -558,9 +582,22 @@ def capture_completed_card_answer():
         text = wait_for("completed card answer", lambda value: "Agent answered." in value and answer in value, timeout=30)
         if request in text:
             raise AssertionError("Completed card body displayed the request instead of the answer")
+        proc.write("\x0f")
+        expanded = wait_for(
+            "completed card call properties",
+            lambda value: "Call properties" in value
+            and "toolCallId: tool-call-fixture" in value
+            and "worktree: task-branch" in value,
+            timeout=10,
+        )
+        if "callerEntryId: entry-fixture" not in expanded or "repo:" not in expanded:
+            raise AssertionError("Expanded historical card omitted exact agent call properties")
         screenshot = render_png("completed-card-answer-terminal.png")
         evidence = OUTPUT / "completed-card-answer-check.txt"
-        evidence.write_text("answer_in_card=true\nrequest_in_card=false\n", encoding="utf-8")
+        evidence.write_text(
+            "answer_in_card=true\nrequest_in_collapsed_card=false\nexact_call_properties=true\n",
+            encoding="utf-8",
+        )
         print(screenshot)
         print(evidence)
     finally:
@@ -570,16 +607,37 @@ def capture_completed_card_answer():
 def capture_resume_1000_sessions():
     reset_output(clear_artifacts=False)
     start = datetime.datetime(2026, 7, 23, tzinfo=datetime.timezone.utc)
+    fixtures = {}
     for index in range(1000):
         session_id = f"019f{index:04x}-aaaa-7000-8000-{index:012x}"
         timestamp = start + datetime.timedelta(seconds=index)
         filename_timestamp = timestamp.strftime("%Y-%m-%dT%H-%M-%S-000Z")
         fixture = SESSION_DIR / f"{filename_timestamp}_{session_id}.jsonl"
+        child_session = index == 999
+        header = {
+            "type": "session",
+            "version": 3,
+            "id": session_id,
+            "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
+            "cwd": str(INTERACTIVE_WORK_DIR / "child-worktree") if child_session else str(INTERACTIVE_WORK_DIR),
+        }
+        if child_session:
+            header["parentSession"] = str(fixtures[998])
         entries = [
-            {"type": "session", "version": 3, "id": session_id, "timestamp": timestamp.isoformat().replace("+00:00", "Z"), "cwd": str(INTERACTIVE_WORK_DIR)},
+            header,
             {"type": "message", "message": {"role": "user", "content": f"Fixture session {index}"}},
         ]
+        if index % 25 == 0 or index >= 998:
+            entries.append(
+                {
+                    "type": "custom",
+                    "customType": "fixture-history",
+                    "data": {"payload": "history-" + ("x" * 262144)},
+                }
+            )
         fixture.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
+        fixtures[index] = fixture
+    (INTERACTIVE_WORK_DIR / "child-worktree").mkdir(parents=True, exist_ok=True)
 
     proc = spawn()
     try:
@@ -593,17 +651,21 @@ def capture_resume_1000_sessions():
         )
         first_render_ms = round((time.monotonic() - started_at) * 1000, 1)
         loading_text = screen_text()
-        if "Loading session details" not in loading_text:
-            raise AssertionError("Fast resume placeholders did not communicate metadata loading")
-        loading_screenshot = render_png("resume-1000-sessions-loading-terminal.png")
+        loading_screenshot = render_png(
+            "resume-1000-sessions-loading-terminal.png"
+            if "Loading session details" in loading_text
+            else "resume-1000-sessions-cached-terminal.png"
+        )
         wait_for(
             "1000-session resume enrichment",
-            lambda text: "Fixture session 999" in text,
-            timeout=20,
+            lambda text: "Fixture session 999" in text and "Fixture session 998" in text,
+            timeout=30,
         )
         enriched_ms = round((time.monotonic() - started_at) * 1000, 1)
         if first_render_ms >= 1000:
             raise AssertionError(f"1000-session resume first render took {first_render_ms}ms")
+        if not tree_session_line("Fixture session 999"):
+            raise AssertionError("The large-session child was not nested under its parent")
 
         fresh_id = "019f0400-aaaa-7000-8000-000000000400"
         fresh_timestamp = start + datetime.timedelta(seconds=1000)
@@ -628,27 +690,79 @@ def capture_resume_1000_sessions():
             raise AssertionError(f"Fresh session appeared after {fresh_session_ms}ms")
 
         reopen_ms = []
-        for attempt in range(3):
-            proc.write("\x1b")
-            wait_for(f"close resume {attempt + 1}", lambda text: "Resume Session" not in text, timeout=5)
+        target_ready_ms = []
+        switch_ms = []
+        proc.write('"Fixture session 999"')
+        wait_for("large child search", lambda text: session_selected("Fixture session 999"), timeout=5)
+        proc.write("\r")
+        wait_for(
+            "large child opens",
+            lambda text: "Resume Session" not in text and "Resumed session" in text and "child-worktree" in text,
+            timeout=10,
+        )
+        targets = [("Fixture session 998", "parent"), ("Fixture session 999", "child")] * 5
+        for attempt, (target, label) in enumerate(targets, start=1):
             reopened_at = time.monotonic()
             proc.write("/resume\r")
             wait_for(
-                f"reopen 1000-session resume {attempt + 1}",
-                lambda text: "Resume Session" in text
-                and "Fixture session 999" in text
-                and "Fresh session during runtime" in text,
+                f"resume from {label} cycle {attempt}",
+                lambda text: "Resume Session" in text,
                 timeout=5,
             )
-            elapsed = round((time.monotonic() - reopened_at) * 1000, 1)
-            reopen_ms.append(elapsed)
-            if elapsed >= 1000:
-                raise AssertionError(f"1000-session resume reopen {attempt + 1} took {elapsed}ms")
+            reopen_elapsed = round((time.monotonic() - reopened_at) * 1000, 1)
+            reopen_ms.append(reopen_elapsed)
+            proc.write(f'"{target}"')
+            wait_for(
+                f"find {target} cycle {attempt}",
+                lambda _text: session_selected(target),
+                timeout=5,
+            )
+            target_elapsed = round((time.monotonic() - reopened_at) * 1000, 1)
+            target_ready_ms.append(target_elapsed)
+            switched_at = time.monotonic()
+            proc.write("\r")
+            wait_for(
+                f"switch to {label} cycle {attempt}",
+                lambda text: "Resume Session" not in text
+                and "Resumed session" in text
+                and (("child-worktree" in text) if label == "child" else ("child-worktree" not in text)),
+                timeout=10,
+            )
+            switch_elapsed = round((time.monotonic() - switched_at) * 1000, 1)
+            switch_ms.append(switch_elapsed)
+            if reopen_elapsed >= 1000:
+                raise AssertionError(f"Resume first render cycle {attempt} took {reopen_elapsed}ms")
+            if target_elapsed >= 2000:
+                raise AssertionError(f"Resume target cycle {attempt} took {target_elapsed}ms")
+            if switch_elapsed >= 2000:
+                raise AssertionError(f"Session switch {attempt} took {switch_elapsed}ms")
 
+        proc.write("/resume\r")
+        wait_for(
+            "final child resume tree",
+            lambda text: "Resume Session" in text and "Fixture session 999" in text,
+            timeout=5,
+        )
         screenshot = render_png("resume-1000-sessions-terminal.png")
         evidence = OUTPUT / "resume-1000-sessions-check.txt"
         evidence.write_text(
-            f"session_count=1001\nfirst_render_ms={first_render_ms}\nenriched_ms={enriched_ms}\nfresh_session_ms={fresh_session_ms}\nreopen_max_ms={max(reopen_ms)}\n",
+            "\n".join(
+                [
+                    "session_count=1001",
+                    "nested_child=true",
+                    "switch_cycles=10",
+                    f"first_render_ms={first_render_ms}",
+                    f"enriched_ms={enriched_ms}",
+                    f"fresh_session_ms={fresh_session_ms}",
+                    f"resume_cycle_ms={','.join(map(str, reopen_ms))}",
+                    f"resume_cycle_max_ms={max(reopen_ms)}",
+                    f"target_ready_cycle_ms={','.join(map(str, target_ready_ms))}",
+                    f"target_ready_cycle_max_ms={max(target_ready_ms)}",
+                    f"switch_cycle_ms={','.join(map(str, switch_ms))}",
+                    f"switch_cycle_max_ms={max(switch_ms)}",
+                ]
+            )
+            + "\n",
             encoding="utf-8",
         )
         print(loading_screenshot)

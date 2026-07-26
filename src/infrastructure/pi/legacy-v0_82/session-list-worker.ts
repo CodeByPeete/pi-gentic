@@ -8,11 +8,10 @@ const RequestSchema = Schema.Union([
 ]);
 
 const request = Schema.decodeUnknownSync(RequestSchema)(JSON.parse(process.argv[2] ?? "null"));
-const sessions =
-  request.scope === "current"
-    ? await SessionManager.list(request.cwd, request.sessionDir)
-    : request.sessionDir
-      ? await SessionManager.listAll(request.sessionDir)
-      : await SessionManager.listAll();
+const sessions = request.sessionDir
+  ? await SessionManager.listAll(request.sessionDir)
+  : request.scope === "current"
+    ? await SessionManager.list(request.cwd)
+    : await SessionManager.listAll();
 
 process.stdout.write(JSON.stringify(sessions.map((session) => enrichSessionSummary({ ...session }))));

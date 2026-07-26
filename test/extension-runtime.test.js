@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { validateToolCall } from "@earendil-works/pi-ai";
 import piGentic from "../dist/extension.js";
 import { reportRuntimeDiagnostic } from "../dist/diagnostics.js";
 import { deleteRuntimeSession, loadPiCodingAgentPeer, setRuntimeSession } from "../dist/pi-host.js";
@@ -105,6 +106,46 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   assert.deepEqual([...commands.keys()].sort(), ["agent", "send", "skill"]);
   assert.equal(shortcuts.size, 1);
   assert.equal(tools[0].name, "agents");
+  assert.throws(
+    () =>
+      validateToolCall([tools[0]], {
+        id: "missing-action",
+        name: "agents",
+        arguments: {
+          agent: "fixture-reviewer",
+          message: "delegate this",
+          async: true,
+          fork: true,
+        },
+      }),
+    /action/,
+  );
+  assert.deepEqual(
+    validateToolCall([tools[0]], {
+      id: "valid-send",
+      name: "agents",
+      arguments: {
+        action: "send",
+        agent: "fixture-reviewer",
+        message: "delegate this",
+        async: true,
+        fork: true,
+        worktree: true,
+      },
+    }),
+    {
+      action: "send",
+      agent: "fixture-reviewer",
+      message: "delegate this",
+      async: true,
+      fork: true,
+      worktree: true,
+    },
+  );
+  const toolSchema = JSON.stringify(tools[0].parameters);
+  assert.match(toolSchema, /copies the caller's active conversation branch/);
+  assert.match(toolSchema, /Source Git repository/);
+  assert.match(toolSchema, /automatic branch and path generation/);
   assert.equal(
     typeof renderers.get("pi-gentic:card")(
       { content: "done", details: { kind: "send", status: "done" } },
@@ -179,6 +220,10 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   const toolResult = await tools[0].execute("tool-call", { action: "list" }, AbortSignal.timeout(1000), () => {}, ctx);
   assert.equal(toolResult.isError, undefined);
   assert.ok(toolResult.content[0].text.length > 0);
+  assert.deepEqual(toolResult.details.call, {
+    toolCallId: "tool-call",
+    parameters: { action: "list" },
+  });
   const getResult = await tools[0].execute(
     "tool-get",
     { action: "get", agent: "fixture-reviewer" },
@@ -220,14 +265,10 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     ctx,
   );
   assert.equal(discoverResult.isError, undefined, discoverResult.content[0].text);
-  const toolError = await tools[0].execute(
-    "tool-error",
-    { action: "status" },
-    AbortSignal.timeout(1000),
-    () => {},
-    ctx,
+  await assert.rejects(
+    tools[0].execute("tool-error", { action: "status" }, AbortSignal.timeout(1000), () => {}, ctx),
+    /sessionId/,
   );
-  assert.equal(toolError.isError, true);
 
   pi.getAllTools = () => {
     throw new Error("stale tools");

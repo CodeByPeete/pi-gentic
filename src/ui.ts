@@ -31,6 +31,8 @@ interface CardDetails extends UnknownRecord {
   systemPrompt?: string;
   error?: string;
   restored?: boolean;
+  phase?: string;
+  call?: UnknownRecord;
 }
 
 interface LiveRefreshOptions extends UnknownRecord {
@@ -71,6 +73,8 @@ function normalizeCardDetails(value: unknown): CardDetails {
     systemPrompt: stringField(value.systemPrompt),
     error: stringField(value.error),
     restored: booleanField(value.restored),
+    phase: stringField(value.phase),
+    call: isRecord(value.call) ? value.call : undefined,
   };
 }
 
@@ -641,8 +645,30 @@ function visibleSessionId(session: UnknownRecord, sessions: UnknownRecord[]) {
   );
 }
 
-export function renderAgentsCall() {
-  return new InvisibleComponent();
+export function renderAgentsCall(argsValue: unknown, theme: PiTheme, contextValue: unknown) {
+  const args = isRecord(argsValue) ? argsValue : {};
+  const context = isRecord(contextValue) ? contextValue : {};
+  const card = new AgentsCard(theme);
+  const toolCallId = stringField(context.toolCallId);
+
+  card.update(
+    {
+      phase: "call",
+      kind: typeof args.action === "string" ? args.action : "agents",
+      status: "running",
+      message: typeof args.message === "string" ? args.message : undefined,
+      agentName: typeof args.agent === "string" ? args.agent : undefined,
+      sessionId: typeof args.sessionId === "string" ? args.sessionId : undefined,
+      async: args.async === true,
+      call: {
+        ...(toolCallId ? { toolCallId } : {}),
+        parameters: args,
+      },
+    },
+    context.expanded === true,
+  );
+
+  return card;
 }
 
 export function renderAgentsResult(resultValue: unknown, optionsValue: unknown, theme: PiTheme, contextValue: unknown) {
@@ -688,12 +714,15 @@ export function renderAgentsResult(resultValue: unknown, optionsValue: unknown, 
       completedAt: restoredRunning
         ? (details.completedAt ?? details.updatedAt ?? details.startedAt)
         : details.completedAt,
-      error: details.error,
+      error: details.error ?? (context.isError ? firstText(result.content) : undefined),
       configuration: details.configuration,
       sessions:
         details.sessions ??
         (Array.isArray(details.configuration?.sessions) ? details.configuration.sessions.filter(isRecord) : undefined),
       systemPrompt: details.systemPrompt,
+      phase: "result",
+      call:
+        details.call ?? previousCard?.data?.call ?? (Object.keys(args).length > 0 ? { parameters: args } : undefined),
     },
     options.expanded === true,
   );
@@ -779,6 +808,8 @@ class AgentsCard {
   }
 
   title() {
+    if (this.data.phase === "call") return "Agent call";
+
     if (this.data.status === "error") return "Agent call failed.";
 
     if (this.data.status === "stopped") return "Agent stopped before answering.";
@@ -801,15 +832,44 @@ class AgentsCard {
   }
 
   body(width: number) {
-    if (this.data.error) return wrap(this.data.error, width).map((line) => this.red(line));
+    if (this.data.phase === "call") return this.callLines();
+
+    if (this.data.error) {
+      const error = wrap(this.data.error, width).map((line) => this.red(line));
+      return this.expanded && this.data.call ? [...error, "", ...this.callLines()] : error;
+    }
 
     if (this.data.kind === "discoverSessions") return this.sessionTreeLines(width);
 
     if (this.data.kind === "load") return this.configurationLines(width);
     const content = wrap(this.bodyText(), width);
     const activityLines = this.activityLines(width);
+    const callLines = this.expanded && this.data.call ? ["", ...this.callLines()] : [];
 
-    return [...content, ...activityLines];
+    return [...content, ...activityLines, ...callLines];
+  }
+
+  callLines() {
+    const call = this.data.call ?? {};
+    const parameters = isRecord(call.parameters) ? call.parameters : {};
+    const effectiveParameters = isRecord(call.effectiveParameters) ? call.effectiveParameters : undefined;
+    const identity = ["toolCallId", "callerEntryId"]
+      .filter((key) => call[key] !== undefined)
+      .map((key) => `${this.muted(`${key}:`)} ${formatValue(call[key])}`);
+    const properties = Object.entries(parameters).map(
+      ([key, value]) => `${this.muted(`${key}:`)} ${formatValue(value)}`,
+    );
+    const effective = effectiveParameters
+      ? [
+          "",
+          this.bold("Effective properties"),
+          ...Object.entries(effectiveParameters).map(
+            ([key, value]) => `${this.muted(`${key}:`)} ${formatValue(value)}`,
+          ),
+        ]
+      : [];
+
+    return [this.bold("Call properties"), ...identity, ...properties, ...effective];
   }
 
   collapsedBody(width: number, maxLines: number) {

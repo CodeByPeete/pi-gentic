@@ -1,4 +1,5 @@
-import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
+import { open, stat } from "node:fs/promises";
 import path from "node:path";
 import { Effect, FileSystem } from "effect";
 import { getActiveState, isRecord, shortSessionId } from "./catalog.js";
@@ -79,28 +80,37 @@ export function resolveSessionReference(sessions: UnknownRecord[], reference: un
 
 const persistedSummaryCache = new Map();
 const PERSISTED_SUMMARY_CACHE_CAPACITY = 4_096;
-const TREE_METADATA_SCAN_LIMIT = 500;
 
 export const listSessionSkeletonsEffect = Effect.fn("SessionDirectory.listSkeletons")(function* (
   sessionDir: string | undefined,
   cwd: string,
 ) {
-  if (!sessionDir) return [];
-  const fileSystem = yield* FileSystem.FileSystem;
-  const names = (yield* fileSystem.readDirectory(sessionDir).pipe(Effect.orElseSucceed(() => []))).filter((name) =>
-    name.endsWith(".jsonl"),
-  );
-
-  if (names.length > TREE_METADATA_SCAN_LIMIT)
-    return names
-      .sort()
-      .reverse()
-      .map((name) => basicSessionSkeleton(path.join(sessionDir, name), cwd));
-
-  return names
-    .map((name) => treeSessionSkeleton(path.join(sessionDir, name), cwd))
-    .sort((left, right) => modifiedTime(right) - modifiedTime(left));
+  return yield* listSessionSkeletons(sessionDir, cwd, true);
 });
+
+export const listFastSessionSkeletonsEffect = Effect.fn("SessionDirectory.listFastSkeletons")(function* (
+  sessionDir: string | undefined,
+  cwd: string,
+) {
+  return yield* listSessionSkeletons(sessionDir, cwd, false);
+});
+
+function listSessionSkeletons(sessionDir: string | undefined, cwd: string, includeTreeMetadata: boolean) {
+  return Effect.gen(function* () {
+    if (!sessionDir) return [];
+    const fileSystem = yield* FileSystem.FileSystem;
+    const names = (yield* fileSystem.readDirectory(sessionDir).pipe(Effect.orElseSucceed(() => []))).filter((name) =>
+      name.endsWith(".jsonl"),
+    );
+    const sessions = includeTreeMetadata
+      ? yield* Effect.promise(() =>
+          mapConcurrent(names, 64, (name) => treeSessionSkeleton(path.join(sessionDir, name), cwd)),
+        )
+      : names.map((name) => basicSessionSkeleton(path.join(sessionDir, name), cwd));
+
+    return sessions.sort((left, right) => modifiedTime(right) - modifiedTime(left));
+  });
+}
 
 function basicSessionSkeleton(filePath: string, cwd: string): UnknownRecord {
   const name = path.basename(filePath);
@@ -120,37 +130,58 @@ function basicSessionSkeleton(filePath: string, cwd: string): UnknownRecord {
   };
 }
 
-function treeSessionSkeleton(filePath: string, fallbackCwd: string): UnknownRecord {
+export const enrichSessionTreeSkeletonEffect = Effect.fn("SessionDirectory.enrichTreeSkeleton")(function* (
+  skeleton: UnknownRecord,
+) {
+  if (typeof skeleton.path !== "string") return skeleton;
+  return yield* Effect.promise(() => treeSessionSkeleton(skeleton.path as string, String(skeleton.cwd ?? "")));
+});
+
+async function treeSessionSkeleton(filePath: string, fallbackCwd: string) {
   const fallback = basicSessionSkeleton(filePath, fallbackCwd);
 
   try {
-    const header = parseJsonLine(readFileHead(filePath).split(/\r?\n/, 1)[0]);
+    const file = await open(filePath, "r");
 
-    if (header?.type !== "session") return fallback;
-    return {
-      ...fallback,
-      id: typeof header.id === "string" ? header.id : fallback.id,
-      cwd: typeof header.cwd === "string" ? header.cwd : fallback.cwd,
-      created: typeof header.timestamp === "string" ? new Date(header.timestamp) : fallback.created,
-      modified: statSync(filePath).mtime,
-      ...(typeof header.parentSession === "string" ? { parentSessionPath: header.parentSession } : {}),
-    };
+    try {
+      const buffer = Buffer.allocUnsafe(4 * 1024);
+      const [{ bytesRead }, fileStat] = await Promise.all([file.read(buffer, 0, buffer.length, 0), stat(filePath)]);
+      const header = parseJsonLine(buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/, 1)[0]);
+
+      if (header?.type !== "session") return fallback;
+      return {
+        ...fallback,
+        id: typeof header.id === "string" ? header.id : fallback.id,
+        cwd: typeof header.cwd === "string" ? header.cwd : fallback.cwd,
+        created: typeof header.timestamp === "string" ? new Date(header.timestamp) : fallback.created,
+        modified: fileStat.mtime,
+        ...(typeof header.parentSession === "string" ? { parentSessionPath: header.parentSession } : {}),
+      };
+    } finally {
+      await file.close();
+    }
   } catch (error) {
     reportRuntimeDiagnostic("session-skeleton", error);
     return fallback;
   }
 }
 
-function readFileHead(filePath: string, bytes = 4 * 1024) {
-  const file = openSync(filePath, "r");
+async function mapConcurrent<Input, Output>(
+  values: readonly Input[],
+  concurrency: number,
+  transform: (value: Input) => Promise<Output>,
+) {
+  const output = new Array<Output>(values.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex++;
+      output[index] = await transform(values[index]!);
+    }
+  });
 
-  try {
-    const buffer = Buffer.allocUnsafe(bytes);
-    const length = readSync(file, buffer, 0, bytes, 0);
-    return buffer.subarray(0, length).toString("utf8");
-  } finally {
-    closeSync(file);
-  }
+  await Promise.all(workers);
+  return output;
 }
 
 function parseJsonLine(line: string | undefined): UnknownRecord | undefined {
@@ -165,23 +196,38 @@ function parseJsonLine(line: string | undefined): UnknownRecord | undefined {
 export const listAllSessionSkeletonsEffect = Effect.fn("SessionDirectory.listAllSkeletons")(function* (
   sessionsDir: string,
 ) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const names = yield* fileSystem.readDirectory(sessionsDir).pipe(Effect.orElseSucceed(() => []));
-  const directories = yield* Effect.filter(
-    names.map((name) => path.join(sessionsDir, name)),
-    (entry) =>
-      fileSystem.stat(entry).pipe(
-        Effect.map((info) => info.type === "Directory"),
-        Effect.orElseSucceed(() => false),
-      ),
-    { concurrency: "unbounded" },
-  );
-  const sessions = yield* Effect.forEach(directories, (directory) => listSessionSkeletonsEffect(directory, directory), {
-    concurrency: "unbounded",
-  });
-
-  return sessions.flat().sort((left, right) => modifiedTime(right) - modifiedTime(left));
+  return yield* listAllSessionSkeletons(sessionsDir, listSessionSkeletonsEffect);
 });
+
+export const listAllFastSessionSkeletonsEffect = Effect.fn("SessionDirectory.listAllFastSkeletons")(function* (
+  sessionsDir: string,
+) {
+  return yield* listAllSessionSkeletons(sessionsDir, listFastSessionSkeletonsEffect);
+});
+
+function listAllSessionSkeletons(
+  sessionsDir: string,
+  listDirectory: (sessionDir: string, cwd: string) => Effect.Effect<UnknownRecord[], never, FileSystem.FileSystem>,
+) {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const names = yield* fileSystem.readDirectory(sessionsDir).pipe(Effect.orElseSucceed(() => []));
+    const directories = yield* Effect.filter(
+      names.map((name) => path.join(sessionsDir, name)),
+      (entry) =>
+        fileSystem.stat(entry).pipe(
+          Effect.map((info) => info.type === "Directory"),
+          Effect.orElseSucceed(() => false),
+        ),
+      { concurrency: "unbounded" },
+    );
+    const sessions = yield* Effect.forEach(directories, (directory) => listDirectory(directory, directory), {
+      concurrency: "unbounded",
+    });
+
+    return sessions.flat().sort((left, right) => modifiedTime(right) - modifiedTime(left));
+  });
+}
 
 function sessionIdFromFileName(name: string) {
   const match = name.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);

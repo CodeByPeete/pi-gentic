@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Tool } from "effect/unstable/ai";
 import { SessionManager, type AgentToolUpdateCallback, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   AGENT_CYCLE_SHORTCUT,
@@ -44,7 +44,7 @@ import {
   startSessionLiveCardRefresh,
 } from "./ui.js";
 
-const AgentsToolParameters = Schema.toJsonSchemaDocument(AgentsToolParametersSchema);
+const AgentsToolParameters = Tool.getJsonSchemaFromSchema(AgentsToolParametersSchema);
 
 function showErrorCard(pi: PiApi, orchestrator: PiGenticOrchestrator, error: unknown, kind = "error") {
   const message = getErrorMessage(error);
@@ -271,11 +271,17 @@ export default async function piGentic(pi: ExtensionAPI) {
     renderShell: "self",
     renderCall: renderAgentsCall,
     renderResult: renderAgentsResult,
-    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
       completionContext.capture(ctx);
       try {
         const input = await runtime.runPromise(normalizeAgentsToolInput(params));
-        const result = await executeAction(orchestrator, ctx, input, onUpdate, signal);
+        const callerEntryId = ctx.sessionManager.getLeafId?.();
+        const call = {
+          toolCallId,
+          ...(callerEntryId ? { callerEntryId } : {}),
+          parameters: params,
+        };
+        const result = await executeAction(orchestrator, ctx, input, onUpdate, signal, call);
 
         return {
           content: [
@@ -284,16 +290,10 @@ export default async function piGentic(pi: ExtensionAPI) {
               text: typeof result.text === "string" ? result.text : String(result.text ?? ""),
             },
           ],
-          details: result.details,
+          details: { ...result.details, call },
         };
       } catch (error) {
-        const message = getErrorMessage(error);
-
-        return {
-          content: [{ type: "text", text: message }],
-          details: orchestrator.cardDetails("error", "error", { error: message }),
-          isError: true,
-        };
+        throw new Error(getErrorMessage(error), { cause: error });
       }
     },
   });
@@ -514,6 +514,7 @@ async function executeAction(
   input: AgentsToolInput,
   onUpdate: AgentToolUpdateCallback<unknown> | undefined,
   signal: AbortSignal | undefined,
+  call: UnknownRecord,
 ) {
   if (input._tag === "ListAgentsAction") {
     const config = trustedConfiguration(ctx);
@@ -569,7 +570,7 @@ async function executeAction(
   if (input._tag === "SendAgentsAction") {
     if (typeof input.message !== "string" || !input.message.trim())
       throw new Error('Field "message" is required for send.');
-    return orchestrator.send(ctx, { ...input }, { onUpdate, signal });
+    return orchestrator.send(ctx, { ...input }, { onUpdate, signal, call });
   }
 
   if (input._tag === "AbortAgentsAction") {

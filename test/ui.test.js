@@ -95,14 +95,66 @@ test("agents result renderer tolerates malformed native boundary values", () => 
   assert.match(text(malformedComponent.render(80)), /✓ agents/i);
 });
 
-test("agents tool call shell stays invisible so only the result card is shown", () => {
-  const call = renderAgentsCall({ action: "send", message: "hello" }, theme, {
-    executionStarted: true,
-    expanded: false,
-  });
+test("agents tool call renders its exact invocation at the transcript call site", () => {
+  const call = renderAgentsCall(
+    {
+      action: "send",
+      agent: "builder",
+      message: "hello",
+      fork: true,
+      cwd: "/repository",
+      worktree: true,
+    },
+    theme,
+    {
+      toolCallId: "tool-call-1",
+      executionStarted: true,
+      expanded: true,
+    },
+  );
 
   call.invalidate();
-  assert.deepEqual(call.render(120), []);
+  const output = text(call.render(120));
+
+  assert.match(output, /Agent call/);
+  assert.match(output, /toolCallId: tool-call-1/);
+  assert.match(output, /action: send/);
+  assert.match(output, /agent: builder/);
+  assert.match(output, /message: hello/);
+  assert.match(output, /fork: true/);
+  assert.match(output, /cwd: \/repository/);
+  assert.match(output, /worktree: true/);
+});
+
+test("completed agent cards preserve exact invocation properties", () => {
+  const call = renderAgentsCall({ action: "send", message: "delegate", repo: "/repository", worktree: "task" }, theme, {
+    toolCallId: "tool-call-2",
+    expanded: true,
+  });
+  const result = renderAgentsResult(
+    {
+      content: [{ type: "text", text: "done" }],
+      details: {
+        kind: "send",
+        status: "done",
+        answer: "done",
+        call: {
+          toolCallId: "tool-call-2",
+          callerEntryId: "entry-7",
+          parameters: { action: "send", message: "delegate", repo: "/repository", worktree: "task" },
+        },
+      },
+    },
+    { expanded: true, isPartial: false },
+    theme,
+    { args: {}, isError: false, lastComponent: call },
+  );
+  const output = text(result.render(120));
+
+  assert.match(output, /toolCallId: tool-call-2/);
+  assert.match(output, /callerEntryId: entry-7/);
+  assert.match(output, /repo: \/repository/);
+  assert.match(output, /worktree: task/);
 });
 
 test("expanded cards render all body lines without truncation", () => {

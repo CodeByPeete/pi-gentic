@@ -57,7 +57,7 @@ describe("Agents tool contract", () => {
           async: false,
           fork: true,
           cwd: "/workspace",
-          worktree: "feature",
+          worktree: true,
           repo: "/repository",
           invokeMeLater: true,
           overrides: { model: "provider/model" },
@@ -80,6 +80,7 @@ describe("Agents tool contract", () => {
       assert.deepInclude(actions[4], {
         async: false,
         fork: true,
+        worktree: true,
         invokeMeLater: true,
       });
       assert.deepInclude(actions[5], { sessionId: "session-3" });

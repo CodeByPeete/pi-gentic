@@ -1,46 +1,79 @@
 import { Effect, Match, Schema, pipe } from "effect";
 
 const NonBlankString = Schema.String.check(Schema.isPattern(/\S/));
-const Overrides = Schema.Record(Schema.String, Schema.Json);
+const Overrides = Schema.Record(Schema.String, Schema.Json).annotate({
+  description: "Configuration values applied to the selected agent or target session.",
+});
+const AgentName = NonBlankString.annotate({ description: "Name of a configured agent." });
+const SessionReference = NonBlankString.annotate({ description: "Identifier of a durable agent session." });
 const SendFields = {
-  message: NonBlankString,
-  agent: Schema.optionalKey(Schema.String),
-  sessionId: Schema.optionalKey(Schema.String),
-  async: Schema.optionalKey(Schema.Boolean),
-  fork: Schema.optionalKey(Schema.Boolean),
-  cwd: Schema.optionalKey(Schema.String),
-  worktree: Schema.optionalKey(Schema.String),
-  repo: Schema.optionalKey(Schema.String),
-  invokeMeLater: Schema.optionalKey(Schema.Boolean),
+  message: NonBlankString.annotate({ description: "Task or message delivered to the target session." }),
+  agent: Schema.optionalKey(AgentName),
+  sessionId: Schema.optionalKey(
+    SessionReference.annotate({
+      description: "Existing target session identifier. Omit it to create a child session.",
+    }),
+  ),
+  async: Schema.optionalKey(
+    Schema.Boolean.annotate({ description: "Whether the caller continues without waiting for the target result." }),
+  ),
+  fork: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description:
+        "Whether a new child copies the caller's active conversation branch. This is independent of worktree creation.",
+    }),
+  ),
+  cwd: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        "Working directory for the target session or destination path for an explicitly configured worktree.",
+    }),
+  ),
+  worktree: Schema.optionalKey(
+    Schema.Union([Schema.Literal(true), Schema.String]).annotate({
+      description:
+        "Git worktree request. A string selects the branch and true requests automatic branch and path generation.",
+    }),
+  ),
+  repo: Schema.optionalKey(
+    Schema.String.annotate({ description: "Source Git repository used to create or resolve the worktree." }),
+  ),
+  invokeMeLater: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description: "Whether a completed asynchronous target may trigger a later caller turn.",
+    }),
+  ),
   overrides: Schema.optionalKey(Overrides),
 };
 
-const ListInput = Schema.Struct({ action: Schema.Literal("list") });
+const ListInput = Schema.Struct({
+  action: Schema.Literal("list").annotate({ description: "List available agents." }),
+});
 const GetInput = Schema.Struct({
-  action: Schema.Literal("get"),
-  agent: NonBlankString,
+  action: Schema.Literal("get").annotate({ description: "Read one agent definition." }),
+  agent: AgentName,
 });
 const StatusInput = Schema.Struct({
-  action: Schema.Literal("status"),
-  sessionId: NonBlankString,
+  action: Schema.Literal("status").annotate({ description: "Read one session's current status." }),
+  sessionId: SessionReference,
 });
 const LoadInput = Schema.Struct({
-  action: Schema.Literal("load"),
-  agent: NonBlankString,
+  action: Schema.Literal("load").annotate({ description: "Set the active agent configuration." }),
+  agent: AgentName,
   overrides: Schema.optionalKey(Overrides),
 });
 const SendInput = Schema.Struct({
-  action: Schema.Literal("send"),
+  action: Schema.Literal("send").annotate({ description: "Deliver work to an existing or new child session." }),
   ...SendFields,
 });
 const AbortInput = Schema.Struct({
-  action: Schema.Literal("abort"),
-  sessionId: Schema.optionalKey(Schema.String),
+  action: Schema.Literal("abort").annotate({ description: "Stop an active session run." }),
+  sessionId: Schema.optionalKey(SessionReference),
 });
 const DiscoverSessionsInput = Schema.Struct({
-  action: Schema.Literal("discoverSessions"),
-  rx: Schema.optionalKey(Schema.Finite),
-  ry: Schema.optionalKey(Schema.Finite),
+  action: Schema.Literal("discoverSessions").annotate({ description: "Discover nearby orchestration sessions." }),
+  rx: Schema.optionalKey(Schema.Finite.annotate({ description: "Horizontal discovery radius." })),
+  ry: Schema.optionalKey(Schema.Finite.annotate({ description: "Vertical discovery radius." })),
 });
 
 export const AgentsToolParametersSchema = Schema.Union([

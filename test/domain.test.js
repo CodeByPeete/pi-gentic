@@ -277,11 +277,12 @@ test("agentless receipt and return text use the generic agent label", () => {
   assert.match(buildReturnText(undefined, "child", "done"), /^Message from agent/);
 });
 
-test("receipt text includes the exact caller session and final-answer instruction", () => {
+test("receipt text requires completion before the child returns", () => {
   const receipt = buildReceiptText("researcher", "abcdefghi", "hello");
 
   assert.match(receipt, /session abcdefghi/);
-  assert.match(receipt, /Only your final answer/);
+  assert.match(receipt, /Complete the task before answering/);
+  assert.match(receipt, /Only your final result/);
 });
 
 test("return text includes the exact agent session and answer", () => {

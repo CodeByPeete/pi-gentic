@@ -121,7 +121,7 @@ interface SendInput extends UnknownRecord {
   async?: boolean;
   fork?: boolean;
   cwd?: string;
-  worktree?: string;
+  worktree?: string | true;
   repo?: string;
   invokeMeLater?: boolean;
   overrides?: UnknownRecord;
@@ -132,6 +132,7 @@ interface SendCallbacks extends UnknownRecord {
   onRefresh?: (details: UnknownRecord) => void;
   onUpdate?: AgentToolUpdateCallback<unknown>;
   signal?: AbortSignal;
+  call?: UnknownRecord;
   onSettled?: () => void;
 }
 
@@ -1637,6 +1638,18 @@ export class PiGenticOrchestrator {
       Effect.flatMap(RuntimeRegistry, (registry) => registry.register(runtimeMetadata, target)),
     );
     const callerCwd = ctx.cwd;
+    const call = callbacks.call
+      ? {
+          ...callbacks.call,
+          effectiveParameters: {
+            ...(isRecord(callbacks.call.parameters) ? callbacks.call.parameters : {}),
+            action: "send",
+            async: targetAsync,
+            fork: targetFork,
+            cwd,
+          },
+        }
+      : undefined;
     const details = this.cardDetails("send", targetBusy ? "queued" : "running", {
       cardId: `send:${targetSessionId}:${startedAt}`,
       livePanel: true,
@@ -1649,7 +1662,22 @@ export class PiGenticOrchestrator {
       startedAt,
       updatedAt: readyAt,
       activities: [],
+      ...(call ? { call } : {}),
     });
+    target.session.sessionManager.appendCustomMessageEntry?.(
+      CARD_MESSAGE_TYPE,
+      targetFork
+        ? `Fork boundary from session ${shortSessionId(callerSessionId)}.`
+        : `Delegated from session ${shortSessionId(callerSessionId)}.`,
+      true,
+      this.cardDetails("delegation", "done", {
+        callerSessionId,
+        callerSessionPath: callerSessionManager.getSessionFile(),
+        sessionId: targetSessionId,
+        ...(call ? { call } : {}),
+      }),
+    );
+    persistSessionImmediately(target.session.sessionManager);
     let terminalStatePersisted = false;
     const publish = (nextDetails: UnknownRecord, options: UnknownRecord = {}) => {
       const liveDetails = setLiveCardDetails(nextDetails, { runtime: this.runtime }) ?? nextDetails;
@@ -1928,7 +1956,16 @@ export class PiGenticOrchestrator {
   }
 
   async prepareWorktree(ctx: PiContext, input: SendInput) {
-    return this.runtime.runPromise(prepareWorktreeEffect({ ...input, repoCwd: ctx.cwd }));
+    const automaticSource = input.worktree === true && input.repo === undefined ? input.cwd : undefined;
+
+    return this.runtime.runPromise(
+      prepareWorktreeEffect({
+        ...input,
+        repoCwd: ctx.cwd,
+        ...(automaticSource === undefined ? {} : { repo: automaticSource, cwd: undefined }),
+        worktree: input.worktree === true ? "" : input.worktree,
+      }),
+    );
   }
 
   async applyRequestedTargetPolicy(session: PiAgentSession, input: SendInput, config: Configuration) {

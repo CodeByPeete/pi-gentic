@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import { Effect, FileSystem } from "effect";
 import { getActiveState, isRecord, shortSessionId } from "./catalog.js";
@@ -79,6 +79,7 @@ export function resolveSessionReference(sessions: UnknownRecord[], reference: un
 
 const persistedSummaryCache = new Map();
 const PERSISTED_SUMMARY_CACHE_CAPACITY = 4_096;
+const TREE_METADATA_SCAN_LIMIT = 500;
 
 export const listSessionSkeletonsEffect = Effect.fn("SessionDirectory.listSkeletons")(function* (
   sessionDir: string | undefined,
@@ -86,29 +87,78 @@ export const listSessionSkeletonsEffect = Effect.fn("SessionDirectory.listSkelet
 ) {
   if (!sessionDir) return [];
   const fileSystem = yield* FileSystem.FileSystem;
-  const names = yield* fileSystem.readDirectory(sessionDir).pipe(Effect.orElseSucceed(() => []));
+  const names = (yield* fileSystem.readDirectory(sessionDir).pipe(Effect.orElseSucceed(() => []))).filter((name) =>
+    name.endsWith(".jsonl"),
+  );
+
+  if (names.length > TREE_METADATA_SCAN_LIMIT)
+    return names
+      .sort()
+      .reverse()
+      .map((name) => basicSessionSkeleton(path.join(sessionDir, name), cwd));
 
   return names
-    .filter((name) => name.endsWith(".jsonl"))
-    .sort()
-    .reverse()
-    .map((name) => {
-      const pathName = path.join(sessionDir, name);
-      const id = sessionIdFromFileName(name);
-      const created = sessionDateFromFileName(name);
-
-      return {
-        id,
-        path: pathName,
-        cwd,
-        created,
-        modified: created,
-        messageCount: 0,
-        firstMessage: `Session ${shortSessionId(id)}`,
-        allMessagesText: `${id} ${pathName}`,
-      };
-    });
+    .map((name) => treeSessionSkeleton(path.join(sessionDir, name), cwd))
+    .sort((left, right) => modifiedTime(right) - modifiedTime(left));
 });
+
+function basicSessionSkeleton(filePath: string, cwd: string): UnknownRecord {
+  const id = sessionIdFromFileName(path.basename(filePath));
+  const created = sessionDateFromFileName(filePath);
+
+  return {
+    id,
+    path: filePath,
+    cwd,
+    created,
+    modified: created,
+    messageCount: 0,
+    firstMessage: `Session ${shortSessionId(id)}`,
+    allMessagesText: `${id} ${filePath}`,
+  };
+}
+
+function treeSessionSkeleton(filePath: string, fallbackCwd: string): UnknownRecord {
+  const fallback = basicSessionSkeleton(filePath, fallbackCwd);
+
+  try {
+    const header = parseJsonLine(readFileHead(filePath).split(/\r?\n/, 1)[0]);
+
+    if (header?.type !== "session") return fallback;
+    return {
+      ...fallback,
+      id: typeof header.id === "string" ? header.id : fallback.id,
+      cwd: typeof header.cwd === "string" ? header.cwd : fallback.cwd,
+      created: typeof header.timestamp === "string" ? new Date(header.timestamp) : fallback.created,
+      modified: statSync(filePath).mtime,
+      ...(typeof header.parentSession === "string" ? { parentSessionPath: header.parentSession } : {}),
+    };
+  } catch (error) {
+    reportRuntimeDiagnostic("session-skeleton", error);
+    return fallback;
+  }
+}
+
+function readFileHead(filePath: string, bytes = 4 * 1024) {
+  const file = openSync(filePath, "r");
+
+  try {
+    const buffer = Buffer.allocUnsafe(bytes);
+    const length = readSync(file, buffer, 0, bytes, 0);
+    return buffer.subarray(0, length).toString("utf8");
+  } finally {
+    closeSync(file);
+  }
+}
+
+function parseJsonLine(line: string | undefined): UnknownRecord | undefined {
+  try {
+    const value: unknown = line?.trim() ? JSON.parse(line) : undefined;
+    return isRecord(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export const listAllSessionSkeletonsEffect = Effect.fn("SessionDirectory.listAllSkeletons")(function* (
   sessionsDir: string,
@@ -128,7 +178,7 @@ export const listAllSessionSkeletonsEffect = Effect.fn("SessionDirectory.listAll
     concurrency: "unbounded",
   });
 
-  return sessions.flat().sort((left, right) => right.modified.getTime() - left.modified.getTime());
+  return sessions.flat().sort((left, right) => modifiedTime(right) - modifiedTime(left));
 });
 
 function sessionIdFromFileName(name: string) {
@@ -616,9 +666,12 @@ function sortSessions(sessions: UnknownRecord[], score: (session: UnknownRecord)
 }
 
 function modifiedTime(session: UnknownRecord) {
-  const time = new Date(
-    typeof session.modified === "string" || typeof session.modified === "number" ? session.modified : 0,
-  ).getTime();
+  const time =
+    session.modified instanceof Date
+      ? session.modified.getTime()
+      : new Date(
+          typeof session.modified === "string" || typeof session.modified === "number" ? session.modified : 0,
+        ).getTime();
 
   return Number.isFinite(time) ? time : 0;
 }

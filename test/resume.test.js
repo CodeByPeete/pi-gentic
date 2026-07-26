@@ -225,6 +225,40 @@ test("resume decorator searches agent metadata and updates live timers", async (
   }
 });
 
+test("fast session skeletons preserve native tree metadata", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-session-skeleton-"));
+  const parentId = "019f1111-aaaa-7000-8000-000000000001";
+  const childId = "019f1111-aaaa-7000-8000-000000000002";
+  const parentPath = path.join(dir, `${parentId}.jsonl`);
+  const childPath = path.join(dir, `${childId}.jsonl`);
+  const runtime = createExtensionRuntime();
+
+  writeFileSync(
+    parentPath,
+    JSON.stringify({ type: "session", id: parentId, timestamp: "2026-07-13T20:00:00.000Z", cwd: dir }),
+  );
+  writeFileSync(
+    childPath,
+    JSON.stringify({
+      type: "session",
+      id: childId,
+      timestamp: "2026-07-13T20:00:01.000Z",
+      cwd: dir,
+      parentSession: parentPath,
+    }),
+  );
+
+  try {
+    const sessions = await runtime.runPromise(listSessionSkeletonsEffect(dir, dir));
+    const child = sessions.find((session) => session.id === childId);
+
+    assert.equal(child?.parentSessionPath, parentPath);
+  } finally {
+    await runtime.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("Effect file watching emits live session membership changes", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-membership-watch-"));
   const runtime = createExtensionRuntime();

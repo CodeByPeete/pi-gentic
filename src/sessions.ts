@@ -103,8 +103,9 @@ export const listSessionSkeletonsEffect = Effect.fn("SessionDirectory.listSkelet
 });
 
 function basicSessionSkeleton(filePath: string, cwd: string): UnknownRecord {
-  const id = sessionIdFromFileName(path.basename(filePath));
-  const created = sessionDateFromFileName(filePath);
+  const name = path.basename(filePath);
+  const id = sessionIdFromFileName(name);
+  const created = sessionDateFromFileName(name);
 
   return {
     id,
@@ -115,6 +116,7 @@ function basicSessionSkeleton(filePath: string, cwd: string): UnknownRecord {
     messageCount: 0,
     firstMessage: `Session ${shortSessionId(id)}`,
     allMessagesText: `${id} ${filePath}`,
+    metadataPending: true,
   };
 }
 

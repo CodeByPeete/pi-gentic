@@ -92,9 +92,21 @@ interface LiveCardEntry {
   readonly interruptExpiry?: () => void;
 }
 
-const liveCards = new Map<string, LiveCardEntry>();
-const persistedCards = new Map<string, CardDetails>();
-const liveCardRefreshers = new Set<(details?: UnknownRecord) => void>();
+interface UiRuntimeState {
+  readonly liveCards: Map<string, LiveCardEntry>;
+  readonly persistedCards: Map<string, CardDetails>;
+  readonly liveCardRefreshers: Set<(details?: UnknownRecord) => void>;
+  livePanelStop?: () => void;
+}
+
+const UI_RUNTIME_KEY = Symbol.for("pi-gentic.ui-runtime");
+const globalState = globalThis as unknown as Record<PropertyKey, unknown>;
+const uiRuntime = (globalState[UI_RUNTIME_KEY] ??= {
+  liveCards: new Map(),
+  persistedCards: new Map(),
+  liveCardRefreshers: new Set(),
+}) as UiRuntimeState;
+const { liveCards, persistedCards, liveCardRefreshers } = uiRuntime;
 
 export function isActiveCard(details: CardDetails | undefined) {
   return typeof details?.status === "string" && ACTIVE_CARD_STATUSES.has(details.status);
@@ -310,7 +322,7 @@ export function startLiveRefresh(
   const widgetKey = `${LIVE_REFRESH_WIDGET_KEY}:${key}`;
   const placement = options.placement ?? "aboveEditor";
   const resolveContext = () => options.resolveContext?.() ?? ctx;
-  const minIntervalMs = Math.max(16, Number(options.intervalMs ?? 100));
+  const minIntervalMs = Math.max(16, Number(options.intervalMs ?? 16));
   let stopped = false;
   let pending = false;
   let mountedContext: PiContext | undefined;
@@ -406,15 +418,21 @@ export function startLiveRefresh(
 }
 
 export function startSessionLiveCardRefresh(ctx: PiContext, runtime: ExtensionRuntime) {
+  uiRuntime.livePanelStop?.();
   const stop = startLiveRefresh(ctx, runtime, "session-live-cards", {
     acceptsDetails: (details: UnknownRecord | undefined) => !details || cardBelongsToSession(ctx, details),
     createComponent: (tui: TUI, theme: PiTheme) => new LiveCardsPanel(ctx, tui, theme),
     shouldPulse: () => sessionLiveCardDetails(ctx).length > 0,
   });
+  const ownedStop = () => {
+    stop();
+    if (uiRuntime.livePanelStop === ownedStop) delete uiRuntime.livePanelStop;
+  };
+  ownedStop.refresh = stop.refresh;
+  uiRuntime.livePanelStop = ownedStop;
+  ownedStop.refresh?.();
 
-  stop.refresh?.();
-
-  return stop;
+  return ownedStop;
 }
 
 export function sessionHasVisibleLiveCard(ctx: PiContext) {
@@ -502,7 +520,8 @@ class LiveCardsPanel {
     const rowLimit = Math.max(1, terminalRows - 10);
     const hiddenCount = Math.max(0, cards.length - rowLimit);
     const visibleCards = cards.slice(-rowLimit);
-    const rows = visibleCards.map((details) => this.cardRow(details, Math.max(10, width - 4)));
+    const sessionIds = visibleCards.map((details) => details.sessionId);
+    const rows = visibleCards.map((details) => this.cardRow(details, Math.max(10, width - 4), sessionIds));
 
     if (hiddenCount > 0) rows[0] = this.dim(`… ${hiddenCount} earlier active card${hiddenCount === 1 ? "" : "s"}`);
 
@@ -513,13 +532,13 @@ class LiveCardsPanel {
     );
   }
 
-  cardRow(details: UnknownRecord, width: number) {
+  cardRow(details: UnknownRecord, width: number, sessionIds: unknown[]) {
     const queued = details.status === "queued";
     const indicator = queued ? this.accent("○") : this.success("●");
     const mode = this.accent(details.async ? "[ASYNC]" : "[SYNC]");
     const agent =
       details.agentName && details.agentName !== "agentless" ? styleAgentName(details.agentName) : this.bold("agent");
-    const session = details.sessionId ? this.dim(`(${shortSessionId(details.sessionId)})`) : "";
+    const session = details.sessionId ? this.dim(`(${shortestUniqueSessionId(details.sessionId, sessionIds)})`) : "";
     const activities = Array.isArray(details.activities) ? details.activities : [];
     const detail = normalizeInline(
       activities.length > 0

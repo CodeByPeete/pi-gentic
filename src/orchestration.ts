@@ -1,5 +1,6 @@
 import { SessionManager, type AgentToolUpdateCallback } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
+import { inspect } from "node:util";
 import { Duration, Effect, Exit, Schema } from "effect";
 import {
   activeAgentName,
@@ -761,6 +762,8 @@ export function isStaleExtensionContextError(error: unknown) {
 }
 
 const MAX_PERSISTED_ACTIVITIES = 100;
+const ACTIVITY_PREVIEW_LENGTH = 240;
+const ACTIVITY_INSPECT_OPTIONS = { depth: 2, maxArrayLength: 10, maxStringLength: ACTIVITY_PREVIEW_LENGTH } as const;
 
 export function createSessionActivityMonitor(
   baseDetails: UnknownRecord,
@@ -950,7 +953,7 @@ function eventToActivity(event: UnknownRecord) {
 
 function assistantMessageActivities(message: UnknownRecord) {
   const activities: UnknownRecord[] = [];
-  const text = messageText(message);
+  const text = activityMessageText(message);
 
   if (text)
     activities.push({
@@ -991,7 +994,7 @@ function assistantMessageActivities(message: UnknownRecord) {
 }
 
 function assistantActivity(message: UnknownRecord) {
-  const text = messageText(message);
+  const text = activityMessageText(message);
 
   return text ? { id: "assistant", type: "assistant", text } : undefined;
 }
@@ -1025,36 +1028,38 @@ function activityKey(activity: UnknownRecord) {
   return activity.id ?? `${activity.type}:${activity.name ?? ""}`;
 }
 
-function messageText(message: UnknownRecord | undefined) {
-  if (!message) return "";
-
-  if (typeof message.content === "string") return message.content;
-
-  if (!Array.isArray(message.content)) return "";
-
-  return message.content
-    .filter((part: UnknownRecord) => part.type === "text")
-    .map((part: UnknownRecord) => part.text)
-    .filter(Boolean)
-    .join("\n");
+function summarizeValue(value: unknown) {
+  if (typeof value === "string") return truncateInline(value, ACTIVITY_PREVIEW_LENGTH);
+  if (isRecord(value) && Array.isArray(value.content)) return summarizeValue(value.content);
+  if (Array.isArray(value))
+    return truncateInline(
+      value
+        .slice(0, 10)
+        .map((item) =>
+          truncateInline(
+            isRecord(item) && (item.text !== undefined || item.data !== undefined)
+              ? (item.text ?? item.data)
+              : inspect(item, ACTIVITY_INSPECT_OPTIONS),
+            ACTIVITY_PREVIEW_LENGTH,
+          ),
+        )
+        .join(" "),
+      ACTIVITY_PREVIEW_LENGTH,
+    );
+  if (isRecord(value) && typeof value.text === "string") return truncateInline(value.text, ACTIVITY_PREVIEW_LENGTH);
+  return truncateInline(inspect(value, ACTIVITY_INSPECT_OPTIONS), ACTIVITY_PREVIEW_LENGTH);
 }
 
-function summarizeValue(value: unknown) {
-  if (Array.isArray(value))
-    return value
-      .map((item) => item.text ?? item.data ?? JSON.stringify(item))
-      .join(" ")
-      .slice(0, 240);
+function activityMessageText(message: UnknownRecord) {
+  if (typeof message.content === "string") return truncateInline(message.content, ACTIVITY_PREVIEW_LENGTH);
+  if (!Array.isArray(message.content)) return "";
+  const text = message.content
+    .filter((part: UnknownRecord) => part.type === "text" && typeof part.text === "string")
+    .slice(0, 10)
+    .map((part: UnknownRecord) => String(part.text).slice(0, ACTIVITY_PREVIEW_LENGTH * 4))
+    .join("\n");
 
-  if (isRecord(value)) {
-    if (Array.isArray(value.content)) return summarizeValue(value.content);
-
-    if (typeof value.text === "string") return value.text.slice(0, 240);
-
-    return JSON.stringify(value).slice(0, 240);
-  }
-
-  return String(value ?? "").slice(0, 240);
+  return truncateInline(text, ACTIVITY_PREVIEW_LENGTH);
 }
 
 function truncateInline(text: unknown, length: number) {

@@ -24,7 +24,8 @@ const ORIGINAL_SESSION = Symbol("pi-gentic.original-session");
 const SESSION_PRESENTATION = Symbol("pi-gentic.session-presentation");
 const REFRESH_INTERVAL_MS = 1000;
 const FAST_RESUME_THRESHOLD = 100;
-const resumeRefreshers = new Set<() => void>();
+const RESUME_CACHE_CAPACITY = 4;
+const resumeRefreshers = new Set<(sessions?: LegacyRecord[]) => void>();
 const SessionListSchema = Schema.Array(Schema.Record(Schema.String, Schema.Json));
 const sessionListWorker = fileURLToPath(new URL("./session-list-worker.js", import.meta.url));
 
@@ -109,8 +110,9 @@ function cachedSessionLoader(
 ) {
   return Effect.gen(function* () {
     const requests = new Map<string, { receiver: unknown; args: unknown[]; isolated?: boolean }>();
+    const staleEntries = new Map<string, { sessions: LegacyRecord[]; snapshot?: SessionFileSnapshot }>();
     const cache = yield* Cache.make({
-      capacity: 32,
+      capacity: RESUME_CACHE_CAPACITY,
       lookup: (key: string) =>
         Effect.tryPromise({
           try: async () => {
@@ -126,16 +128,9 @@ function cachedSessionLoader(
               : Effect.tryPromise({
                   try: () => nativeLoader.apply(request.receiver, request.args),
                   catch: resumeFailure(),
-                }),
+                }).pipe(Effect.map((sessions) => sessions.map(enrichSessionSummary))),
           ),
           Effect.map(cloneSessions),
-          Effect.tap((sessions) =>
-            Effect.promise(() => warmSessionMetadata(bridge.runtime, sessions)).pipe(
-              Effect.catchCause((cause) =>
-                Effect.sync(() => reportRuntimeDiagnostic("legacy-resume-metadata-warm", cause)),
-              ),
-            ),
-          ),
           Effect.map((sessions) => ({
             sessions,
             snapshot:
@@ -146,6 +141,21 @@ function cachedSessionLoader(
                   )
                 : undefined,
           })),
+          Effect.tap((entry) =>
+            Effect.sync(() => {
+              staleEntries.delete(key);
+              staleEntries.set(key, entry);
+              if (staleEntries.size > RESUME_CACHE_CAPACITY) staleEntries.delete(staleEntries.keys().next().value!);
+            }),
+          ),
+          Effect.tap((entry) =>
+            Effect.promise(() => publishSessionMetadata(bridge.runtime, entry.sessions)).pipe(
+              Effect.catchCause((cause) =>
+                Effect.sync(() => reportRuntimeDiagnostic("legacy-resume-metadata-warm", cause)),
+              ),
+            ),
+          ),
+          Effect.ensuring(Effect.sync(() => requests.delete(key))),
         ),
     });
 
@@ -154,19 +164,25 @@ function cachedSessionLoader(
       const progress = [...args]
         .reverse()
         .find((argument): argument is (loaded: number, total: number) => void => typeof argument === "function");
-      const isolated = requests.get(key)?.isolated;
-      requests.set(key, { receiver: this, args, isolated });
-      const cached = [...(await bridge.runtime.runPromise(Cache.entries(cache)))].find(
-        ([candidate]) => candidate === key,
-      )?.[1];
+      const cached =
+        staleEntries.get(key) ??
+        [...(await bridge.runtime.runPromise(Cache.entries(cache)))].find(([candidate]) => candidate === key)?.[1];
 
       if (cached) {
         const entry = cached;
         if (!entry.snapshot) {
           const skeletons = await quickSessionList(scope, args, bridge.runtime);
-          const sessions = reconcileSessionMembership(entry.sessions, skeletons);
+          const cachedPaths = new Set(entry.sessions.map((session) => session.path));
+          const sessions = reconcileSessionMembership(entry.sessions, skeletons).map((session) =>
+            cachedPaths.has(session.path) ? session : { ...enrichSessionSummary(session), metadataPending: false },
+          );
 
           progress?.(sessions.length, sessions.length);
+          requests.set(key, {
+            receiver: this,
+            args,
+            isolated: entry.sessions.length > FAST_RESUME_THRESHOLD,
+          });
           void bridge.runtime.runPromise(Cache.refresh(cache, key)).catch(recordCompatibilityDiagnostic);
           return cloneSessions(sessions);
         }
@@ -174,6 +190,7 @@ function cachedSessionLoader(
           progress?.(entry.sessions.length, entry.sessions.length);
           return cloneSessions(entry.sessions);
         }
+        staleEntries.delete(key);
         await bridge.runtime.runPromise(Cache.invalidate(cache, key));
       }
 
@@ -284,25 +301,15 @@ const loadSessionListIsolated = Effect.fn("ResumeSession.listIsolated")(function
   return decoded.map((session): LegacyRecord => ({ ...session }));
 });
 
-async function warmSessionMetadata(runtime: ExtensionRuntime, sessions: LegacyRecord[]) {
-  const chunks = Array.from({ length: Math.ceil(sessions.length / 8) }, (_, index) =>
-    sessions.slice(index * 8, index * 8 + 8),
-  );
-
+async function publishSessionMetadata(runtime: ExtensionRuntime, sessions: LegacyRecord[]) {
   await runtime.runPromise(
-    Effect.forEach(
-      chunks,
-      (chunk) =>
-        Effect.sync(() => {
-          chunk.forEach(enrichSessionSummary);
-          for (const refresh of resumeRefreshers) refresh();
-        }).pipe(Effect.andThen(Effect.yieldNow)),
-      { discard: true },
-    ),
+    Effect.sync(() => {
+      for (const refresh of resumeRefreshers) refresh(sessions);
+    }),
   );
 }
 
-function cloneSessions(sessions: LegacyRecord[]) {
+function cloneSessions(sessions: LegacyRecord[]): LegacyRecord[] {
   return sessions.map((session) => ({
     ...session,
     created: new Date(session.created),
@@ -414,6 +421,8 @@ export function decorateResumeSelector(
   const nativeFilterSessions = list.filterSessions.bind(list);
   const nativeRender = list.render.bind(list);
   const nativeOnSelect = list.onSelect;
+  const header = component.header;
+  const nativeHeaderRender = typeof header?.render === "function" ? header.render.bind(header) : undefined;
   const nativeDispose = component.dispose?.bind(component);
   let refreshFiber: Fiber.Fiber<unknown, never> | undefined;
   let membershipFiber: Fiber.Fiber<unknown, never> | undefined;
@@ -422,7 +431,21 @@ export function decorateResumeSelector(
   const refreshSessions = () => {
     for (const session of list.allSessions ?? []) refreshDecoratedSession(session);
   };
-  const refresh = () => {
+  const refresh = (hydrated: LegacyRecord[] = []) => {
+    if (hydrated.length > 0) {
+      const property = component.scope === "all" ? "allSessions" : "currentSessions";
+      const current = (component[property] ?? list.allSessions ?? []).map(originalSession);
+      const byPath = new Map(hydrated.map((session) => [session.path, session]));
+      const sessions = current.map((session: LegacyRecord) => {
+        const metadata = byPath.get(session.path);
+        return metadata ? { ...session, ...metadata, metadataPending: false } : session;
+      });
+
+      if (sessions.some((session: LegacyRecord, index: number) => session !== current[index])) {
+        component[property] = sessions;
+        list.setSessions(sessions, component.scope === "all");
+      }
+    }
     refreshSessions();
     requestRender();
   };
@@ -437,7 +460,11 @@ export function decorateResumeSelector(
             const membership =
               knownPaths.size === 0
                 ? skeletons
-                : skeletons.map((session) => (knownPaths.has(session.path) ? session : enrichSessionSummary(session)));
+                : skeletons.map((session) =>
+                    knownPaths.has(session.path)
+                      ? session
+                      : { ...enrichSessionSummary(session), metadataPending: false },
+                  );
             const sessions = reconcileSessionMembership(current, membership);
 
             if (sameSessionMembership(current, sessions)) return;
@@ -489,6 +516,16 @@ export function decorateResumeSelector(
 
     return renderDecoratedRows(list, nativeRender(width), width, theme);
   };
+  if (nativeHeaderRender)
+    header.render = (width: number) => {
+      const lines = nativeHeaderRender(width);
+      const sessions = list.allSessions ?? [];
+      const pending = sessions.filter((session: DecoratedSession) => originalSession(session)?.metadataPending).length;
+
+      if (pending > 0 && header.loading !== true)
+        lines[1] = theme.fg("accent", `Loading session details… ${sessions.length - pending}/${sessions.length}`);
+      return lines;
+    };
   list.onSelect = (sessionPath: string) => {
     const session = (list.allSessions ?? []).find(
       (candidate: DecoratedSession) => originalSession(candidate)?.path === sessionPath,
@@ -511,6 +548,7 @@ export function decorateResumeSelector(
     list.filterSessions = nativeFilterSessions;
     list.render = nativeRender;
     list.onSelect = nativeOnSelect;
+    if (nativeHeaderRender) header.render = nativeHeaderRender;
     component.dispose = nativeDispose;
     nativeDispose?.();
   };
@@ -594,17 +632,20 @@ function refreshDecoratedSession(session: DecoratedSession, persisted?: LegacyRe
     sessionId: previous.sessionId,
     agentName: persisted.agentName ?? previous.agentName,
   });
+  const loading = original.metadataPending === true;
   const presentation: LegacyRecord = {
     ...previous,
     agentName: live.agentName ?? persisted.agentName ?? previous.agentName,
     lastMessage: persisted.lastMessage ?? previous.lastMessage,
     running: live.running === true,
     inactiveMs: Number(live.inactiveMs ?? 0),
+    loading,
   };
-  const title = original.name ?? original.firstMessage ?? "(no messages)";
+  const title = loading ? "Loading session details…" : (original.name ?? original.firstMessage ?? "(no messages)");
   const lastMessage = presentation.lastMessage;
-  const messageTitle =
-    !lastMessage || lastMessage === title
+  const messageTitle = loading
+    ? title
+    : !lastMessage || lastMessage === title
       ? title
       : original.name
         ? `${title} · Latest: ${lastMessage}`
@@ -667,7 +708,9 @@ function renderDecoratedRow(list: LegacyRecord, node: LegacyRecord, index: numbe
     : "";
   const orchestrationMetadata = `${id}${inactive}`;
   const nativeMetadataWidth = Math.max(0, width - visibleWidth(left) - visibleWidth(orchestrationMetadata) - 12);
-  const nativeMetadata = truncateToWidth(nativeSessionMetadata(list, original), nativeMetadataWidth, "…");
+  const nativeMetadata = presentation.loading
+    ? ""
+    : truncateToWidth(nativeSessionMetadata(list, original), nativeMetadataWidth, "…");
   const right = `${theme.fg("dim", nativeMetadata)}${orchestrationMetadata}`;
   const messageColor = isConfirmingDelete ? "error" : isCurrent ? "accent" : undefined;
   const available = Math.max(0, width - visibleWidth(left) - visibleWidth(right) - 2);

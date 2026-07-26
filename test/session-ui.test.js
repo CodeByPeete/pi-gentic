@@ -277,7 +277,7 @@ test("live panel gives every active session one compact detailed row", async () 
       status: "running",
       livePanel: true,
       callerSessionId: "parent-session",
-      sessionId: "child-one",
+      sessionId: "019f9c28-97d3-7801-899f-b2d6eaf5874c",
       agentName: "researcher",
       async: true,
       message: "Research redraw behavior",
@@ -291,7 +291,7 @@ test("live panel gives every active session one compact detailed row", async () 
       status: "queued",
       livePanel: true,
       callerSessionId: "parent-session",
-      sessionId: "child-two",
+      sessionId: "019f9c28-d112-73cb-a8c4-fd7de8aebea4",
       agentName: "builder",
       async: false,
       message: "Implement the terminal fix",
@@ -305,7 +305,7 @@ test("live panel gives every active session one compact detailed row", async () 
       status: "queued",
       livePanel: true,
       callerSessionId: "parent-session",
-      sessionId: "child-two",
+      sessionId: "019f9c28-d112-73cb-a8c4-fd7de8aebea4",
       agentName: "builder",
       async: false,
       message: "Continue the terminal fix",
@@ -355,13 +355,36 @@ test("live panel gives every active session one compact detailed row", async () 
     const builderRows = lines.filter((line) => line.includes("builder"));
 
     assert.equal(researcherRows.length, 1);
-    assert.match(researcherRows[0], /\[ASYNC\].*\(child-on\).*\[read\] src\/ui\.ts.*idle.*total/);
+    assert.match(researcherRows[0], /\[ASYNC\].*\(019f9c28-97d3\).*\[read\] src\/ui\.ts.*idle.*total/);
     assert.equal(builderRows.length, 1);
-    assert.match(builderRows[0], /\[SYNC\].*\(child-tw\).*Queued: Continue the terminal fix.*idle.*total/);
+    assert.match(builderRows[0], /\[SYNC\].*\(019f9c28-d112\).*Queued: Continue the terminal fix.*idle.*total/);
     assert.equal(lines.filter((line) => line.includes("agent (child-th)")).length, 1);
   } finally {
     stop();
     for (const card of cards) clearLiveCardDetails(card);
+  }
+});
+
+test("duplicate extension instances keep one shared live panel", async () => {
+  const nonce = Date.now();
+  const modules = await Promise.all([1, 2].map((id) => import(`../dist/ui.js?live-panel-${id}=${nonce}`)));
+  const calls = [[], []];
+  const stops = modules.map(({ startSessionLiveCardRefresh }, index) =>
+    startSessionLiveCardRefresh(
+      {
+        mode: "tui",
+        sessionManager: { getSessionId: () => `${index}-parent`, getEntries: () => [] },
+        ui: { setWidget: (...args) => calls[index].push(args) },
+      },
+      runtime,
+    ),
+  );
+
+  try {
+    assert.equal(calls[0].at(-1)?.[1], undefined);
+    assert.equal(typeof calls[1][0]?.[1], "function");
+  } finally {
+    stops.forEach((stop) => stop());
   }
 });
 
@@ -540,41 +563,45 @@ test("running cards and their repaint loop remain live until explicitly settled"
   }
 });
 
-test("resumed sessions with visible live cards refresh from live updates", async () => {
+test("resumed live cards remount and repaint within one terminal frame", async () => {
   const calls = [];
   const cardId = "send:live-child:1";
   const ctx = {
     mode: "tui",
     ui: { setWidget: (...args) => calls.push(args) },
     sessionManager: {
+      getSessionId: () => "frame-parent",
       getEntries: () => [
         {
           type: "message",
-          message: {
-            role: "toolResult",
-            toolName: "agents",
-            details: { cardId, kind: "send", status: "running" },
-          },
+          message: { role: "toolResult", toolName: "agents", details: { cardId, kind: "send", status: "running" } },
         },
       ],
     },
   };
 
-  setLiveCardDetails({ cardId, kind: "send", status: "running" });
+  setLiveCardDetails({ cardId, kind: "send", status: "running", callerSessionId: "frame-parent" });
   const stop = startSessionLiveCardRefresh(ctx, runtime);
 
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  const rendered = calls.length;
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const mounted = calls.length;
+    setLiveCardDetails({ cardId, updatedAt: Date.now() });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.ok(mounted > 0 && calls.length > mounted);
 
-  setLiveCardDetails({ cardId, updatedAt: Date.now() });
-  await new Promise((resolve) => setTimeout(resolve, 120));
-
-  stop();
-  clearLiveCardDetails({ cardId });
-
-  assert.ok(rendered > 0);
-
-  assert.ok(calls.length > rendered);
+    let renders = 0;
+    calls.at(-1)[1](
+      { terminal: { rows: 30 }, requestRender: () => renders++ },
+      { bold: (text) => text, fg: (_name, text) => text },
+    );
+    setLiveCardDetails({ cardId, activities: [{ type: "assistant", text: "streaming" }] });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(renders > 0);
+  } finally {
+    stop();
+    clearLiveCardDetails({ cardId });
+  }
 });
 
 test("sessions without live cards do not repaint while idle", async () => {

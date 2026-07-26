@@ -1922,12 +1922,23 @@ test("activity monitors normalize every native progress event", () => {
   );
 });
 
-test("activity projection stays responsive through 20,000 unique tool events", () => {
+test("activity projection bounds cyclic content and stays responsive through 20,000 events", () => {
   let latest;
-  const monitor = createSessionActivityMonitor({ status: "running" }, (details) => {
-    latest = details;
-    return details;
+  const monitor = createSessionActivityMonitor({ status: "running" }, (details) => (latest = details));
+  const result = { payload: "x".repeat(1_000_000) };
+  result.self = result;
+
+  assert.doesNotThrow(() =>
+    monitor.observe({ type: "tool_execution_update", toolCallId: "large-tool", partialResult: result }),
+  );
+  monitor.observe({
+    type: "message_update",
+    message: { role: "assistant", content: [{ type: "text", text: "y".repeat(1_000_000) }] },
   });
+  assert.ok(latest.activities.find(({ id }) => id === "large-tool").summary.length <= 240);
+  assert.ok(latest.activities.find(({ id }) => id === "assistant").text.length <= 240);
+  assert.ok(JSON.stringify(latest).length < 2_000);
+
   const startedAt = performance.now();
 
   for (let index = 0; index < 20_000; index++)
@@ -1940,7 +1951,7 @@ test("activity projection stays responsive through 20,000 unique tool events", (
     });
 
   const durationMs = performance.now() - startedAt;
-  assert.equal(latest.activityCount, 20_000);
+  assert.equal(latest.activityCount, 20_002);
   assert.equal(latest.activities.length, 100);
   assert.equal(latest.activities[0].id, "stress-19900");
   assert.equal(latest.activities.at(-1).id, "stress-19999");

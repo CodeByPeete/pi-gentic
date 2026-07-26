@@ -592,6 +592,10 @@ def capture_resume_1000_sessions():
             timeout=10,
         )
         first_render_ms = round((time.monotonic() - started_at) * 1000, 1)
+        loading_text = screen_text()
+        if "Loading session details" not in loading_text:
+            raise AssertionError("Fast resume placeholders did not communicate metadata loading")
+        loading_screenshot = render_png("resume-1000-sessions-loading-terminal.png")
         wait_for(
             "1000-session resume enrichment",
             lambda text: "Fixture session 999" in text,
@@ -647,6 +651,7 @@ def capture_resume_1000_sessions():
             f"session_count=1001\nfirst_render_ms={first_render_ms}\nenriched_ms={enriched_ms}\nfresh_session_ms={fresh_session_ms}\nreopen_max_ms={max(reopen_ms)}\n",
             encoding="utf-8",
         )
+        print(loading_screenshot)
         print(screenshot)
         print(evidence)
     finally:

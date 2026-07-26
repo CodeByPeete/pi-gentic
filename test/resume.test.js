@@ -99,7 +99,10 @@ function nativeSelector() {
       calls.selected.push(sessionPath);
     },
   };
-  const component = { getSessionList: () => list };
+  const component = {
+    header: { loading: false, render: () => ["Resume Session", "search hints", "action hints"] },
+    getSessionList: () => list,
+  };
 
   return { component, list, calls };
 }
@@ -137,6 +140,17 @@ test("resume decorator builds on native session loading, filtering, and renderin
     assert.match(output, /019f1111/);
     assert.match(output, /1 (?:now|\d+[mhdw]|\d+mo|\d+y)/);
     assert.ok(stripAnsi(output).indexOf("Recent session activity") < stripAnsi(output).indexOf("(019f1111)"));
+
+    list.setSessions([
+      {
+        id: "019f1111-aaaa-7000-8000-000000000001",
+        path: "/sessions/loading.jsonl",
+        modified: new Date(),
+        metadataPending: true,
+      },
+    ]);
+    assert.match(stripAnsi(list.render(120).join("\n")), /Loading session details…/);
+    assert.match(stripAnsi(component.header.render(120).join("\n")), /Loading session details… 0\/1/);
   } finally {
     dispose();
     rmSync(dir, { recursive: true, force: true });

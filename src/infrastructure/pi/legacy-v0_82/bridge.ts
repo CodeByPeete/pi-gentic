@@ -277,7 +277,7 @@ export function hostCompatibilityDiagnostics() {
   return [...getLiveRuntimeState().compatibilityDiagnostics];
 }
 
-const LEGACY_HOST_VERSION = "0.82.1";
+const LEGACY_HOST_VERSION = "0.83.0";
 
 export function assertLegacyHostCompatible(peer: PiCodingAgentPeer) {
   if (peer.version !== LEGACY_HOST_VERSION)

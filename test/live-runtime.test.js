@@ -556,6 +556,7 @@ test("/new parks the active visible run instead of disposing it", async () => {
   const session = {
     isStreaming: true,
     sessionFile: path.join(sessionDir, "running.jsonl"),
+    abort: async () => {},
     dispose: () => {
       disposed += 1;
     },

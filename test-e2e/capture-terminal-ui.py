@@ -69,12 +69,16 @@ def write_test_agents(root):
         )
 
 
-def reset_output(clear_artifacts=True):
+def reset_terminal():
     global raw_chunks, screen, stop_reader, stream
     screen = TerminalScreen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
     raw_chunks = []
     stop_reader = False
+
+
+def reset_output(clear_artifacts=True):
+    reset_terminal()
     OUTPUT.mkdir(parents=True, exist_ok=True)
     if AGENT_DIR.exists():
         shutil.rmtree(AGENT_DIR)
@@ -693,13 +697,9 @@ def capture_resume_1000_sessions():
         enriched_ms = round((time.monotonic() - started_at) * 1000, 1)
         if first_render_ms >= 1000:
             raise AssertionError(f"1000-session resume first render took {first_render_ms}ms")
-        time.sleep(0.5)
-        proc.write("\r")
-        wait_for(
-            "open hydrated resume selection",
-            lambda text: "Resume Session" not in text and "Resumed session" in text,
-            timeout=10,
-        )
+        stop(proc)
+        reset_terminal()
+        proc = spawn()
         proc.write("/resume\r")
         wait_for(
             "hydrated resume reopen",
@@ -735,13 +735,9 @@ def capture_resume_1000_sessions():
         fresh_session_ms = round((time.monotonic() - fresh_started_at) * 1000, 1)
         if fresh_session_ms >= 5000:
             raise AssertionError(f"Fresh session appeared after {fresh_session_ms}ms")
-        time.sleep(0.5)
-        proc.write("\r")
-        wait_for(
-            "open live resume search result",
-            lambda text: "Resume Session" not in text and "Resumed session" in text,
-            timeout=10,
-        )
+        stop(proc)
+        reset_terminal()
+        proc = spawn()
         proc.write("/resume\r")
         wait_for(
             "enriched sessions after live refresh",

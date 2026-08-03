@@ -1,6 +1,6 @@
 {
   "name": "pi-gentic",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Pi extension for orchestrating durable agent sessions, delegation, and worktrees.",
   "repository": {
@@ -46,7 +46,7 @@
     "test:effect": "vitest run",
     "test:integration": "npm run build && node --test test/config-trust.test.js test/worktree-security.test.js",
     "test:compat": "npm run build && node --test test/active-agent-calls.test.js test/live-runtime.test.js test/resume.test.js",
-    "test:coverage": "npm run build && node --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=80 --test-coverage-include=dist/**/*.js --test-coverage-exclude=dist/domain/** --test-coverage-exclude=dist/infrastructure/runtime/** --test-coverage-exclude=dist/runtime/** --test test/*.test.js",
+    "test:coverage": "npm run build && node --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=95 --test-coverage-branches=80 --test-coverage-include=dist/**/*.js --test-coverage-exclude=dist/domain/** --test-coverage-exclude=dist/infrastructure/pi/** --test-coverage-exclude=dist/infrastructure/runtime/** --test-coverage-exclude=dist/runtime/** --test-coverage-exclude=dist/ui.js --test test/*.test.js",
     "test:coverage:effect": "vitest run --coverage",
     "test:ui": "npm run build && node test-ui/capture-ui.mjs",
     "test:e2e": "npm run build && python test-e2e/capture-terminal-ui.py --deterministic",

@@ -1,232 +1,250 @@
 # pi-gentic
 
-`pi-gentic` helps Pi work more like a small team.
+`pi-gentic` lets one Pi conversation hand focused jobs to other Pi conversations.
 
-If you do not know Pi yet, picture a coding chat app. You type a request, and the app can read files, use tools, run commands, and help with software work.
-
-A Pi session is one conversation in that app.
-
-An agent is a role for a conversation. A role can say, "act like a reviewer", "act like a researcher", or "act like a builder". Each role can have its own instructions and its own tools.
-
-`pi-gentic` connects those conversations together. One main session can send a task to another session, let it work in the background, then receive the answer when it is done.
+If Pi is new to you, picture a chat app that can read files, run commands, and help with software work. Pi calls each saved conversation a **session**. Pi-gentic lets those sessions work together.
 
 ```text
 You
 └─ Main Pi session
    ├─ Research session: finds information
-   ├─ Review session: checks for mistakes
-   └─ Build session: makes code changes
+   ├─ Review session: checks the work
+   └─ Build session: changes files
 ```
 
-Without `pi-gentic`, you have to remember where each conversation is and what each one is doing. With `pi-gentic`, Pi can show the work as a tree, keep each session's role clear, and send results back to the right place.
+Each session keeps its own conversation history. The main session can send work, continue immediately, and receive the result later.
 
----
+## Requirements
 
-## The short version
+This release requires:
 
-`pi-gentic` adds three everyday actions to Pi.
+- Pi `0.83.0`
+- Node.js `22.19.0` or newer
+- Git when you want delegated sessions to use separate work folders
 
-| Feature | What it means | Example |
-| --- | --- | --- |
-| `/agent` | Give a session a role with instructions. | `/agent reviewer` makes the current session act like a reviewer. |
-| `/send` | Send a task to another session. | `/send Check this plan --agent reviewer --bg` asks a reviewer session to check the plan in the background. |
-| `agents` tool | Lets the model do the same thing itself. | The model can delegate a task to a researcher without asking you to type the command. |
+Pi-gentic checks the installed Pi version when it starts. It shows a compatibility error if the version or a required Pi feature does not match.
 
-A simple before and after:
+> Pi packages can run commands and access files. Review third-party packages before installing them.
 
-| Without pi-gentic | With pi-gentic |
-| --- | --- |
-| You ask one long conversation to research, plan, edit, test, and review. | You keep one main conversation and send focused jobs to child sessions. |
-| You manually track which chat had which idea. | The orchestration tree shows the session family. |
-| Background work is easy to lose track of. | Live cards show what is running and where the answer will return. |
+## Install
 
----
+Install the published package:
 
-## Why it's useful
+```bash
+pi install npm:pi-gentic@0.4.0
+```
 
-Some software tasks have too many moving pieces for one conversation.
+Or install the matching Git release:
 
-For example, "improve this package" might really mean:
+```bash
+pi install git:github.com/CodeByPeete/pi-gentic@v0.4.0
+```
 
-- read the docs
-- inspect the source code
-- make a change
-- test the change
-- review the result
+Start Pi after installation. If Pi is already open, restart it so the extension can load.
 
-A single session can do that, but it gets crowded. `pi-gentic` lets Pi split the task into smaller jobs. Each session keeps its own memory and focus.
+## Try it in five minutes
 
-That gives you a cleaner workflow:
+Pi-gentic needs at least one named role before commands such as `/agent reviewer` can use it. A role is called an **agent**.
+
+Create this file:
 
 ```text
-Main session: decides what needs to happen
-Researcher: finds facts and docs
-Builder: changes files
-Reviewer: checks for mistakes
-Main session: receives the final answer
+~/.pi/agent/extensions/pi-gentic/agents/reviewer.md
 ```
 
-The main point: you can see who is doing what.
+Add:
 
+```markdown
+---
+name: reviewer
+description: Checks work for mistakes, missed cases, and unclear wording.
+tools:
+  - read
+  - grep
 ---
 
-## What is an agent?
-
-An agent is a named role with instructions.
-
-Example roles:
-
-```text
-researcher = find facts and sources
-reviewer   = look for bugs and risks
-builder    = change the code
+Review the requested work. Explain each problem clearly and include evidence.
 ```
 
-An agent can also have permissions. You can choose which tools, skills, prompt files, and other agents it can use.
-
-That matters because different jobs need different rules. A reviewer might only need read access. A builder might need file-editing tools. A researcher might need search tools.
-
----
-
-## What is a session?
-
-A session is one Pi conversation.
-
-It has its own history, messages, tool calls, model settings, and working directory. If you send more work to the same session later, it remembers what happened before.
-
-`pi-gentic` uses sessions as durable workers. They keep their context even when you switch away from them.
-
----
-
-## How you delegate tasks
-
-You delegate tasks with `/send`.
-
-```text
-/send Check this plan for missing edge cases --agent reviewer --bg
-```
-
-That command says:
-
-1. Create a new session.
-2. Load the `reviewer` role into it.
-3. Send it the message: `Check this plan for missing edge cases`.
-4. Let it work in the background because `--bg` was used.
-5. Bring the final answer back to the original session.
-
-Example result:
-
-```text
-Sent message to [reviewer] agent in session 019ed682.
-The agent will return with a full answer once done.
-```
-
-Later, the caller receives something like:
-
-```text
-Message from [reviewer] agent from session 019ed682:
-The plan misses error handling for empty input and cancellation.
-```
-
----
-
-## Main commands in detail
-
-### `/agent`
-
-Use `/agent` to load a role into a session.
+Start a new Pi session, then load the role:
 
 ```text
 /agent reviewer
 ```
 
-Now the current session behaves like the `reviewer` agent.
+Return to an unassigned role if you want the main session to coordinate the work:
 
-More examples:
+```text
+/agent clear
+```
+
+Send a review job in the background:
+
+```text
+/send Check the README for unclear instructions --agent reviewer --bg
+```
+
+Pi shows a live card while the other session works. Its final answer returns to the session that sent the request.
+
+<img src="./docs/assets/send-background.png" alt="A background review job running in Pi" width="900">
+
+## What pi-gentic adds
+
+| Feature | In plain language | Example |
+| --- | --- | --- |
+| `/agent` | Give a session a named role. | `/agent reviewer` |
+| `/send` | Send work to another session. | `/send Check this plan --agent reviewer --bg` |
+| `/resume` details | Add role, activity, and family information to Pi's session picker. | `/resume` |
+| `agents` tool | Let the model use the same features itself. | The model can send work to a reviewer. |
+
+Pi-gentic also adds `/skill <name> [request]` as a manual way to use a Pi skill. Pi's own `/skill:<name>` command continues to work.
+
+## A few useful terms
+
+### Agent
+
+An agent is a named role with instructions and optional limits.
+
+Examples:
+
+```text
+researcher = finds facts and sources
+reviewer   = checks for mistakes
+builder    = changes files
+```
+
+A role can choose which tools, skills, other agents, model, and display theme the session may use.
+
+### Session
+
+A session is one saved Pi conversation. It has its own messages, settings, working folder, and history.
+
+Pi-gentic treats sessions as durable collaborators. Sending another job to the same session continues its existing conversation.
+
+### Delegation
+
+A delegation is one request sent from one session to another. The sending session is the caller. The receiving session is the target.
+
+### Worktree
+
+A Git worktree is a separate work folder connected to the same repository. It lets another session edit a branch without changing the files in your current folder.
+
+## `/agent` command
+
+Use `/agent` to inspect or change a session's role.
 
 ```text
 /agent
+/agent reviewer
 /agent clear
 /agent reviewer --session 019ed682
+/agent clear --session 019ed682
 ```
 
-| Command | What it does |
+| Command | Result |
 | --- | --- |
-| `/agent` | Shows the active agent. |
-| `/agent reviewer` | Loads `reviewer` into the current session. |
-| `/agent clear` | Removes the active agent. |
-| `/agent reviewer --session <id>` | Loads `reviewer` into another session. |
+| `/agent` | Shows the current role. |
+| `/agent reviewer` | Loads `reviewer` in the current session. |
+| `/agent clear` | Clears the current role. |
+| `/agent reviewer --session <id>` | Loads `reviewer` in another session. |
+| `/agent clear --session <id>` | Clears the role in another session. |
 
-When an agent is loaded, `pi-gentic` recalculates the session's tools, skills, agents, prompt files, model, thinking level, and defaults. The UI shows a card that can be expanded to inspect the resolved prompt.
+Press `F7` to cycle through the unassigned state and the available agents.
 
-<img src="./docs/assets/load-agent.png" alt="Agent load card" width="900">
+The role selection is saved with the session. Loading a role also applies its instructions and settings. The result card can be expanded to inspect what was applied.
 
-The same card can be expanded to show the final prompt and resolved configuration that the agent receives.
+<img src="./docs/assets/load-agent.png" alt="A Pi card showing that the reviewer role was loaded" width="900">
 
-### `/send`
+## `/send` command
 
-Use `/send` to give work to another session.
+Use `/send` to give work to a different session.
 
 ```text
 /send Review this implementation --agent reviewer --bg
 ```
 
-Useful examples:
+When `--session` is absent, pi-gentic creates a child session. When `--session` is present, it continues that existing session. A session cannot send a message to itself.
+
+### Common examples
 
 ```text
-/send Find the relevant docs --agent researcher --bg
+/send Find the relevant documentation --agent researcher --bg
 /send Continue the previous investigation --session 019ed682
-/send Implement the parser cleanup --agent builder --worktree parser-cleanup
+/send Check this now --agent reviewer --fg
+/send Build the parser cleanup --agent builder --worktree parser-cleanup
+/send Continue on a copy of this conversation --agent reviewer --fork
 ```
 
-Common flags:
+### Common options
 
-| Flag | What it means |
+| Option | Meaning |
 | --- | --- |
-| `--agent <name>` | Use this agent in the target session. |
-| `--session <id>` | Send to an existing session. |
-| `--bg` | Run in the background and return later. |
-| `--fg` | Wait for the answer now. |
-| `--cwd <dir>` | Use this folder as the target working directory. |
-| `--worktree [branch]` | Create or use a Git worktree for the target session. |
-| `--no-invoke` | Add the answer as context without starting a new caller turn. |
+| `--agent <name>` | Load this role in the target session. |
+| `--session <id>` | Continue an existing session. Short unique IDs are accepted. |
+| `--bg` | Continue the caller immediately and return the result later. |
+| `--fg` | Wait for a new child session to finish. |
+| `--fork` | Start the child with a copy of the caller's active conversation branch. |
+| `--no-invoke` | Add the result to the caller without automatically starting another response. |
+| `--cwd <folder>` | Set the target session's working folder. With `--worktree`, this is the requested worktree destination. |
+| `--worktree [branch]` | Create or reuse a Git worktree. The branch name may be omitted. |
+| `--repo <folder>` | Choose the source repository for a worktree. |
 
-Runtime override flags:
+Messages sent to an existing session always run in the background because that session may already be working. For a new child, foreground is the default unless the active settings say otherwise.
 
-| Flag | Example |
+A foreground send keeps its card open until the target finishes.
+
+<img src="./docs/assets/send-foreground.png" alt="A foreground review job in Pi" width="900">
+
+A background send returns control immediately.
+
+<img src="./docs/assets/send-background.png" alt="A background review job in Pi" width="900">
+
+### One-request overrides
+
+These options change the target for one request:
+
+| Option | Example |
 | --- | --- |
-| `--model` | `--model openai-codex/gpt-5.4-mini` |
+| `--model` | `--model provider/model-id` |
 | `--thinking` | `--thinking high` |
 | `--tools` | `--tools read,grep,agents` |
 | `--agents` | `--agents researcher,reviewer` |
-| `--skills` | `--skills tdd,playwright-cli` |
+| `--skills` | `--skills code-review,tdd` |
 | `--theme` | `--theme dark` |
 | `--system-prompt-files` | `--system-prompt-files +local.md,!legacy.md` |
 | `--max-subagent-depth` | `--max-subagent-depth 2` |
 
-A foreground send waits for the target session to answer.
+## `/resume` session picker
 
-<img src="./docs/assets/send-foreground.png" alt="Foreground send card" width="900">
+`/resume` is Pi's built-in session picker. Pi-gentic keeps the picker and adds:
 
-A background send returns immediately and keeps the delegated task visible.
+- agent names
+- running state
+- time since the last activity
+- short session IDs
+- parent and child relationships
 
-<img src="./docs/assets/send-background.png" alt="Background send card" width="900">
+Pi's search, sorting, path display, named-session filter, rename, delete, and session-switching behavior remain available.
 
-### `/resume`
+Pi-gentic uses a fast initial list for large session folders, then fills in more details without blocking the picker.
 
-Pi-gentic decorates Pi's native session selector with agent labels, running state, inactivity, short session ids, and parent-child relationships. Pi's standard search, sort, scope, rename, path, delete, and session switching behavior remains native.
+<img src="./docs/assets/resume.png" alt="Pi's session picker with pi-gentic role and session details" width="900">
 
-Large directories open from one fast filesystem snapshot. The exact native Pi loader runs outside the TUI event loop, while Effect filesystem events add, enrich, or remove sessions in an already-open selector. The 500-session regression gate requires the first view within one second and a newly created session within 750 milliseconds.
+## `/skill` command
 
-<img src="./docs/assets/resume.png" alt="Native resume selector with pi-gentic session details" width="900">
+Pi already provides `/skill:<name>`. Pi-gentic also accepts this form:
 
----
+```text
+/skill code-review Check the current branch
+```
 
-## The model can use it too
+The command finds the named Pi skill and sends its instructions and your request to the current session. Set `enableSkillCommands` to `false` in Pi's normal settings if you want to disable manual skill commands.
 
-`pi-gentic` registers a model-callable tool named `agents`.
+## The `agents` tool
 
-That tool lets the model delegate through JSON. For example:
+Pi-gentic registers a tool named `agents`. The model can use it without asking you to type `/agent` or `/send`.
+
+Example:
 
 ```json
 {
@@ -237,145 +255,69 @@ That tool lets the model delegate through JSON. For example:
 }
 ```
 
-This is the tool version of typing:
+This has the same purpose as:
 
 ```text
 /send Review this implementation for regressions. --agent reviewer --bg
 ```
 
-Supported actions:
-
-| Action | What it does |
+| Action | Result |
 | --- | --- |
-| `list` | List available agents. |
-| `get` | Show one agent definition. |
-| `load` | Load or clear an agent in a session. |
-| `send` | Delegate a task to a child or existing session. |
-| `status` | Check what a session is doing. |
-| `abort` | Stop a running session. |
-| `discoverSessions` | Show nearby sessions. |
+| `list` | Lists the agents available to the current session. |
+| `get` | Shows one agent definition. Requires `agent`. |
+| `load` | Loads an agent in the current session. Use `clear` as the agent name to clear it. |
+| `send` | Sends work to a new child or an existing session. Requires `message`. |
+| `status` | Shows what one session is doing. Requires `sessionId`. |
+| `abort` | Stops the current run or a run in the supplied `sessionId`. |
+| `discoverSessions` | Finds nearby sessions in the current session family. |
 
-If a tool action fails, the error is shown as a readable card.
+A failed action is shown as a readable error card.
 
-<img src="./docs/assets/error-card.png" alt="Error card" width="900">
-
----
+<img src="./docs/assets/error-card.png" alt="A Pi card explaining why an agent action failed" width="900">
 
 ## Git worktrees
 
-A Git worktree is a separate working folder for the same repository.
-
-That is useful when a delegated session needs to edit files. It can work in its own folder instead of changing the files you are currently looking at.
-
-Example:
+Use a worktree when another session needs to edit files while you continue working in the current folder.
 
 ```text
 /send Build the migration --agent builder --worktree migration-builder
 ```
 
-If no folder is given, `pi-gentic` creates one under:
+When no destination is supplied, pi-gentic creates the worktree under:
 
 ```text
-.agentfiles/worktrees/<generated-name>
+<repository>/.agentfiles/worktrees/
 ```
 
-Generated session or worktree names are told to stay 3 words long max.
+An explicit destination must stay inside the selected repository. Pi-gentic rejects the repository root, Git's internal folder, path escapes through links or junctions, and folders that Git does not recognize as a worktree for that repository.
 
----
+If the requested branch exists, pi-gentic uses it. Otherwise, it creates the branch from the current `HEAD`.
 
-## Runtime architecture
+## Configuration locations
 
-Pi owns sessions, resources, trust decisions, prompts, models, providers, commands, and terminal semantics. Pi-gentic adds typed policy and delegation services without replacing those native capabilities.
+Pi-gentic reads its own settings and agent files from these locations:
 
-```mermaid
-flowchart TD
-    Pi[Pi 0.82 host] --> Boundary[Extension boundary]
-    Boundary --> Runtime[Effect ManagedRuntime]
-    Runtime --> Coordinator[Delegation coordinator]
-    Runtime --> Registry[Runtime registry]
-    Runtime --> Fibers[Delegation FiberMap]
-    Coordinator --> Policy[Capability and trust policy]
-    Coordinator --> Sessions[Native Pi sessions]
-    Coordinator --> Worktrees[Secure Worktree Manager]
-    Worktrees --> Git[Effect Git client]
-    Sessions --> UI[Pi TUI presentation]
-    Boundary --> Legacy[legacy-v0_82 adapter]
-    Legacy --> Pi
-```
-
-The extension host owns one scoped `ManagedRuntime`. Runtime metadata is observable through `SubscriptionRef`, background delegations are owned by `FiberMap`, native session enrichment is coalesced by `Cache`, and TUI cadence uses `Schedule`. Live repaint delays, timer pulses, and expiry are runtime-owned fibers. Git operations use scoped streams, timeouts, spans, redacted attributes, and metrics. Shutdown interrupts every owned fiber and releases runtime entries. The exact-version adapter under `src/infrastructure/pi/legacy-v0_82/` contains every private Pi 0.82 integration.
-
-Unknown host, process, and persistence values are decoded once with Effect Schema. Card snapshots accept JSON values plus absent top-level fields. Long-running cards preserve the latest 100 activities and the exact hidden count, keeping persistence and rendering work bounded.
-
-The refactor baseline contained 10,769 TypeScript source lines. The current source contains 9,192, a 14.6% reduction, while expanding deterministic behavior coverage. Capability parity limits deletion. `Prettier` keeps the layout reproducible, and the exhaustive sidebar mapping is recorded in [`docs/effect-feature-ledger.md`](docs/effect-feature-ledger.md).
-
----
-
-## Configuration
-
-`pi-gentic` reads configuration from user-level files and project-level files.
-
-| Order | Path | Meaning |
+| Priority | Path | Scope |
 | ---: | --- | --- |
-| 1 | `~/.pi/agent/extensions/pi-gentic/settings.json` | Settings for all your projects. |
-| 2 | `~/.pi/agent/extensions/pi-gentic/agents/*.md` | Agents you can reuse everywhere. |
-| 3 | `<workspace>/.pi/extensions/pi-gentic/settings.json` | Settings for one project. |
-| 4 | `<workspace>/.pi/extensions/pi-gentic/agents/*.md` | Agents for one project. |
+| 1 | `~/.pi/agent/extensions/pi-gentic/settings.json` | All projects |
+| 2 | `~/.pi/agent/extensions/pi-gentic/agents/*.md` | All projects |
+| 3 | `<workspace>/.pi/extensions/pi-gentic/settings.json` | One trusted project |
+| 4 | `<workspace>/.pi/extensions/pi-gentic/agents/*.md` | One trusted project |
 
-Project settings override user settings only after Pi returns an affirmative project-trust decision. Untrusted projects cannot contribute pi-gentic settings, agents, skills, or prompt files. User-level configuration remains available.
+The trusted project's values are applied after the user-level values, so they can override them. Pi-gentic reads project files only when Pi reports that the project is trusted. User-level configuration remains available in untrusted projects.
 
-Prompt files must remain inside their trusted configuration root. Generated worktrees stay under `<repository>/.agentfiles/worktrees`. An explicit worktree folder must remain inside an approved worktree root, resolve without a symlink or junction escape, and be registered by Git as a worktree for the selected repository.
-
----
-
-## Example agent file
-
-Create this file:
-
-```text
-.pi/extensions/pi-gentic/agents/reviewer.md
-```
-
-```markdown
----
-name: reviewer
-description: Reviews changes, edge cases, and risks.
-tools:
-  - read
-  - grep
-  - bash
----
-
-Review the requested change for correctness, maintainability, and missed cases.
-Return concise findings with evidence.
-```
-
-Now you can use:
-
-```text
-/agent reviewer
-```
-
-or:
-
-```text
-/send Check this patch --agent reviewer --bg
-```
-
----
+Extra instruction files must stay inside a trusted pi-gentic configuration folder. Files that escape through a link or an outside path are ignored and reported.
 
 ## Settings example
+
+This example gives unassigned sessions a small tool set and lets named agents see all configured skills:
 
 ```json
 {
   "globalMaxSubagentDepth": 6,
+  "sessionMessagingScope": "tree",
   "agentlessSession": {
-    "tools": ["read", "grep", "agents"],
-    "agentsTool": {
-      "async": true,
-      "rx": 2,
-      "ry": 2
-    }
+    "tools": ["read", "grep", "agents"]
   },
   "agentDefaults": {
     "tools": ["read", "grep", "agents"],
@@ -392,162 +334,190 @@ or:
 }
 ```
 
+### Main setting groups
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `defaultAgent` | none | Role loaded in a new blank session. Use `null` to disable it. |
+| `globalMaxSubagentDepth` | `6` | Deepest allowed child-session level, with the first session at level `0`. |
+| `sessionMessagingScope` | `"tree"` | Existing-session sends stay in the same session family. Use `"all"` to allow any visible session. |
+| `agentlessSession` | `{}` | Settings used when the current session has no named role. |
+| `agentDefaults` | `{}` | Defaults shared by named agents. |
+| `agentDefinitions` | `[]` | Agent definitions written directly in JSON. Markdown files are also supported. |
+
+## Agent file reference
+
+An agent can be written in Markdown frontmatter or inside `agentDefinitions` in `settings.json`.
+
+```markdown
+---
+name: reviewer
+description: Reviews changes, edge cases, and risks.
+tools:
+  - read
+  - grep
+agents:
+  - researcher
+maxSubagentDepth: 1
 ---
 
-## Subagent depth limits
+Review the requested change for correctness and missed cases.
+Return concise findings with evidence.
+```
 
-`globalMaxSubagentDepth` is the absolute tree cap, with the root session at depth `0`. `maxSubagentDepth` is local to the current session. A new child session can be created only when the current session has `maxSubagentDepth` of at least `1` and the child would not exceed `globalMaxSubagentDepth`. Sending to an existing session does not affect depth.
-
----
-
-## Agent fields
-
-Agent fields can be written in `settings.json` under `agentDefinitions`, or in Markdown agent frontmatter. Defaults below describe the resolved behavior when the field is left out of one agent definition.
+### Agent fields
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `name` | Required | The agent id, such as `reviewer`. Empty or missing names are ignored. |
-| `description` | `""` | A short explanation shown to people and models. |
-| `instructions` | `""` | Extra instructions used while the agent is active. In Markdown agent files, the body becomes `instructions` when present. |
-| `disabled` | `false` | Turns the agent off and removes it from the available agent list. |
-| `agents` | `agentDefaults.agents`, then `["*"]` | Which agents this agent may see. |
-| `tools` | `agentDefaults.tools`, then `["*"]` | Which tools this agent may use. |
-| `skills` | `agentDefaults.skills`, then `["*"]` | Which skills this agent may see. |
-| `model` | `agentDefaults.model`, then the current session model | The model this agent should use by default. |
-| `models` | `undefined` | Input alias for `model`. If `model` is absent, the first string in `models` becomes `model`. |
-| `thinking` | `agentDefaults.thinking`, then the current session setting | The thinking level this agent should use by default. |
-| `theme` | `agentDefaults.theme`, then the current theme | The Pi theme used while this agent is active. |
-| `systemPromptFiles` | `agentDefaults.systemPromptFiles`, then no extra prompt file filter | Prompt files to include or exclude. |
-| `maxSubagentDepth` | `agentDefaults.maxSubagentDepth`, then `1` | Relative child-session budget for this session. `0` blocks new child sessions. Reusing an existing session does not count. |
-| `agentsTool` | `agentDefaults.agentsTool`, then `{}` | Defaults used by the `agents` tool and `/send` while this agent is active. |
-| `agentsTool.async` | `agentDefaults.agentsTool.async`, then `false` | Whether new delegated sessions should run in the background by default. Sends to an existing session always run asynchronously. |
-| `agentsTool.fork` | `agentDefaults.agentsTool.fork`, then `false` | Whether new child sessions should fork the current context by default. |
-| `agentsTool.cwd` | `agentDefaults.agentsTool.cwd`, then the caller working directory | Default working directory for child sessions. |
-| `agentsTool.invokeMeLater` | `agentDefaults.agentsTool.invokeMeLater`, then `{}` | Defaults for how delegated answers return to the caller. |
-| `agentsTool.invokeMeLater.async` | `agentDefaults.agentsTool.invokeMeLater.async`, then `true` | Whether a background answer should start a new caller turn when it returns. |
-| `agentsTool.invokeMeLater.withSession` | `agentDefaults.agentsTool.invokeMeLater.withSession`, then `true` | Whether a foreground answer or existing-session answer should start a new caller turn when it returns. |
-| `agentsTool.rx` | `agentDefaults.agentsTool.rx`, then `0` | Default horizontal search radius for session discovery. |
-| `agentsTool.ry` | `agentDefaults.agentsTool.ry`, then `0` | Default vertical search radius for session discovery. |
-| `agentsTool.open` | `agentDefaults.agentsTool.open`, then `undefined` | Reserved flag accepted in agent definitions. |
-| `sourcePath` | Generated | Read-only source location shown by the `agents` tool `get` action. |
+| `name` | required | Agent ID, such as `reviewer`. Empty or missing names are ignored. |
+| `description` | `""` | Short explanation shown to people and the model. |
+| `instructions` | `""` | Instructions added while the agent is active. A Markdown file's body becomes the instructions. |
+| `disabled` | `false` | Hides the agent when set to `true`. |
+| `agents` | inherited, then `["*"]` | Agents this session may see. |
+| `tools` | inherited, then `["*"]` | Tools this session may use. |
+| `skills` | inherited, then `["*"]` | Skills this session may see. |
+| `model` | inherited, then current model | Model used by the session. |
+| `models` | none | Input alias for `model`. The first string is used when `model` is absent. |
+| `thinking` | inherited, then current setting | Thinking level used by the session. |
+| `theme` | inherited, then current theme | Pi display theme used by the session. |
+| `systemPromptFiles` | none | Extra instruction files to include or exclude. |
+| `maxSubagentDepth` | inherited, then `1` | Number of child levels this session may create. `0` blocks new children. |
+| `agentsTool` | inherited, then `{}` | Default behavior for the `agents` tool and `/send`. |
+| `sourcePath` | generated | Read-only source location shown by the `get` action. |
 
----
+### `agentsTool` fields
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `async` | `false` | New child sends use the background by default. Existing-session sends always use the background. |
+| `fork` | `false` | New children copy the caller's active conversation branch by default. |
+| `cwd` | caller's folder | Default working folder for a child session. |
+| `invokeMeLater.async` | `true` | A background result may automatically start a new caller response. |
+| `invokeMeLater.withSession` | `true` | A foreground child result may automatically continue the caller. |
+| `rx` | `0` | Default horizontal distance for `discoverSessions`. |
+| `ry` | `0` | Default vertical distance for `discoverSessions`. |
+| `open` | none | Reserved setting. It is accepted but currently has no effect. |
+
+## Child-session limits
+
+`globalMaxSubagentDepth` is the absolute limit for the whole session family. The first session is at level `0`.
+
+`maxSubagentDepth` is the local child allowance for one session. A value of `1` lets that session create a direct child. A value of `0` blocks new children.
+
+Sending to an existing session does not create a child and does not use this allowance.
 
 ## Resource filters
 
-Agents can be limited to certain tools, skills, agents, and prompt files.
+Agents can limit the tools, skills, agents, and extra instruction files they use.
 
 | Pattern | Meaning |
 | --- | --- |
-| `*` | Preserve all resources in the current baseline. |
-| `pattern` | Allow matching resources. |
-| `!pattern` | Block matching resources. |
-| `+name` | Always allow one exact resource. |
-| `-name` | Always block one exact resource. |
-| `[]` | Allow nothing. |
+| `*` | Keep every item currently available. |
+| `name` | Keep the matching name. |
+| `prefix-*` | Keep names that match the wildcard pattern. |
+| `!pattern` | Remove matching names. |
+| `+name` | Add one exact registered name. |
+| `-name` | Remove one exact name, even if another rule adds it. |
+| `[]` | Allow none. |
 
-This keeps agents focused. A reviewer can be read-only. A builder can edit files. A researcher can get research tools.
+For tools, `*`, exclusions, and exact additions start from Pi's current active tool selection. A plain inclusion list selects from Pi's registered tools. Pi-gentic remembers the active selection it observed before applying a narrower agent policy and restores it when the restriction is cleared, unless Pi or another extension has supplied a newer selection.
 
-### Tool policy composition
+Examples:
 
-Pi-gentic treats Pi's registered tools as the catalog and Pi's active tools as the Ambient Tool Selection. Tool policy composes with that active selection as follows:
-
-- An omitted `tools` filter, `*`, exclusions, and exact additions or removals start from the ambient selection.
-- Plain patterns without `*` select matching registered tools explicitly.
-- `!pattern` removes matching ambient tools without activating inactive registered tools.
-- `+name` activates one exact registered tool.
-- `-name` wins over every inclusion.
-- `[]` activates no tools.
-
-For example, an ambient selection of `execute`, `patch`, and `agents` remains unchanged under `tools: ["*"]`. `tools: ["*", "!patch"]` produces `execute` and `agents`. `tools: ["inspect", "+agents"]` explicitly selects registered `inspect` and `agents` tools.
-
-Pi-gentic remembers the ambient selection while an explicit restriction is active. Clearing the restriction restores that selection when no later host write occurred. When Pi or another extension replaces the complete active selection, pi-gentic adopts that newer selection as the next ambient baseline before applying Session Policy.
-
-Pi exposes one shared active-tool list without ownership metadata or an atomic comparison operation. A participant cannot observe a write that recreates the same ordered selection. Pi-gentic preserves every distinct complete selection it can observe and does not infer hidden ownership.
-
----
-
-## Install
-
-Install with Pi:
-
-```bash
-pi install pi-gentic
+```json
+{ "tools": ["*"] }
+{ "tools": ["*", "!bash"] }
+{ "tools": ["read", "grep", "+agents"] }
+{ "tools": [] }
 ```
 
-Or install from a Git repository:
+## Privacy and local data
 
-```bash
-pi install git+https://github.com/CodeByPeete/pi-gentic.git#v0.3.0
+Pi-gentic stores its state through Pi's session files and configuration folders. It does not send its own telemetry to an outside service.
+
+Delegated prompts and answers become part of the relevant Pi sessions. Error reports can include local file paths and messages needed to explain a failure. Protect your Pi session and configuration folders as you would protect the project itself.
+
+## For maintainers
+
+### Runtime design
+
+Pi owns conversations, models, tools, trust decisions, prompts, and terminal behavior. Pi-gentic adds role policy, session coordination, worktree handling, and presentation around those Pi features.
+
+```mermaid
+flowchart TD
+    Pi[Pi 0.83.0] --> Boundary[Pi extension boundary]
+    Boundary --> Runtime[Managed Effect runtime]
+    Runtime --> Coordinator[Delegation coordinator]
+    Runtime --> Registry[Live session registry]
+    Runtime --> Fibers[Background delegation fibers]
+    Coordinator --> Policy[Agent and trust policy]
+    Coordinator --> Sessions[Pi sessions]
+    Coordinator --> Worktrees[Worktree manager]
+    Worktrees --> Git[Git]
+    Sessions --> UI[Pi terminal interface]
+    Boundary --> Adapter[Version-pinned Pi adapter]
+    Adapter --> Pi
 ```
 
-Pi-gentic 0.3 supports the exact Pi peer version `0.82.1`. Startup fails with a compatibility diagnostic when the installed host version or required host capability differs. Recoverable compatibility, persistence, and stale-context failures are retained in a bounded structured diagnostic history.
+One managed runtime belongs to the loaded extension. It owns background work, live updates, timers, process streams, and cleanup. Unknown data from Pi, processes, configuration, and saved cards is checked at its boundary. Long-running cards keep the latest 100 activities and the exact number of hidden activities.
 
-Diagnostics never intentionally include raw prompts, returned answers, credentials, environment values, or full user paths. Pi-gentic does not send telemetry to an external service.
+The remaining private Pi integration is kept in one version-pinned adapter and guarded by compatibility tests. See the [host-contract decision](docs/adr/0002-pi-host-contract.md) and [Effect feature ledger](docs/effect-feature-ledger.md) for the detailed design record.
 
----
+### Development
 
-## Development
+Install requirements with:
 
-Requires Node.js 22.19 or later, Git, and a POSIX shell. `npm ci` runs `scripts/prepare-effect.sh`, which creates the ignored `.repos/effect` source checkout and idempotently prepares Effect TSGO.
+```bash
+npm ci
+```
+
+The installation prepares the local Effect source used by the stricter checks. Common commands are:
 
 ```bash
 npm run check
+npm run test:integration
+npm run test:compat
 npm run test:coverage
 npm run test:coverage:effect
 npm run test:ui
 npm run test:e2e
 ```
 
-`npm run test:e2e` is deterministic and does not call a live model. `npm run test:e2e:live` is an optional live-model compatibility exercise. UI and terminal screenshots are written under `test-ui/output` and `test-e2e/output`.
+`npm run test:e2e` uses deterministic fixtures and does not call a live model. `npm run test:e2e:live` is optional and may call the configured model. Fresh visual output is written under `test-ui/output` and `test-e2e/output`.
 
----
+### Release publishing
 
-## Release publishing
+Publishing a GitHub release starts `.github/workflows/publish-npm.yml`. The workflow runs the full checks, verifies that the `v<version>` tag matches `package.json`, and publishes only when that version is absent from npm.
 
-GitHub releases publish the package to npm through `.github/workflows/publish-npm.yml`.
-
-Before the first automated release, add the npm trusted publisher:
+The npm trusted publisher can be configured with:
 
 ```bash
 npx --yes npm@latest trust github pi-gentic --repo CodeByPeete/pi-gentic --file publish-npm.yml --allow-publish --yes
 ```
 
-Use these values if you configure it on npmjs.com instead:
+Release steps:
 
-| Setting | Value |
-| --- | --- |
-| Owner | `CodeByPeete` |
-| Repository | `pi-gentic` |
-| Workflow file | `publish-npm.yml` |
-| Environment | leave empty |
+1. Update the version in `package.json` and `package-lock.json`.
+2. Run all checks and inspect the fresh visual evidence.
+3. Merge and push the prepared commit to `main`.
+4. Create a GitHub release tagged `v<version>` from that commit.
+5. Publish the GitHub release when the package should be sent to npm.
 
-Publish flow:
-
-1. Update `package.json` to the new version.
-2. Create and publish a GitHub release tagged as `v<version>`, for example `v0.3.0`.
-3. GitHub Actions installs dependencies, verifies the tag matches the package version, runs tests, and publishes to npm when that version is not already published.
-
-Public npm package publishing is free. GitHub Actions is free for public repositories on standard hosted runners.
-
----
-
-## Package layout
+### Package layout
 
 ```text
 pi-gentic/
-├─ .github/workflows/   release publishing automation
-├─ src/                 TypeScript source for the Pi extension
-├─ test/                Node test suite
-├─ test-ui/             UI rendering captures
-├─ test-e2e/            terminal E2E captures
-├─ docs/assets/         README screenshots
-├─ dist/                build output created by npm run build
-├─ package.json         npm and Pi package manifest
-└─ tsconfig.json        TypeScript configuration
+├─ .github/workflows/   checks and npm publishing
+├─ docs/                design records and README images
+├─ scripts/             repeatable setup helpers
+├─ src/                 extension source
+├─ test/                main automated checks
+├─ test-effect/         Effect-focused checks
+├─ test-ui/             terminal component captures
+├─ test-e2e/            full terminal-flow captures
+├─ package.json         package details and commands
+└─ tsconfig.json        TypeScript settings
 ```
-
----
 
 ## License
 

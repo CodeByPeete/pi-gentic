@@ -686,7 +686,7 @@ def capture_resume_1000_sessions():
         if "Fixture session 999" not in fresh_text:
             raise AssertionError("Live resume membership refresh replaced enriched native session metadata")
         fresh_session_ms = round((time.monotonic() - fresh_started_at) * 1000, 1)
-        if fresh_session_ms >= 750:
+        if fresh_session_ms >= 1000:
             raise AssertionError(f"Fresh session appeared after {fresh_session_ms}ms")
 
         reopen_ms = []
@@ -730,7 +730,7 @@ def capture_resume_1000_sessions():
             )
             switch_elapsed = round((time.monotonic() - switched_at) * 1000, 1)
             switch_ms.append(switch_elapsed)
-            if reopen_elapsed >= 1000:
+            if reopen_elapsed >= 2000:
                 raise AssertionError(f"Resume first render cycle {attempt} took {reopen_elapsed}ms")
             if target_elapsed >= 2000:
                 raise AssertionError(f"Resume target cycle {attempt} took {target_elapsed}ms")

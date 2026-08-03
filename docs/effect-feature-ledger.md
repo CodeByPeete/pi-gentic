@@ -29,8 +29,8 @@ Pi-gentic uses Effect 4. The linked Effect 3 sidebar is the adoption checklist b
 
 ## Source reduction
 
-The `336a484` baseline contained 10,769 TypeScript source lines. The current implementation contains 9,192, a reduction of 1,577 lines or 14.6%. Capability parity remains the hard limit on deletion. The count is produced from tracked runtime source with:
+The `336a484` baseline contained 10,769 TypeScript source lines. The current implementation contains 9,773, a reduction of 996 lines or 9.2%. Capability parity remains the hard limit on deletion. The count is produced from tracked runtime source with:
 
 ```sh
-find src -name '*.ts' -type f -print0 | xargs -0 cat | wc -l
+git ls-files 'src/*.ts' 'src/**/*.ts' | xargs cat | wc -l
 ```

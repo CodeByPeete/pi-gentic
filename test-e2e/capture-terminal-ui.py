@@ -693,8 +693,13 @@ def capture_resume_1000_sessions():
         enriched_ms = round((time.monotonic() - started_at) * 1000, 1)
         if first_render_ms >= 1000:
             raise AssertionError(f"1000-session resume first render took {first_render_ms}ms")
-        proc.write("\x1b")
-        wait_for("close hydrated resume", lambda text: "Resume Session" not in text, timeout=5)
+        time.sleep(0.5)
+        proc.write("\r")
+        wait_for(
+            "open hydrated resume selection",
+            lambda text: "Resume Session" not in text and "Resumed session" in text,
+            timeout=10,
+        )
         proc.write("/resume\r")
         wait_for(
             "hydrated resume reopen",
@@ -730,8 +735,13 @@ def capture_resume_1000_sessions():
         fresh_session_ms = round((time.monotonic() - fresh_started_at) * 1000, 1)
         if fresh_session_ms >= 5000:
             raise AssertionError(f"Fresh session appeared after {fresh_session_ms}ms")
-        proc.write("\x1b")
-        wait_for("close live resume search", lambda text: "Resume Session" not in text, timeout=5)
+        time.sleep(0.5)
+        proc.write("\r")
+        wait_for(
+            "open live resume search result",
+            lambda text: "Resume Session" not in text and "Resumed session" in text,
+            timeout=10,
+        )
         proc.write("/resume\r")
         wait_for(
             "enriched sessions after live refresh",

@@ -299,22 +299,23 @@ export function visibleSessionMembership(mode: LegacyRecord) {
           }),
         ),
       );
-      const fallback = Stream.fromEffectSchedule(initialMembership, Schedule.spaced(Duration.millis(250)));
+      const fallback = Stream.fromEffectSchedule(
+        Effect.delay(membership, Duration.millis(250)),
+        Schedule.spaced(Duration.millis(250)),
+      );
 
       if (!sessionDir) return Stream.fromEffect(initialMembership);
-      return Stream.fromEffect(initialMembership).pipe(
-        Stream.concat(
-          fileSystem.watch(sessionDir).pipe(
-            Stream.debounce(Duration.millis(50)),
-            Stream.mapEffect(() => membership),
-            Stream.catchCause((cause) =>
-              Stream.fromEffectDrain(
-                Effect.sync(() => reportRuntimeDiagnostic("legacy-resume-membership-watch", cause)),
-              ).pipe(Stream.concat(fallback)),
-            ),
+      const watched = fileSystem.watch(sessionDir).pipe(
+        Stream.debounce(Duration.millis(50)),
+        Stream.mapEffect(() => membership),
+        Stream.catchCause((cause) =>
+          Stream.fromEffectDrain(
+            Effect.sync(() => reportRuntimeDiagnostic("legacy-resume-membership-watch", cause)),
           ),
         ),
       );
+
+      return Stream.fromEffect(initialMembership).pipe(Stream.concat(Stream.merge(watched, fallback)));
     }).pipe(
       Effect.catch((error) =>
         Effect.succeed(

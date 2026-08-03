@@ -68,18 +68,20 @@ export const WorktreeManagerLive = Layer.effect(
         });
       }
 
-      const root = path.resolve(result.stdout);
-      yield* fileSystem.realPath(root).pipe(
-        Effect.mapError((cause) =>
-          WorktreeRepositoryInvalid.make({
-            message: `Worktree repository must be a git repository: ${repositoryPath}`,
-            repositoryPath,
-            cause,
-          }),
-        ),
-      );
+      const resolvePath = (candidate: string) =>
+        fileSystem.realPath(candidate).pipe(
+          Effect.mapError((cause) =>
+            WorktreeRepositoryInvalid.make({
+              message: `Worktree repository must be a git repository: ${repositoryPath}`,
+              repositoryPath,
+              cause,
+            }),
+          ),
+        );
+      const canonicalRepositoryPath = yield* resolvePath(repositoryPath);
+      const canonicalRoot = yield* resolvePath(path.resolve(result.stdout));
 
-      return root;
+      return path.resolve(repositoryPath, path.relative(canonicalRepositoryPath, canonicalRoot));
     });
 
     const canonicalCandidate = Effect.fn("WorktreeManager.canonicalCandidate")(function* (

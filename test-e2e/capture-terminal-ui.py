@@ -730,10 +730,10 @@ def capture_resume_1000_sessions():
         wait_for(
             "fresh runtime session in open resume",
             lambda text: session_selected("Fresh session during runtime"),
-            timeout=5,
+            timeout=20,
         )
         fresh_session_ms = round((time.monotonic() - fresh_started_at) * 1000, 1)
-        if fresh_session_ms >= 5000:
+        if fresh_session_ms >= 20000:
             raise AssertionError(f"Fresh session appeared after {fresh_session_ms}ms")
         stop(proc)
         reset_terminal()

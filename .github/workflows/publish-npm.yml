@@ -3,6 +3,12 @@ name: Publish to npm
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -21,10 +27,14 @@ jobs:
     name: Publish package
     needs: verify
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -34,11 +44,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --omit=optional
+        run: npm ci
 
       - name: Verify release version
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           package_version="$(node -p "require('./package.json').version")"
           expected_tag="v${package_version}"

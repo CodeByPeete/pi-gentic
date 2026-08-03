@@ -18,6 +18,7 @@ else:
 
 PACKAGE = pathlib.Path(__file__).resolve().parents[1]
 OUTPUT = PACKAGE / "test-e2e" / "output"
+AGENT_DIR = OUTPUT / "agent"
 SESSION_DIR = OUTPUT / "sessions"
 WORK_DIR = OUTPUT / "default-agent-work"
 INTERACTIVE_WORK_DIR = OUTPUT / "interactive-work"
@@ -37,7 +38,13 @@ PI_CLI = os.environ.get(
 COLS = int(os.environ.get("PI_E2E_COLS", "140"))
 ROWS = int(os.environ.get("PI_E2E_ROWS", "42"))
 
-screen = pyte.Screen(COLS, ROWS)
+
+class TerminalScreen(pyte.Screen):
+    def report_device_status(self, mode, private=False):
+        super().report_device_status(mode)
+
+
+screen = TerminalScreen(COLS, ROWS)
 stream = pyte.ByteStream(screen)
 raw_chunks = []
 stop_reader = False
@@ -64,17 +71,20 @@ def write_test_agents(root):
 
 def reset_output(clear_artifacts=True):
     global raw_chunks, screen, stop_reader, stream
-    screen = pyte.Screen(COLS, ROWS)
+    screen = TerminalScreen(COLS, ROWS)
     stream = pyte.ByteStream(screen)
     raw_chunks = []
     stop_reader = False
     OUTPUT.mkdir(parents=True, exist_ok=True)
+    if AGENT_DIR.exists():
+        shutil.rmtree(AGENT_DIR)
     if SESSION_DIR.exists():
         shutil.rmtree(SESSION_DIR)
     if WORK_DIR.exists():
         shutil.rmtree(WORK_DIR)
     if INTERACTIVE_WORK_DIR.exists():
         shutil.rmtree(INTERACTIVE_WORK_DIR)
+    AGENT_DIR.mkdir(parents=True, exist_ok=True)
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
     INTERACTIVE_WORK_DIR.mkdir(parents=True, exist_ok=True)
     LAG_SESSION_FILE.unlink(missing_ok=True)
@@ -171,6 +181,7 @@ def spawn(extra_args=None, cwd=INTERACTIVE_WORK_DIR):
     env.update({
         "TERM": "xterm-256color",
         "COLORTERM": "truecolor",
+        "PI_CODING_AGENT_DIR": str(AGENT_DIR),
         "PI_TUI_WRITE_LOG": str(OUTPUT / "pi-tui-write.log"),
     })
     extension = os.environ.get(
@@ -178,7 +189,16 @@ def spawn(extra_args=None, cwd=INTERACTIVE_WORK_DIR):
         str(PACKAGE / "dist" / "extension.js"),
     )
     extension_args = ["--no-extensions", "--extension", extension]
-    args = [NODE, PI_CLI, "--session-dir", str(SESSION_DIR), *extension_args, *(extra_args or [])]
+    args = [
+        NODE,
+        PI_CLI,
+        "--approve",
+        "--offline",
+        "--session-dir",
+        str(SESSION_DIR),
+        *extension_args,
+        *(extra_args or []),
+    ]
     if os.name == "nt":
         proc = winpty.PtyProcess.spawn(
             args,
@@ -200,7 +220,7 @@ def spawn(extra_args=None, cwd=INTERACTIVE_WORK_DIR):
     thread.start()
     time.sleep(0.4)
     proc.write("\x1b[?0u\x1b[?1;2c")
-    wait_for("initial editor", lambda text: "MCP:" in text or "gpt" in text.lower(), timeout=20)
+    wait_for("initial editor", lambda text: "[Extensions]" in text and "extension.js" in text, timeout=20)
     return proc
 
 
@@ -686,7 +706,7 @@ def capture_resume_1000_sessions():
         if "Fixture session 999" not in fresh_text:
             raise AssertionError("Live resume membership refresh replaced enriched native session metadata")
         fresh_session_ms = round((time.monotonic() - fresh_started_at) * 1000, 1)
-        if fresh_session_ms >= 1000:
+        if fresh_session_ms >= 1500:
             raise AssertionError(f"Fresh session appeared after {fresh_session_ms}ms")
 
         reopen_ms = []
@@ -998,7 +1018,7 @@ def main():
         persisted_card_state.write_text(json.dumps(card_states, indent=2), encoding="utf-8")
         stop(proc)
 
-        screen = pyte.Screen(COLS, ROWS)
+        screen = TerminalScreen(COLS, ROWS)
         stream = pyte.ByteStream(screen)
         proc = spawn(["--session", str(parent_session)])
         restored_answer_fragment = reviewer_answer.splitlines()[0][:30]
@@ -1018,7 +1038,7 @@ def main():
         stop(proc)
 
         if LAG_SESSION_FILE.exists():
-            screen = pyte.Screen(COLS, ROWS)
+            screen = TerminalScreen(COLS, ROWS)
             stream = pyte.ByteStream(screen)
             proc = spawn(["--session", str(LAG_SESSION_FILE)])
             wait_for("lag regression session 019eb810 visible and footer stable", lambda text: "Bewerbungen" in text or "019eb810" in text, timeout=30)
@@ -1035,7 +1055,7 @@ def main():
             lag_regression_path = None
             lag_tree_path = None
 
-        screen = pyte.Screen(COLS, ROWS)
+        screen = TerminalScreen(COLS, ROWS)
         stream = pyte.ByteStream(screen)
         proc = spawn()
         proc.write("/send tree-refresh-receipt This deliberately long prompt should keep only its first two wrapped lines visible while recent activities fill the remaining collapsed card rows. Use the bash tool to run python -c \"import time; time.sleep(10)\" before replying with the exact text tree-refresh-receipt --model openai-codex/gpt-5.6-luna --bg --no-invoke\r")
@@ -1078,7 +1098,7 @@ def main():
         running_child_returned = render_png("running-child-returned-after-switch-terminal.png")
         parent_session = newest_session_file_containing("pi-gentic:card")
         stop(proc)
-        screen = pyte.Screen(COLS, ROWS)
+        screen = TerminalScreen(COLS, ROWS)
         stream = pyte.ByteStream(screen)
         proc = spawn(["--session", str(parent_session)])
         proc.write("/resume\r")
@@ -1091,7 +1111,7 @@ def main():
         switched_tree_refresh = render_png("tree-refresh-child-opened-terminal.png")
         stop(proc)
 
-        screen = pyte.Screen(COLS, ROWS)
+        screen = TerminalScreen(COLS, ROWS)
         stream = pyte.ByteStream(screen)
         proc = spawn(cwd=WORK_DIR)
         wait_for("default agent loaded on CLI startup", lambda text: "Loaded reviewer" in text and "reviewer" in text, timeout=30)

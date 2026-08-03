@@ -10,6 +10,12 @@ if [ ! -d "$repo_dir/.git" ]; then
   git clone "$repo_url" "$repo_dir"
 fi
 
+for binary in ./node_modules/@effect/tsgo-*/lib/tsc; do
+  if [ -f "$binary" ]; then
+    chmod +x "$binary"
+  fi
+done
+
 if [ -x "./node_modules/.bin/effect-tsgo" ] || [ -f "./node_modules/.bin/effect-tsgo.cmd" ]; then
   patched=false
   for backup in ./node_modules/@typescript/*/lib/tsc*.original; do

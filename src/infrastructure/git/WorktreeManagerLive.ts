@@ -50,7 +50,7 @@ export const WorktreeManagerLive = Layer.effect(
       const base = nonEmptyString(repoCwd) ?? process.cwd();
       const source = nonEmptyString(repo);
       const repositoryPath = source ? path.resolve(base, source) : path.resolve(base);
-      const result = yield* gitResult(repositoryPath, ["rev-parse", "--show-toplevel"]).pipe(
+      const result = yield* gitResult(repositoryPath, ["rev-parse", "--show-cdup"]).pipe(
         Effect.catchTag("GitCommandFailed", (cause) =>
           WorktreeRepositoryInvalid.make({
             message: `Worktree repository must be a git repository: ${repositoryPath}`,
@@ -60,7 +60,7 @@ export const WorktreeManagerLive = Layer.effect(
         ),
       );
 
-      if (result.exitCode !== 0 || result.stdout.length === 0) {
+      if (result.exitCode !== 0) {
         return yield* WorktreeRepositoryInvalid.make({
           message: `Worktree repository must be a git repository: ${repositoryPath}`,
           repositoryPath,
@@ -68,20 +68,18 @@ export const WorktreeManagerLive = Layer.effect(
         });
       }
 
-      const resolvePath = (candidate: string) =>
-        fileSystem.realPath(candidate).pipe(
-          Effect.mapError((cause) =>
-            WorktreeRepositoryInvalid.make({
-              message: `Worktree repository must be a git repository: ${repositoryPath}`,
-              repositoryPath,
-              cause,
-            }),
-          ),
-        );
-      const canonicalRepositoryPath = yield* resolvePath(repositoryPath);
-      const canonicalRoot = yield* resolvePath(path.resolve(result.stdout));
+      const root = path.resolve(repositoryPath, result.stdout || ".");
+      yield* fileSystem.realPath(root).pipe(
+        Effect.mapError((cause) =>
+          WorktreeRepositoryInvalid.make({
+            message: `Worktree repository must be a git repository: ${repositoryPath}`,
+            repositoryPath,
+            cause,
+          }),
+        ),
+      );
 
-      return path.resolve(repositoryPath, path.relative(canonicalRepositoryPath, canonicalRoot));
+      return root;
     });
 
     const canonicalCandidate = Effect.fn("WorktreeManager.canonicalCandidate")(function* (
@@ -144,6 +142,15 @@ export const WorktreeManagerLive = Layer.effect(
         .map((line) => path.resolve(line.slice("worktree ".length)));
     });
 
+    const isRegisteredWorktree = Effect.fn("WorktreeManager.isRegisteredWorktree")(function* (
+      candidate: string,
+      registered: ReadonlyArray<string>,
+    ) {
+      const result = yield* gitResult(candidate, ["rev-parse", "--show-toplevel"]);
+
+      return result.exitCode === 0 && registered.some((entry) => isSamePath(path, entry, result.stdout));
+    });
+
     const prepare = Effect.fn("WorktreeManager.prepare")(function* (request: PrepareWorktreeRequest) {
       const repoRoot = yield* repositoryRoot(request.repoCwd, request.repo);
       const worktreeRoot = path.join(repoRoot, ".agentfiles", "worktrees");
@@ -197,7 +204,7 @@ export const WorktreeManagerLive = Layer.effect(
           const registered = yield* registeredWorktrees(repoRoot);
 
           if (existing) {
-            if (registered.some((entry) => isSamePath(path, entry, worktreePath))) {
+            if (yield* isRegisteredWorktree(worktreePath, registered)) {
               yield* canonicalCandidate(worktreePath, allowedRoots);
               return worktreePath;
             }
@@ -228,7 +235,7 @@ export const WorktreeManagerLive = Layer.effect(
           yield* canonicalCandidate(worktreePath, allowedRoots);
           const after = yield* registeredWorktrees(repoRoot);
 
-          if (!after.some((entry) => isSamePath(path, entry, worktreePath))) {
+          if (!(yield* isRegisteredWorktree(worktreePath, after))) {
             return yield* WorktreePathConflict.make({
               message: `Created path is not a registered worktree of the expected repository: ${worktreePath}`,
               worktreePath,

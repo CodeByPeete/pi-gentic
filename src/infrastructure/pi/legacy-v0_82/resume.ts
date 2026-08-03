@@ -158,7 +158,7 @@ function cachedSessionLoader(
             ),
           ),
           Effect.tap((entry) =>
-            Effect.promise(() => publishSessionMetadata(bridge.runtime, entry.sessions)).pipe(
+            Effect.sync(() => publishSessionMetadata(entry.sessions)).pipe(
               Effect.catchCause((cause) =>
                 Effect.sync(() => reportRuntimeDiagnostic("legacy-resume-metadata-warm", cause)),
               ),
@@ -429,12 +429,8 @@ function isPersistedResumeEntry(
   );
 }
 
-async function publishSessionMetadata(runtime: ExtensionRuntime, sessions: LegacyRecord[]) {
-  await runtime.runPromise(
-    Effect.sync(() => {
-      for (const refresh of resumeRefreshers) refresh(sessions);
-    }),
-  );
+function publishSessionMetadata(sessions: LegacyRecord[]) {
+  for (const refresh of resumeRefreshers) refresh(sessions);
 }
 
 function cloneSessions(sessions: LegacyRecord[]): LegacyRecord[] {

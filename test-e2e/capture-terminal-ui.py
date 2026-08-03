@@ -676,14 +676,31 @@ def capture_resume_1000_sessions():
             if "Loading session details" in loading_text
             else "resume-1000-sessions-cached-terminal.png"
         )
-        wait_for(
-            "1000-session resume enrichment",
-            lambda text: "Fixture session 999" in text and "Fixture session 998" in text,
-            timeout=120,
-        )
+        cache_dir = AGENT_DIR / "pi-gentic" / "runtime" / "resume-cache"
+
+        def hydrated_cache_ready():
+            for cache_file in cache_dir.glob("*.json"):
+                try:
+                    sessions = json.loads(cache_file.read_text(encoding="utf-8")).get("sessions", [])
+                except (OSError, json.JSONDecodeError):
+                    continue
+                messages = {session.get("firstMessage") for session in sessions}
+                if {"Fixture session 998", "Fixture session 999"} <= messages:
+                    return True
+            return False
+
+        wait_for("1000-session resume enrichment", lambda _text: hydrated_cache_ready(), timeout=30)
         enriched_ms = round((time.monotonic() - started_at) * 1000, 1)
         if first_render_ms >= 1000:
             raise AssertionError(f"1000-session resume first render took {first_render_ms}ms")
+        proc.write("\x1b")
+        wait_for("close hydrated resume", lambda text: "Resume Session" not in text, timeout=5)
+        proc.write("/resume\r")
+        wait_for(
+            "hydrated resume reopen",
+            lambda text: "Fixture session 999" in text and "Fixture session 998" in text,
+            timeout=10,
+        )
         if not tree_session_line("Fixture session 999"):
             raise AssertionError("The large-session child was not nested under its parent")
 

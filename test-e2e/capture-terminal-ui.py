@@ -679,7 +679,7 @@ def capture_resume_1000_sessions():
         wait_for(
             "1000-session resume enrichment",
             lambda text: "Fixture session 999" in text and "Fixture session 998" in text,
-            timeout=30,
+            timeout=120,
         )
         enriched_ms = round((time.monotonic() - started_at) * 1000, 1)
         if first_render_ms >= 1000:

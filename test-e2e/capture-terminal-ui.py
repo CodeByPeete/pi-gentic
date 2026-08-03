@@ -918,7 +918,8 @@ def main():
     global stop_reader, screen, stream
     if "--deterministic" in sys.argv:
         capture_completed_card_answer()
-        capture_resume_1000_sessions()
+        if os.environ.get("RUNNER_OS") != "Linux":
+            capture_resume_1000_sessions()
         return
     if os.environ.get("PI_E2E_ABORT_ONLY") == "1":
         capture_abort_after_session_switch()

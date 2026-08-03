@@ -702,16 +702,21 @@ def capture_resume_1000_sessions():
             encoding="utf-8",
         )
         fresh_started_at = time.monotonic()
+        fresh_query = '"Fresh session during runtime"'
         time.sleep(0.6)
-        proc.write('"Fresh session during runtime"')
-        wait_for("fresh runtime session in open resume", lambda text: "Fresh session during runtime" in text, timeout=5)
+        proc.write(fresh_query)
+        wait_for(
+            "fresh runtime session in open resume",
+            lambda text: session_selected("Fresh session during runtime"),
+            timeout=5,
+        )
         fresh_session_ms = round((time.monotonic() - fresh_started_at) * 1000, 1)
         if fresh_session_ms >= 5000:
             raise AssertionError(f"Fresh session appeared after {fresh_session_ms}ms")
-        proc.write("\x01\x0b")
+        proc.write("\x7f" * len(fresh_query))
         wait_for(
             "enriched sessions after live refresh",
-            lambda text: "Fixture session 999" in text and "Fixture session 998" in text,
+            lambda text: fresh_query not in text and "Fixture session 999" in text and "Fixture session 998" in text,
             timeout=5,
         )
 

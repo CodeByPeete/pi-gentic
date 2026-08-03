@@ -713,10 +713,12 @@ def capture_resume_1000_sessions():
         fresh_session_ms = round((time.monotonic() - fresh_started_at) * 1000, 1)
         if fresh_session_ms >= 5000:
             raise AssertionError(f"Fresh session appeared after {fresh_session_ms}ms")
-        proc.write("\x7f" * len(fresh_query))
+        proc.write("\x1b")
+        wait_for("close live resume search", lambda text: "Resume Session" not in text, timeout=5)
+        proc.write("/resume\r")
         wait_for(
             "enriched sessions after live refresh",
-            lambda text: fresh_query not in text and "Fixture session 999" in text and "Fixture session 998" in text,
+            lambda text: "Resume Session" in text and "Fixture session 999" in text and "Fixture session 998" in text,
             timeout=5,
         )
 

@@ -16,7 +16,7 @@ Pi-gentic uses Effect 4. The linked Effect 3 sidebar is the adoption checklist b
 | Batching | Native Pi listing is the single source. Concurrent requests are coalesced by Effect `Cache`; large native listings run in an isolated process and metadata enrichment yields between bounded chunks. Request batching is reserved for a public Pi batch boundary. |
 | Caching | Effect `Cache` owns hydrated native session lists. Fingerprints invalidate small lists, while large lists use stale-while-revalidate with immediate skeletons. |
 | Concurrency | `Fiber`, `FiberMap`, `Semaphore`, interruption, and managed runtime ownership cover delegation and presentation concurrency. Queue, PubSub, Deferred, and Latch are used only where ordered backpressure, fan-out, one-shot completion, or readiness are domain requirements. |
-| Stream | Scoped child-process output and live filesystem membership events use `Stream`. Native Pi agent events remain at Pi's subscription boundary until Pi exposes a pull-based stream contract. |
+| Stream | Scoped child-process output and live filesystem membership checks use `Stream`. Native Pi agent events remain at Pi's subscription boundary until Pi exposes a pull-based stream contract. |
 | Sink | Process streams fold complete output because Git and native Pi session decoding require lossless stdout. Persisted cards retain 100 recent activities plus the exact total count, and diagnostics remain bounded and local. Effect `Sink` activates when a downstream boundary permits incremental or truncated consumption. |
 | Testing | Effect/Vitest layers, property tests, deterministic pure clock seams, isolated cadence regressions, integration tests, terminal E2E, and inspected PNG evidence validate behavior. |
 | Code Style | Branded identifiers, exhaustive `Match`, generators, compact pipelines, strict Effect TSGO diagnostics, and repository Prettier configuration are enforced. |
@@ -25,11 +25,11 @@ Pi-gentic uses Effect 4. The linked Effect 3 sidebar is the adoption checklist b
 | Schema | Boundary decoding, tagged classes and errors, brands, transformations, generated JSON Schema, equivalence, arbitrary values, and formatted diagnostics share one contract. |
 | AI | Pi remains the sole model and provider executor. Effect AI may describe structured planning/results at the adapter, but may never replace or narrow Pi model capabilities. |
 | Micro | Micro is an alternative runtime rather than an additional layer. Pi-gentic uses full Effect because scopes, layers, streams, cache, metrics, and managed fibers are required. |
-| Platform | Node `FileSystem`, filesystem watching, `Path`, `ChildProcessSpawner`, process streams, and host terminal utilities preserve platform capabilities. Large Pi session summaries run through the exact-version native loader outside the TUI event loop. Key-value persistence remains Pi JSONL, and terminal ownership remains Pi TUI. |
+| Platform | Node `FileSystem`, scheduled filesystem membership checks, `Path`, `ChildProcessSpawner`, process streams, and host terminal utilities preserve platform capabilities. Large Pi session summaries run through the exact-version native loader outside the TUI event loop. Key-value persistence remains Pi JSONL, and terminal ownership remains Pi TUI. |
 
 ## Source reduction
 
-The `336a484` baseline contained 10,769 TypeScript source lines. The current implementation contains 9,782, a reduction of 987 lines or 9.2%. Capability parity remains the hard limit on deletion. The count is produced from tracked runtime source with:
+The `336a484` baseline contained 10,769 TypeScript source lines. The current implementation contains 9,771, a reduction of 998 lines or 9.3%. Capability parity remains the hard limit on deletion. The count is produced from tracked runtime source with:
 
 ```sh
 git ls-files 'src/*.ts' 'src/**/*.ts' | xargs cat | wc -l

@@ -275,7 +275,6 @@ export function visibleSessionMembership(mode: LegacyRecord) {
         catch: (cause) =>
           new ResumeSessionListFailed({ message: "Could not resolve the visible session scope.", cause }),
       });
-      const fileSystem = yield* FileSystem.FileSystem;
       let knownPaths = new Set<string>();
       const initialMembership = listFastSessionSkeletonsEffect(sessionDir, cwd).pipe(
         Effect.tap((sessions) =>
@@ -305,17 +304,7 @@ export function visibleSessionMembership(mode: LegacyRecord) {
       );
 
       if (!sessionDir) return Stream.fromEffect(initialMembership);
-      const watched = fileSystem.watch(sessionDir).pipe(
-        Stream.debounce(Duration.millis(50)),
-        Stream.mapEffect(() => membership),
-        Stream.catchCause((cause) =>
-          Stream.fromEffectDrain(
-            Effect.sync(() => reportRuntimeDiagnostic("legacy-resume-membership-watch", cause)),
-          ),
-        ),
-      );
-
-      return Stream.fromEffect(initialMembership).pipe(Stream.concat(Stream.merge(watched, fallback)));
+      return Stream.fromEffect(initialMembership).pipe(Stream.concat(fallback));
     }).pipe(
       Effect.catch((error) =>
         Effect.succeed(

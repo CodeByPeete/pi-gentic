@@ -357,7 +357,7 @@ test("current resume hydration includes the complete shared session family from 
   }
 });
 
-test("Effect file watching emits live session membership changes", async () => {
+test("Effect membership polling emits live session changes", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-membership-watch-"));
   const runtime = createExtensionRuntime();
   const changes = runtime.runPromise(

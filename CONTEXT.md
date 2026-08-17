@@ -48,6 +48,14 @@ _Avoid_: Tool result, answer
 The durable transfer of a Delegation Outcome to its Caller Session.
 _Avoid_: Callback, response
 
+**Joined Delegation**:
+A deferred Delegation whose Caller Session must process its outcome before an enclosing Delegation can become terminal.
+_Avoid_: Blocking call, nested wait
+
+**Detached Delegation**:
+A deferred Delegation whose Return Delivery does not keep an enclosing Delegation open.
+_Avoid_: Fire-and-forget task, orphaned call
+
 **Session Runtime**:
 A live Pi execution environment attached to one persisted Session identity.
 _Avoid_: Host, instance

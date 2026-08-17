@@ -184,7 +184,7 @@ When `--session` is absent, pi-gentic creates a child session. When `--session` 
 | `--bg` | Continue the caller immediately and return the result later. |
 | `--fg` | Wait for a new child session to finish. |
 | `--fork` | Copy the caller's completed earlier conversation. The current request is replaced by the child's assignment. |
-| `--no-invoke` | Add the result to the caller without automatically starting another response. |
+| `--no-invoke` | Detach the request. Its result stays in the caller session without starting another response or holding an enclosing delegation open. |
 | `--cwd <folder>` | Set the target session's working folder. With `--worktree`, this is the requested worktree destination. |
 | `--worktree [branch]` | Create or reuse a Git worktree. The branch name may be omitted. |
 | `--repo <folder>` | Choose the source repository for a worktree. |
@@ -196,6 +196,8 @@ A foreground send keeps its card open until the target finishes.
 <img src="./docs/assets/send-foreground.png" alt="A foreground review job in Pi" width="900">
 
 A background send returns control immediately.
+
+Background requests that start another response remain joined to their caller. If an agent finishes its current response while joined work is running, its enclosing delegation stays open. Each result resumes its immediate caller, and the final response continues upward after all joined work has finished. `--no-invoke` explicitly detaches a request from this completion chain.
 
 <img src="./docs/assets/send-background.png" alt="A background review job in Pi" width="900">
 
@@ -392,8 +394,8 @@ Return concise findings with evidence.
 | `async` | `false` | New child sends use the background by default. Existing-session sends always use the background. |
 | `fork` | `false` | New children copy the caller's completed earlier conversation by default. The current request is replaced by the child's assignment. |
 | `cwd` | caller's folder | Default working folder for a child session. |
-| `invokeMeLater.async` | `true` | A background result may automatically start a new caller response. |
-| `invokeMeLater.withSession` | `true` | A foreground child result may automatically continue the caller. |
+| `invokeMeLater.async` | `true` | A background result may start a new caller response and remains joined to an enclosing delegation. |
+| `invokeMeLater.withSession` | `true` | A deferred foreground result may continue the caller and remains joined to an enclosing delegation. |
 | `rx` | `0` | Default horizontal distance for `discoverSessions`. |
 | `ry` | `0` | Default vertical distance for `discoverSessions`. |
 | `open` | none | Reserved setting. It is accepted but currently has no effect. |

@@ -167,6 +167,9 @@ type AgentCall = {
   targetSessionId?: string;
   abort?: (options?: LegacyRecord) => Promise<void> | void;
   isCancellable?: () => boolean;
+  joinsCallerCompletion?: boolean;
+  completion?: Promise<void>;
+  settle?: () => void;
   startedAt?: number;
 };
 
@@ -175,20 +178,71 @@ type AbortState = {
   calls: Set<unknown>;
 };
 
-export function registerAgentCall(call: Omit<AgentCall, "id" | "startedAt"> & { id?: string }) {
+export function registerAgentCall(
+  call: Omit<AgentCall, "id" | "startedAt" | "completion" | "settle"> & { id?: string },
+) {
   const state = getLiveRuntimeState();
   const id = call.id ?? `agent-call:${++state.nextCallId}`;
+  const { promise: completion, resolve: settle } = Promise.withResolvers<void>();
 
-  state.activeCalls.set(id, { ...call, id, startedAt: Date.now() });
+  settleAgentCall(id);
+  state.activeCalls.set(id, { ...call, id, completion, settle, startedAt: Date.now() });
 
   return {
     id,
-    unregister: () => state.activeCalls.delete(id),
+    unregister: () => settleAgentCall(id),
   };
+}
+
+function settleAgentCall(callId: string) {
+  const call = getLiveRuntimeState().activeCalls.get(callId);
+
+  if (!call) return false;
+  getLiveRuntimeState().activeCalls.delete(callId);
+  call.settle?.();
+  return true;
 }
 
 export function hasAgentCallsForSession(sessionId: unknown) {
   return activeCallsForSession(sessionId).length > 0;
+}
+
+export function hasJoinedDelegations(sessionId: unknown) {
+  const callerSessionId = String(sessionId ?? "");
+
+  return [...getLiveRuntimeState().activeCalls.values()].some(
+    (call) => call.callerSessionId === callerSessionId && call.joinsCallerCompletion === true,
+  );
+}
+
+export async function waitForJoinedDelegations(sessionId: unknown, signal?: AbortSignal) {
+  const callerSessionId = String(sessionId ?? "");
+
+  while (true) {
+    signal?.throwIfAborted();
+    const completions = [...getLiveRuntimeState().activeCalls.values()].flatMap((call) =>
+      call.callerSessionId === callerSessionId && call.joinsCallerCompletion === true && call.completion
+        ? [call.completion]
+        : [],
+    );
+
+    if (completions.length === 0) return;
+    await waitForDelegationSettlement(completions, signal);
+  }
+}
+
+function waitForDelegationSettlement(completions: Promise<void>[], signal?: AbortSignal) {
+  if (!signal) return Promise.race(completions);
+
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => reject(signal.reason ?? new Error("Delegation wait aborted."));
+
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    void Promise.race(completions)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 export function assertNoAgentCallCycle(callerSessionId: unknown, targetSessionId: unknown) {
@@ -301,7 +355,7 @@ async function abortCalls(calls: AgentCall[], options: LegacyRecord = {}) {
   for (const call of calls) {
     if (!call || state.calls.has(call.id)) continue;
     state.calls.add(call.id);
-    getLiveRuntimeState().activeCalls.delete(call.id);
+    settleAgentCall(call.id);
 
     if (call.targetSessionId && !state.sessions.has(call.targetSessionId)) {
       state.sessions.add(call.targetSessionId);

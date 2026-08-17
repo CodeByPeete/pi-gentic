@@ -57,6 +57,7 @@ import {
   createLiveRuntime,
   findRuntimeSession,
   getRuntimeSession,
+  hasJoinedDelegations,
   isSessionActivityEvent,
   listRuntimeSessions,
   persistSessionImmediately,
@@ -65,6 +66,7 @@ import {
   resolveModelFromCatalog,
   setRuntimeSession,
   unregisterLiveRuntime,
+  waitForJoinedDelegations,
 } from "./pi-host.js";
 import {
   assertDifferentSession,
@@ -514,6 +516,18 @@ export function persistReturnForCaller({
     callerSessionManager.appendCustomMessageEntry?.("pi-gentic:return-context", text, true, { kind: "returnContext" });
 
   persist?.(callerSessionManager);
+}
+
+async function waitForTargetDelegationTree(target: PiRuntimeSession, runtime: ExtensionRuntime, signal?: AbortSignal) {
+  const sessionId = target.session.sessionManager.getSessionId();
+
+  while (true) {
+    await waitForJoinedDelegations(sessionId, signal);
+    const current = getRuntimeSession(sessionId) ?? target;
+
+    await waitForSessionTurnEnd(current.session, runtime, signal);
+    if (!hasJoinedDelegations(sessionId)) return current;
+  }
 }
 
 function waitForSessionTurnEnd(session: SessionController, runtime: ExtensionRuntime, signal?: AbortSignal) {
@@ -1828,6 +1842,7 @@ export class PiGenticOrchestrator {
       id: delegationId,
       callerSessionId,
       targetSessionId,
+      joinsCallerCompletion: returnDelivery.kind === "callerMessage" && invokeMeLater,
       isCancellable: () => target.session.isStreaming === true,
       abort: async (options: UnknownRecord = {}) => {
         await abortTarget(options);
@@ -1906,17 +1921,18 @@ export class PiGenticOrchestrator {
           return { answer, details: completed };
         }
         if (targetBusy) await waitForSessionTurnEnd(target.session, this.runtime, callbacks.signal);
-        const outcome = sessionRunOutcome(target, { request: input.message });
+        const completedTarget = await waitForTargetDelegationTree(target, this.runtime, callbacks.signal);
+        const outcome = sessionRunOutcome(completedTarget, { request: input.message });
         const completed = recordRunResult(
-          target,
+          completedTarget,
           outcome.status === "done"
             ? monitor.finish({
                 answer: outcome.text,
-                activities: completeSessionActivities(target.session),
+                activities: completeSessionActivities(completedTarget.session),
               })
             : monitor.stop(outcome.status, {
                 error: outcome.text,
-                activities: completeSessionActivities(target.session),
+                activities: completeSessionActivities(completedTarget.session),
               }),
         );
         const returnText =

@@ -336,6 +336,38 @@ test("current visible runtime is shown as running and opens through its live pat
   }
 });
 
+test("submitted prompt preflight is shown as running and opens through its live path", () => {
+  const session = {
+    isStreaming: false,
+    sessionManager: {
+      getSessionFile: () => "/sessions/preflight.jsonl",
+      getSessionId: () => "preflight-session",
+    },
+  };
+  const runtimeHost = { session };
+
+  setRuntimeSession("preflight-session", {
+    activePromptCount: 1,
+    runtimeHost,
+    session,
+    lastMessage: "Confirm",
+  });
+
+  try {
+    const preflight = withRuntimeState({
+      id: "preflight-session",
+      sessionId: "preflight-session",
+      path: "/sessions/preflight.jsonl",
+    });
+
+    assert.equal(preflight.running, true);
+    assert.equal(preflight.livePath, "pi-gentic-live:preflight-session");
+    assert.equal(treeSwitchPath(preflight), "pi-gentic-live:preflight-session");
+  } finally {
+    deleteRuntimeSession("preflight-session");
+  }
+});
+
 test("tree switch path attaches to live runtimes only while sessions are running", () => {
   assert.equal(
     treeSwitchPath({

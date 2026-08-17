@@ -604,6 +604,45 @@ test("normal visible prompts are tracked while they are running", async () => {
   deleteRuntimeSession("visible-prompt-session");
 });
 
+test("switching during prompt preflight parks the submitted session", async () => {
+  const state = getLiveRuntimeState();
+  state.liveRuntimes.clear();
+  let completePreflight;
+  const preflight = new Promise((resolve) => {
+    completePreflight = resolve;
+  });
+  let disposed = 0;
+  const session = {
+    isStreaming: false,
+    dispose: () => {
+      disposed += 1;
+    },
+    sessionManager: {
+      getEntries: () => [],
+      getHeader: () => ({}),
+      getSessionId: () => "preflight-session",
+    },
+  };
+  const runtimeHost = { session };
+  const prompt = trackSessionPrompt(session, () => preflight, "Confirm");
+  await Promise.resolve();
+  const tracked = getRuntimeSession("preflight-session");
+  const restore = parkCurrentLiveRuntimeForSwitch(state, runtimeHost);
+
+  session.dispose();
+
+  assert.equal(tracked.activePromptCount, 1);
+  assert.equal(disposed, 0);
+  assert.equal(state.liveRuntimes.get("preflight-session")?.runtime.session, session);
+
+  restore();
+  completePreflight();
+  await prompt;
+  assert.equal(tracked.activePromptCount, 0);
+  deleteRuntimeSession("preflight-session");
+  state.liveRuntimes.clear();
+});
+
 test("visible prompts bypass a blocked input loop after switching sessions", () => {
   const runtime = {
     session: {

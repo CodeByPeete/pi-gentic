@@ -534,6 +534,10 @@ function parkMethod(target: LegacyRecord, method: string, replacement: (...args:
   };
 }
 
+export function runtimeSessionIsRunning(runtime: PiRuntimeSession | undefined) {
+  return Boolean(runtime && (runtime.session.isStreaming === true || Number(runtime.activePromptCount ?? 0) > 0));
+}
+
 export function parkCurrentLiveRuntimeForSwitch(state: LiveRuntimeState, runtimeHost: LegacyRecord | undefined) {
   const session = runtimeHost?.session;
 
@@ -543,7 +547,13 @@ export function parkCurrentLiveRuntimeForSwitch(state: LiveRuntimeState, runtime
   const tracked = sessionId ? getRuntimeSession(sessionId) : undefined;
   const liveRuntime = tracked?.runtimeHost ?? snapshotRuntimeHost(runtimeHost, session);
 
-  if (!sessionId || session.isStreaming !== true || !liveRuntime || liveRuntime.session !== session) return parkAbort();
+  if (
+    !sessionId ||
+    (session.isStreaming !== true && !runtimeSessionIsRunning(tracked)) ||
+    !liveRuntime ||
+    liveRuntime.session !== session
+  )
+    return parkAbort();
   const runtime = setRuntimeSession(sessionId, {
     ...(tracked ?? {}),
     runtimeHost: liveRuntime,
@@ -634,25 +644,31 @@ function installSessionDisposeBridge(
 export async function trackSessionPrompt<T>(session: LegacyRecord, run: () => Promise<T> | T, prompt?: unknown) {
   const sessionId = session.sessionManager?.getSessionId?.();
   const lastMessage = promptLastMessage(prompt);
-  const mark = () => {
+  const mark = (promptCountDelta: number) => {
     if (!sessionId) return undefined;
+    const activePromptCount = Math.max(
+      0,
+      Number(getRuntimeSession(sessionId)?.activePromptCount ?? 0) + promptCountDelta,
+    );
+
     return setRuntimeSession(sessionId, {
       session: session as PiAgentSession,
       ...(lastMessage ? { lastMessage } : {}),
       agentName: getActiveState(session.sessionManager).agentName,
       parentSessionPath: session.sessionManager?.getHeader?.()?.parentSession,
       lastActivityAt: new Date().toISOString(),
+      activePromptCount,
     });
   };
 
-  mark();
+  mark(1);
 
   try {
     return await run();
   } finally {
-    mark();
+    const runtime = mark(-1);
 
-    if (sessionId && session.isStreaming !== true) unregisterLiveRuntime(sessionId);
+    if (sessionId && !runtimeSessionIsRunning(runtime)) unregisterLiveRuntime(sessionId);
   }
 }
 
@@ -781,7 +797,7 @@ function hasOtherStreamingRuntime(session: LegacyRecord) {
     visibleSessionId &&
     listRuntimeSessions().some(
       (runtime) =>
-        runtime.session?.isStreaming === true && runtime.session.sessionManager?.getSessionId?.() !== visibleSessionId,
+        runtimeSessionIsRunning(runtime) && runtime.session.sessionManager?.getSessionId?.() !== visibleSessionId,
     ),
   );
 }
@@ -1034,7 +1050,7 @@ export function pruneRuntimeSessions({ maxEntries = 100, maxIdleMs = 12 * 60 * 6
 
   if (entries.length <= maxEntries) return;
   const removable = entries
-    .filter(([, runtime]) => runtime.session?.isStreaming !== true)
+    .filter(([, runtime]) => !runtimeSessionIsRunning(runtime))
     .sort(([, a], [, b]) => Number(a.lastSeenAt ?? 0) - Number(b.lastSeenAt ?? 0));
 
   for (const [sessionId] of removable.slice(0, Math.max(0, entries.length - maxEntries)))

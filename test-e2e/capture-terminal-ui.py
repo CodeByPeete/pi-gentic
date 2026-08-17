@@ -649,6 +649,82 @@ def capture_completed_card_answer():
         stop(proc)
 
 
+def capture_prompt_preflight_switch():
+    reset_output(clear_artifacts=False)
+    delay_extension = OUTPUT / "prompt-preflight-delay.mjs"
+    completion_marker = OUTPUT / "prompt-preflight-completed.marker"
+    completion_marker.unlink(missing_ok=True)
+    delay_extension.write_text(
+        "import { writeFileSync } from 'node:fs';\n"
+        "export default function (pi) {\n"
+        "  pi.on('input', async (event) => {\n"
+        "    if (event.text !== 'Confirm') return { action: 'continue' };\n"
+        "    await new Promise((resolve) => setTimeout(resolve, 30000));\n"
+        f"    writeFileSync({json.dumps(str(completion_marker))}, 'completed');\n"
+        "    return { action: 'handled' };\n"
+        "  });\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    session_id = "019ff21f-0000-7000-8000-000000000001"
+    fixture = SESSION_DIR / f"2026-08-11T18-40-01-000Z_{session_id}.jsonl"
+    fixture.write_text(
+        json.dumps(
+            {
+                "type": "session",
+                "version": 3,
+                "id": session_id,
+                "timestamp": "2026-08-11T18:40:01.000Z",
+                "cwd": str(INTERACTIVE_WORK_DIR),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    proc = spawn(["--session", str(fixture), "--extension", str(delay_extension)])
+    try:
+        proc.write("Confirm\r")
+        time.sleep(0.2)
+        proc.write("/new\r")
+        wait_for("new session after submitted prompt", lambda value: "New session started" in value, timeout=20)
+        proc.write("/resume\r")
+        active = wait_for(
+            "submitted session remains active after switching",
+            lambda value: "Resume Session" in value and "019ff21f" in value and "Inactive:" in value,
+            timeout=20,
+        )
+        if "No live pi-gentic session" in active:
+            raise AssertionError("Submitted session was lost while its prompt was starting")
+        active_screenshot = render_png("prompt-preflight-switch-active-terminal.png")
+        deadline = time.time() + 45
+        while time.time() < deadline and not completion_marker.exists():
+            time.sleep(0.1)
+        if not completion_marker.exists():
+            raise AssertionError("Submitted prompt did not complete after switching sessions")
+        completed = wait_for(
+            "submitted session becomes inactive after completion",
+            lambda value: "Resume Session" in value
+            and "019ff21f" in value
+            and "Inactive:" not in next((line for line in value.splitlines() if "019ff21f" in line), ""),
+            timeout=20,
+        )
+        if "This extension ctx is stale" in completed:
+            raise AssertionError("Submitted prompt resumed through a stale session")
+        completed_screenshot = render_png("prompt-preflight-switch-completed-terminal.png")
+        evidence = OUTPUT / "prompt-preflight-switch-check.txt"
+        evidence.write_text(
+            "submitted_session_active_after_switch=true\nprompt_completed_after_switch=true\n",
+            encoding="utf-8",
+        )
+        print(active_screenshot)
+        print(completed_screenshot)
+        print(evidence)
+    finally:
+        stop(proc)
+        delay_extension.unlink(missing_ok=True)
+        completion_marker.unlink(missing_ok=True)
+
+
 def capture_resume_1000_sessions():
     reset_output(clear_artifacts=False)
     start = datetime.datetime(2026, 7, 23, tzinfo=datetime.timezone.utc)
@@ -982,6 +1058,7 @@ def main():
         return
     if "--deterministic" in sys.argv:
         capture_completed_card_answer()
+        capture_prompt_preflight_switch()
         if os.environ.get("RUNNER_OS") != "Linux":
             capture_resume_1000_sessions()
         return

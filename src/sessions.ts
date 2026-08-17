@@ -5,7 +5,13 @@ import { Effect, FileSystem } from "effect";
 import { getActiveState, isRecord, shortSessionId } from "./catalog.js";
 import { reportRuntimeDiagnostic } from "./diagnostics.js";
 import type { PiContext, PiRuntimeSession, UnknownRecord } from "./pi-types.js";
-import { findRuntimeSession, listRuntimeSessions, livePath, registerLiveRuntime } from "./pi-host.js";
+import {
+  findRuntimeSession,
+  listRuntimeSessions,
+  livePath,
+  registerLiveRuntime,
+  runtimeSessionIsRunning,
+} from "./pi-host.js";
 
 export function assertDifferentSession(callerSessionId: unknown, targetSessionId: unknown) {
   if (!callerSessionId || !targetSessionId || callerSessionId !== targetSessionId) return;
@@ -490,7 +496,7 @@ export function withRuntimeState(session: UnknownRecord) {
   const runtime = findRuntimeSession((item) => item.session.sessionManager.getSessionId() === session.sessionId);
 
   if (!runtime) return session;
-  const running = runtime.session?.isStreaming === true;
+  const running = runtimeSessionIsRunning(runtime);
   const live =
     running && runtime.runtimeHost ? { livePath: livePath(runtime.session.sessionManager.getSessionId()) } : {};
 

@@ -63,6 +63,7 @@ import {
   pruneRuntimeSessions,
   registerAgentCall,
   resolveModelFromCatalog,
+  runtimeSessionIsRunning,
   setRuntimeSession,
   unregisterLiveRuntime,
 } from "./pi-host.js";
@@ -1278,7 +1279,7 @@ function assistantText(message: UnknownRecord | undefined) {
 
 export function sessionStatus(runtime: PiRuntimeSession) {
   const now = Date.now();
-  const running = runtime.session.isStreaming === true;
+  const running = runtimeSessionIsRunning(runtime);
   runtime.streamingStartedAt = running
     ? (runtime.runStartedAt ??
       runtime.streamingStartedAt ??

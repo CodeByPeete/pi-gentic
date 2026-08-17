@@ -2621,6 +2621,22 @@ test("session status keeps running duration stable and explains queued messages"
   }
 });
 
+test("session status is running while a submitted prompt is in preflight", () => {
+  const status = sessionStatus({
+    activePromptCount: 1,
+    createdAt: new Date().toISOString(),
+    session: {
+      isStreaming: false,
+      pendingMessageCount: 0,
+      sessionManager: { getSessionId: () => "prompt-preflight" },
+      agent: { state: { messages: [] } },
+    },
+  });
+
+  assert.equal(status.running, true);
+  assert.equal(status.state, "running");
+});
+
 test("formatted status is readable instead of raw JSON", () => {
   const text = formatSessionStatus({
     sessionId: "019ecdce-4317-701b-9c51-1b05272f0db0",

@@ -35,6 +35,7 @@ export type PiRuntimeSession = {
   lastActivities?: UnknownRecord[];
   runStartedAt?: number;
   streamingStartedAt?: string | number;
+  activePromptCount?: number;
   lastAbort?: { actor?: string; at: number };
   activitySession?: PiAgentSession;
   activityUnsubscribe?: () => void;

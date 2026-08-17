@@ -86,6 +86,14 @@ export function resolveSessionReference(sessions: UnknownRecord[], reference: un
 
 const persistedSummaryCache = new Map();
 const PERSISTED_SUMMARY_CACHE_CAPACITY = 4_096;
+const SESSION_SKELETON_CONCURRENCY = 64;
+
+function sessionPathKey(value: unknown) {
+  if (typeof value !== "string" || !value) return undefined;
+  const resolved = path.resolve(value);
+
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
 
 export const listSessionSkeletonsEffect = Effect.fn("SessionDirectory.listSkeletons")(function* (
   sessionDir: string | undefined,
@@ -110,7 +118,9 @@ function listSessionSkeletons(sessionDir: string | undefined, cwd: string, inclu
     );
     const sessions = includeTreeMetadata
       ? yield* Effect.promise(() =>
-          mapConcurrent(names, 64, (name) => treeSessionSkeleton(path.join(sessionDir, name), cwd)),
+          mapConcurrent(names, SESSION_SKELETON_CONCURRENCY, (name) =>
+            treeSessionSkeleton(path.join(sessionDir, name), cwd),
+          ),
         )
       : names.map((name) => basicSessionSkeleton(path.join(sessionDir, name), cwd));
 
@@ -139,8 +149,55 @@ function basicSessionSkeleton(filePath: string, cwd: string): UnknownRecord {
 export const enrichSessionTreeSkeletonEffect = Effect.fn("SessionDirectory.enrichTreeSkeleton")(function* (
   skeleton: UnknownRecord,
 ) {
-  if (typeof skeleton.path !== "string") return skeleton;
-  return yield* Effect.promise(() => treeSessionSkeleton(skeleton.path as string, String(skeleton.cwd ?? "")));
+  const skeletonPath = skeleton.path;
+
+  if (typeof skeletonPath !== "string") return skeleton;
+  return yield* Effect.promise(() => treeSessionSkeleton(skeletonPath, String(skeleton.cwd ?? "")));
+});
+
+/** Enriches the leading session window and its ancestors for a fast, structurally correct initial tree. */
+export const enrichSessionTreeWindowEffect = Effect.fn("SessionDirectory.enrichTreeWindow")(function* (
+  skeletons: UnknownRecord[],
+  windowSize = skeletons.length,
+) {
+  const skeletonsByPath = new Map<string, UnknownRecord>();
+  for (const skeleton of skeletons) {
+    const key = sessionPathKey(skeleton.path);
+    if (key) skeletonsByPath.set(key, skeleton);
+  }
+  const enrichedByPath = new Map<string, UnknownRecord>();
+  let pending = skeletons.slice(0, Math.max(0, Math.floor(windowSize)));
+  const scheduledPaths = new Set<string>();
+  for (const skeleton of pending) {
+    const key = sessionPathKey(skeleton.path);
+    if (key) scheduledPaths.add(key);
+  }
+
+  while (pending.length > 0) {
+    const batch = pending;
+    pending = [];
+    const enriched = yield* Effect.forEach(batch, enrichSessionTreeSkeletonEffect, {
+      concurrency: SESSION_SKELETON_CONCURRENCY,
+    });
+
+    for (const [index, session] of enriched.entries()) {
+      const source = batch[index];
+
+      if (!source) continue;
+      const key = sessionPathKey(source.path);
+
+      if (key) enrichedByPath.set(key, session);
+      const parentKey = sessionPathKey(session.parentSessionPath);
+      const parent = parentKey ? skeletonsByPath.get(parentKey) : undefined;
+
+      if (parent && parentKey && !scheduledPaths.has(parentKey)) {
+        scheduledPaths.add(parentKey);
+        pending.push(parent);
+      }
+    }
+  }
+
+  return skeletons.map((skeleton) => enrichedByPath.get(sessionPathKey(skeleton.path) ?? "") ?? skeleton);
 });
 
 async function treeSessionSkeleton(filePath: string, fallbackCwd: string) {

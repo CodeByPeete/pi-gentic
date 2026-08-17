@@ -18,7 +18,7 @@ Each session keeps its own conversation history. The main session can send work,
 
 This release requires:
 
-- Pi `0.84.0`
+- Pi `0.84.2`
 - Node.js `22.19.0` or newer
 - Git when you want delegated sessions to use separate work folders
 
@@ -400,6 +400,8 @@ Return concise findings with evidence.
 | `ry` | `0` | Default vertical distance for `discoverSessions`. |
 | `open` | none | Reserved setting. It is accepted but currently has no effect. |
 
+Completion is determined solely by delegation relationships. Joined work composes through any agent depth and across session runtimes. Detached work proceeds independently.
+
 ## Child-session limits
 
 `globalMaxSubagentDepth` is the absolute limit for the whole session family. The first session is at level `0`.
@@ -447,7 +449,7 @@ Pi owns conversations, models, tools, trust decisions, prompts, and terminal beh
 
 ```mermaid
 flowchart TD
-    Pi[Pi 0.84.0] --> Boundary[Pi extension boundary]
+    Pi[Pi 0.84.2] --> Boundary[Pi extension boundary]
     Boundary --> Runtime[Managed Effect runtime]
     Runtime --> Coordinator[Delegation coordinator]
     Runtime --> Registry[Live session registry]

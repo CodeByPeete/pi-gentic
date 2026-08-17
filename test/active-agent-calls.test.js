@@ -58,6 +58,47 @@ test("aborting a target session passes the session skip guard to active calls", 
   }
 });
 
+test("duplicate delegation identities never replace active work", () => {
+  const first = registerAgentCall({
+    id: "duplicate-delegation",
+    callerSessionId: "duplicate-parent",
+    targetSessionId: "duplicate-child",
+  });
+
+  try {
+    assert.throws(
+      () =>
+        registerAgentCall({
+          id: first.id,
+          callerSessionId: "other-parent",
+          targetSessionId: "other-child",
+        }),
+      /already registered/,
+    );
+    assert.equal(hasAgentCallsForSession("duplicate-parent"), true);
+    assert.equal(hasAgentCallsForSession("other-parent"), false);
+  } finally {
+    first.unregister();
+  }
+});
+
+test("failed aborts still release their delegation", async () => {
+  const call = registerAgentCall({
+    callerSessionId: "failed-abort-parent",
+    targetSessionId: "failed-abort-child",
+    abort: async () => {
+      throw new Error("abort failed");
+    },
+  });
+
+  try {
+    await assert.rejects(abortAgentCall(call.id), /abort failed/);
+    assert.equal(hasAgentCallsForSession("failed-abort-parent"), false);
+  } finally {
+    call.unregister();
+  }
+});
+
 test("aborting one tool call leaves sibling calls running", async () => {
   const aborted = [];
   const first = registerAgentCall({

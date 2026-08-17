@@ -945,6 +945,84 @@ test("/new parks the active visible run instead of disposing it", async () => {
   }
 });
 
+test("a submission made during /new waits for the new session", async () => {
+  const state = getLiveRuntimeState();
+  state.liveRuntimes.clear();
+  await installBridgeForTest(state, "submitBridgeInstalled");
+  const peer = await loadPiCodingAgentPeer();
+  const originalNewSession = state.hostNewSession;
+  const oldPrompts = [];
+  const newPrompts = [];
+  let finishReplacement;
+  const replacement = new Promise((resolve) => {
+    finishReplacement = resolve;
+  });
+  const oldSession = {
+    isStreaming: true,
+    prompt: async (...args) => oldPrompts.push(args),
+    sessionManager: { getHeader: () => ({}), getSessionId: () => "transition-old-session" },
+  };
+  const newSession = {
+    isStreaming: false,
+    prompt: async (...args) => newPrompts.push(args),
+    sessionManager: { getHeader: () => ({}), getSessionId: () => "transition-new-session" },
+  };
+  const runtimeHost = { session: oldSession };
+  const history = [];
+  const mode = Object.assign(Object.create(peer.InteractiveMode.prototype), {
+    defaultEditor: {},
+    editor: {
+      text: "",
+      addToHistory: (text) => history.push(text),
+      getText() {
+        return this.text;
+      },
+      setText(text) {
+        this.text = text;
+      },
+    },
+    flushPendingBashComponents() {},
+    handleClearCommand: async () => {
+      await peer.AgentSessionRuntime.prototype.newSession.call(runtimeHost);
+    },
+    onInputCallback: undefined,
+    runtimeHost,
+    ui: { requestRender() {} },
+    updatePendingMessagesDisplay() {},
+  });
+
+  state.hostNewSession = async () => {
+    await replacement;
+    runtimeHost.session = newSession;
+    return { cancelled: false };
+  };
+  setRuntimeSession("transition-old-session", { runtimeHost, session: oldSession });
+
+  try {
+    mode.setupEditorSubmitHandler();
+    const startNewSession = mode.defaultEditor.onSubmit("/new");
+    await Promise.resolve();
+    const submitMessage = mode.defaultEditor.onSubmit("message for the new session");
+    await Promise.resolve();
+
+    assert.deepEqual(oldPrompts, []);
+    assert.deepEqual(newPrompts, []);
+
+    finishReplacement();
+    await Promise.all([startNewSession, submitMessage]);
+
+    assert.deepEqual(oldPrompts, []);
+    assert.deepEqual(newPrompts, [["message for the new session"]]);
+    assert.deepEqual(history, ["message for the new session"]);
+  } finally {
+    finishReplacement();
+    state.hostNewSession = originalNewSession;
+    deleteRuntimeSession("transition-old-session");
+    deleteRuntimeSession("transition-new-session");
+    state.liveRuntimes.clear();
+  }
+});
+
 test("switching away from an opened live run parks it instead of disposing it", () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();

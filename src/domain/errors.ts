@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { DelegationId } from "./identifiers.js";
 
 const CauseField = Schema.optionalKey(Schema.Defect());
 
@@ -60,6 +61,14 @@ export class InvalidDelegationTransition extends Schema.TaggedErrorClass<Invalid
     message: Schema.String,
     from: Schema.String,
     event: Schema.String,
+  },
+) {}
+
+export class DelegationAlreadyRegistered extends Schema.TaggedErrorClass<DelegationAlreadyRegistered>()(
+  "DelegationAlreadyRegistered",
+  {
+    message: Schema.String,
+    delegationId: DelegationId,
   },
 ) {}
 

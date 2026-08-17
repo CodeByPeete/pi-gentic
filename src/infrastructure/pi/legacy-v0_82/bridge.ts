@@ -13,14 +13,25 @@ import type {
   PiTheme,
 } from "../../../pi-types.js";
 import { HostCapabilityUnavailable, HostVersionUnsupported } from "../../../domain/errors.js";
+import type { DelegationId } from "../../../domain/identifiers.js";
+import {
+  activeDelegationMap,
+  createDelegationId,
+  getActiveDelegation,
+  listActiveDelegations,
+  registerActiveDelegation,
+  settleActiveDelegation,
+  type ActiveDelegation,
+  type RegisterActiveDelegation,
+} from "../../runtime/DelegationRegistry.js";
 
 type LegacyRecord = Record<string, any>;
 
 type LiveRuntimeState = {
   liveRuntimes: Map<string, LegacyRecord>;
   runtimeSessions: Map<string, PiRuntimeSession>;
-  activeCalls: Map<string, AgentCall>;
-  nextCallId: number;
+  activeCalls: ReadonlyMap<DelegationId, ActiveDelegation>;
+  sessionTransitions: WeakMap<object, Promise<unknown>>;
   compatibilityDiagnostics: string[];
   hostSwitchSession?: (this: unknown, sessionPath: string, options?: LegacyRecord) => Promise<unknown>;
   hostNewSession?: (this: unknown, options?: LegacyRecord) => Promise<unknown>;
@@ -154,37 +165,27 @@ export function getLiveRuntimeState(): LiveRuntimeState {
   }) as LiveRuntimeState;
 
   state.runtimeSessions ??= new Map();
-  state.activeCalls ??= new Map();
-  state.nextCallId ??= 0;
+  state.activeCalls = activeDelegationMap();
+  state.sessionTransitions ??= new WeakMap();
   state.compatibilityDiagnostics ??= [];
 
   return state;
 }
-
-type AgentCall = {
-  id: string;
-  callerSessionId?: string;
-  targetSessionId?: string;
-  abort?: (options?: LegacyRecord) => Promise<void> | void;
-  isCancellable?: () => boolean;
-  startedAt?: number;
-};
 
 type AbortState = {
   sessions: Set<unknown>;
   calls: Set<unknown>;
 };
 
-export function registerAgentCall(call: Omit<AgentCall, "id" | "startedAt"> & { id?: string }) {
-  const state = getLiveRuntimeState();
-  const id = call.id ?? `agent-call:${++state.nextCallId}`;
+type RegisterAgentCall = Omit<RegisterActiveDelegation, "id" | "completionMode"> & {
+  readonly id?: DelegationId;
+  readonly completionMode?: RegisterActiveDelegation["completionMode"];
+};
 
-  state.activeCalls.set(id, { ...call, id, startedAt: Date.now() });
+export function registerAgentCall(call: RegisterAgentCall) {
+  const { id = createDelegationId(), completionMode = "detached", ...delegation } = call;
 
-  return {
-    id,
-    unregister: () => state.activeCalls.delete(id),
-  };
+  return registerActiveDelegation({ ...delegation, id, completionMode });
 }
 
 export function hasAgentCallsForSession(sessionId: unknown) {
@@ -198,7 +199,7 @@ export function assertNoAgentCallCycle(callerSessionId: unknown, targetSessionId
   if (!caller || !target) return;
   const targetsByCaller = new Map<string, Set<string>>();
 
-  for (const call of getLiveRuntimeState().activeCalls.values()) {
+  for (const call of listActiveDelegations()) {
     if (!call.callerSessionId || !call.targetSessionId) continue;
     const targets = targetsByCaller.get(call.callerSessionId) ?? new Set<string>();
 
@@ -227,7 +228,7 @@ function hasCancellableAgentCallsForSession(sessionId: unknown) {
 }
 
 export async function abortAgentCall(callId: string, options: LegacyRecord = {}) {
-  const call = getLiveRuntimeState().activeCalls.get(callId);
+  const call = getActiveDelegation(callId);
 
   return abortCalls(call ? [call] : [], options);
 }
@@ -239,7 +240,7 @@ export async function abortAgentCallsForSession(sessionId: unknown, options: Leg
 function activeCallsForSession(sessionId: unknown) {
   const sessionIds = sessionSubtreeIds(sessionId);
 
-  return [...getLiveRuntimeState().activeCalls.values()].filter(
+  return listActiveDelegations().filter(
     (call) =>
       (call.callerSessionId !== undefined && sessionIds.has(call.callerSessionId)) ||
       (call.targetSessionId !== undefined && sessionIds.has(call.targetSessionId)),
@@ -294,26 +295,29 @@ function normalizeSessionPath(value: unknown) {
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-async function abortCalls(calls: AgentCall[], options: LegacyRecord = {}) {
+async function abortCalls(calls: ReadonlyArray<ActiveDelegation>, options: LegacyRecord = {}) {
   const state = isAbortState(options.state) ? options.state : { sessions: new Set(), calls: new Set() };
   let aborted = 0;
 
   for (const call of calls) {
     if (!call || state.calls.has(call.id)) continue;
     state.calls.add(call.id);
-    getLiveRuntimeState().activeCalls.delete(call.id);
 
-    if (call.targetSessionId && !state.sessions.has(call.targetSessionId)) {
-      state.sessions.add(call.targetSessionId);
-      aborted += await abortAgentCallsForSession(call.targetSessionId, {
-        ...options,
-        state,
-      });
-    }
+    try {
+      if (call.targetSessionId && !state.sessions.has(call.targetSessionId)) {
+        state.sessions.add(call.targetSessionId);
+        aborted += await abortAgentCallsForSession(call.targetSessionId, {
+          ...options,
+          state,
+        });
+      }
 
-    if (typeof call.abort === "function") {
-      await call.abort(options);
-      aborted += 1;
+      if (typeof call.abort === "function") {
+        await call.abort(options);
+        aborted += 1;
+      }
+    } finally {
+      settleActiveDelegation(call.id);
     }
   }
 
@@ -333,6 +337,8 @@ export const LIVE_SESSION_PREFIX = "pi-gentic-live:";
 
 export async function installLiveSessionBridge() {
   const state = getLiveRuntimeState();
+
+  state.compatibilityDiagnostics.length = 0;
 
   try {
     const peer = await loadPiCodingAgentPeer();
@@ -360,7 +366,7 @@ export function hostCompatibilityDiagnostics() {
   return [...getLiveRuntimeState().compatibilityDiagnostics];
 }
 
-const LEGACY_HOST_VERSION = "0.84.0";
+const LEGACY_HOST_VERSION = "0.84.2";
 
 export function assertLegacyHostCompatible(peer: PiCodingAgentPeer) {
   if (peer.version !== LEGACY_HOST_VERSION)
@@ -403,43 +409,45 @@ function installRuntimeSwitchBridge(
     sessionPath: string,
     options?: LegacyRecord,
   ) {
-    const switchOptions = withVisibleContextTracking(state, this, options);
+    return trackSessionTransition(state, this, async () => {
+      const switchOptions = withVisibleContextTracking(state, this, options);
 
-    if (typeof sessionPath !== "string" || !sessionPath.startsWith(LIVE_SESSION_PREFIX))
-      return switchPersistedSession(state, this, sessionPath, switchOptions);
+      if (typeof sessionPath !== "string" || !sessionPath.startsWith(LIVE_SESSION_PREFIX))
+        return switchPersistedSession(state, this, sessionPath, switchOptions);
 
-    const sessionId = sessionPath.slice(LIVE_SESSION_PREFIX.length);
-    const live = state.liveRuntimes.get(sessionId) as
-      | { runtime: PiAgentRuntimeHost; metadata?: LegacyRecord }
-      | undefined;
+      const sessionId = sessionPath.slice(LIVE_SESSION_PREFIX.length);
+      const live = state.liveRuntimes.get(sessionId) as
+        | { runtime: PiAgentRuntimeHost; metadata?: LegacyRecord }
+        | undefined;
 
-    if (!live) {
-      const persistedPath = state.runtimeSessions.get(sessionId)?.session.sessionManager.getSessionFile?.();
+      if (!live) {
+        const persistedPath = state.runtimeSessions.get(sessionId)?.session.sessionManager.getSessionFile?.();
 
-      if (typeof persistedPath === "string" && persistedPath)
-        return switchPersistedSession(state, this, persistedPath, switchOptions);
-      throw new Error(`No live pi-gentic session ${sessionId} is available.`);
-    }
-    const targetSessionFile = live.runtime.session.sessionFile;
-    const beforeResult = await this.emitBeforeSwitch("resume", targetSessionFile);
+        if (typeof persistedPath === "string" && persistedPath)
+          return switchPersistedSession(state, this, persistedPath, switchOptions);
+        throw new Error(`No live pi-gentic session ${sessionId} is available.`);
+      }
+      const targetSessionFile = live.runtime.session.sessionFile;
+      const beforeResult = await this.emitBeforeSwitch("resume", targetSessionFile);
 
-    if (beforeResult.cancelled) return beforeResult;
-    const restore = parkCurrentLiveRuntimeForSwitch(state, this);
+      if (beforeResult.cancelled) return beforeResult;
+      const restore = parkCurrentLiveRuntimeForSwitch(state, this);
 
-    try {
-      await this.teardownCurrent("resume", targetSessionFile);
-    } finally {
-      restore();
-    }
-    this.apply({
-      session: live.runtime.session,
-      services: live.runtime.services,
-      diagnostics: live.runtime.diagnostics,
-      modelFallbackMessage: live.runtime.modelFallbackMessage,
+      try {
+        await this.teardownCurrent("resume", targetSessionFile);
+      } finally {
+        restore();
+      }
+      this.apply({
+        session: live.runtime.session,
+        services: live.runtime.services,
+        diagnostics: live.runtime.diagnostics,
+        modelFallbackMessage: live.runtime.modelFallbackMessage,
+      });
+      await this.finishSessionReplacement(switchOptions.withSession);
+
+      return { cancelled: false };
     });
-    await this.finishSessionReplacement(switchOptions.withSession);
-
-    return { cancelled: false };
   };
 }
 
@@ -466,14 +474,35 @@ function installRuntimeNewSessionBridge(
   state.newSessionBridgeInstalled = true;
   state.hostNewSession = AgentSessionRuntime.prototype.newSession as LiveRuntimeState["hostNewSession"];
   AgentSessionRuntime.prototype.newSession = async function newSessionWithLiveRuntime(options?: LegacyRecord) {
-    const restore = parkCurrentLiveRuntimeForSwitch(state, this);
+    return trackSessionTransition(state, this, async () => {
+      const restore = parkCurrentLiveRuntimeForSwitch(state, this);
 
-    try {
-      return await state.hostNewSession?.call(this, withVisibleContextTracking(state, this, options));
-    } finally {
-      restore();
-    }
+      try {
+        return await state.hostNewSession?.call(this, withVisibleContextTracking(state, this, options));
+      } finally {
+        restore();
+      }
+    });
   };
+}
+
+/** Keeps editor submissions bound to the session selected by an in-flight host replacement. */
+async function trackSessionTransition<T>(state: LiveRuntimeState, runtimeHost: object, transition: () => Promise<T>) {
+  const pending = transition();
+
+  state.sessionTransitions.set(runtimeHost, pending);
+
+  try {
+    return await pending;
+  } finally {
+    if (state.sessionTransitions.get(runtimeHost) === pending) state.sessionTransitions.delete(runtimeHost);
+  }
+}
+
+function pendingSessionTransition(state: LiveRuntimeState, runtimeHost: unknown) {
+  if ((typeof runtimeHost !== "object" && typeof runtimeHost !== "function") || runtimeHost === null) return undefined;
+
+  return state.sessionTransitions.get(runtimeHost);
 }
 
 function withVisibleContextTracking(state: LiveRuntimeState, runtimeHost: LegacyRecord, options: LegacyRecord = {}) {
@@ -694,6 +723,8 @@ function installInteractiveSubmitBridge(
 
     if (typeof nativeSubmit !== "function") return result;
     this.defaultEditor.onSubmit = async (text: unknown) => {
+      const transition = pendingSessionTransition(state, this.runtimeHost);
+      if (transition) await transition.catch(noop);
       const command = String(text ?? "").trim();
 
       if (shouldPromptVisibleSessionBeforeNative(this, command)) {

@@ -23,6 +23,11 @@ export type PiContext = Omit<ExtensionContext, "sessionManager"> &
 export type PiAgentRuntimeHost = AgentSessionRuntime;
 export type PiAgentSession = AgentSession;
 
+export type ReturnDeliveryGroup = {
+  phase: "starting" | "running";
+  participants: number;
+};
+
 export type PiRuntimeSession = {
   session: PiAgentSession;
   runtimeHost?: PiAgentRuntimeHost;
@@ -36,6 +41,7 @@ export type PiRuntimeSession = {
   runStartedAt?: number;
   streamingStartedAt?: string | number;
   activePromptCount?: number;
+  returnDeliveryGroups?: Map<string, ReturnDeliveryGroup>;
   lastAbort?: { actor?: string; at: number };
   activitySession?: PiAgentSession;
   activityUnsubscribe?: () => void;

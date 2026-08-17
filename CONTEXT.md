@@ -49,7 +49,7 @@ The durable transfer of a Delegation Outcome to its Caller Session.
 _Avoid_: Callback, response
 
 **Joined Delegation**:
-A deferred Delegation whose Caller Session must process its outcome before an enclosing Delegation can become terminal.
+A deferred Delegation linked to its active enclosing Delegation Runs. Each enclosing run remains active until the Caller Session processes the outcome. The link follows Delegation identity across Session Runtimes, independently of Agent identity or role.
 _Avoid_: Blocking call, nested wait
 
 **Detached Delegation**:

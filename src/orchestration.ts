@@ -39,13 +39,13 @@ import {
 } from "./domain/delegation.js";
 import {
   AgentName,
-  DelegationId,
   SessionId,
   type DelegationId as DelegationIdValue,
   type SessionId as SessionIdValue,
 } from "./domain/identifiers.js";
 import { reconcileActiveToolSelection, type ToolPolicyState } from "./domain/capabilities.js";
 import { DelegationFibers } from "./infrastructure/runtime/DelegationFibers.js";
+import { awaitJoinedDelegations, createDelegationId } from "./infrastructure/runtime/DelegationRegistry.js";
 import { RuntimeMetadata, RuntimeRegistry } from "./infrastructure/runtime/RuntimeRegistry.js";
 import {
   abortAgentCall,
@@ -89,6 +89,7 @@ import type {
   PiContext,
   PiRuntimeSession,
   PiSessionManager,
+  ReturnDeliveryGroup,
   UnknownRecord,
 } from "./pi-types.js";
 import { prepareWorktree } from "./worktrees.js";
@@ -203,6 +204,48 @@ export function resolveReturnDelivery(
   options: SendCompletionOptions = {},
 ): { kind: "callerMessage"; queue: DeliveryQueue } | { kind: "toolResult"; queue?: undefined } {
   return shouldDeferSendCompletion(options) ? { kind: "callerMessage", queue: "steer" } : { kind: "toolResult" };
+}
+
+type ReturnDeliveryMembership = {
+  readonly owner: boolean;
+  readonly accept: () => void;
+  readonly release: () => void;
+};
+
+/** Shares one visible Return Delivery across Delegations accepted by the same Target Session run. */
+function joinReturnDeliveryGroup({
+  target,
+  callerSessionId,
+  targetBusy,
+  shared,
+}: {
+  target: PiRuntimeSession;
+  callerSessionId: string;
+  targetBusy: boolean;
+  shared: boolean;
+}): ReturnDeliveryMembership {
+  if (!shared) return { owner: true, accept() {}, release() {} };
+
+  const groups = (target.returnDeliveryGroups ??= new Map());
+  const current = groups.get(callerSessionId);
+  const joinsCurrentRun = current !== undefined && (current.phase === "starting" || targetBusy);
+  const group: ReturnDeliveryGroup = joinsCurrentRun ? current : { phase: "starting", participants: 0 };
+
+  if (!joinsCurrentRun) groups.set(callerSessionId, group);
+  group.participants += 1;
+  let released = false;
+  return {
+    owner: !joinsCurrentRun,
+    accept() {
+      if (groups.get(callerSessionId) === group) group.phase = "running";
+    },
+    release() {
+      if (released) return;
+      released = true;
+      group.participants -= 1;
+      if (group.participants === 0 && groups.get(callerSessionId) === group) groups.delete(callerSessionId);
+    },
+  };
 }
 
 export function sendPendingText({
@@ -517,18 +560,16 @@ export function persistReturnForCaller({
   persist?.(callerSessionManager);
 }
 
-async function awaitTargetCompletion(target: PiRuntimeSession, runtime: ExtensionRuntime, signal?: AbortSignal) {
+async function awaitTargetCompletion(
+  target: PiRuntimeSession,
+  parentDelegationId: DelegationIdValue,
+  runtime: ExtensionRuntime,
+  signal?: AbortSignal,
+) {
   const sessionId = target.session.sessionManager.getSessionId();
-  const callerSessionId = Schema.decodeUnknownSync(SessionId)(sessionId);
-
   let current = target;
 
-  while (
-    (await runtime.runPromise(
-      Effect.flatMap(DelegationFibers, (delegations) => delegations.awaitJoined(callerSessionId)),
-      { signal },
-    )) > 0
-  ) {
+  while ((await runtime.runPromise(awaitJoinedDelegations(parentDelegationId), { signal })) > 0) {
     current = getRuntimeSession(sessionId) ?? target;
     await waitForSessionTurnEnd(current.session, runtime, signal);
   }
@@ -1731,6 +1772,7 @@ export class PiGenticOrchestrator {
       targetAsync ? invokeDefaults.async !== false : invokeDefaults.withSession !== false,
     );
     const startedAt = Date.now();
+    const delegationId = createDelegationId();
     const returnDelivery = resolveReturnDelivery({
       async: targetAsync,
       awaitCompletion: callbacks.awaitCompletion,
@@ -1746,6 +1788,20 @@ export class PiGenticOrchestrator {
     const readyAt = Date.now();
     const callerSessionManager = ctx.sessionManager;
     const callerSessionId = callerSessionManager.getSessionId();
+    const targetCommand = resolveTargetSlashCommand(input.message, target.session);
+    const returnDeliveryMembership = joinReturnDeliveryGroup({
+      target,
+      callerSessionId,
+      targetBusy,
+      shared: returnDelivery.kind === "callerMessage" && (!targetCommand || startsAgentTurn(targetCommand)),
+    });
+    let requestAccepted = false;
+    const acceptRequest = () => {
+      if (requestAccepted) return;
+      requestAccepted = true;
+      returnDeliveryMembership.accept();
+    };
+    const shouldPresentOutcome = () => returnDeliveryMembership.owner || !requestAccepted;
     const runtimeMetadata = RuntimeMetadata.make({
       sessionId: Schema.decodeUnknownSync(SessionId)(targetSessionId),
       parentSessionId: Schema.decodeUnknownSync(SessionId)(callerSessionId),
@@ -1774,7 +1830,7 @@ export class PiGenticOrchestrator {
         }
       : undefined;
     const details = this.cardDetails("send", targetBusy ? "queued" : "running", {
-      cardId: `send:${targetSessionId}:${startedAt}`,
+      cardId: delegationId,
       livePanel: true,
       callerSessionId,
       async: targetAsync,
@@ -1805,7 +1861,7 @@ export class PiGenticOrchestrator {
     const publish = (nextDetails: UnknownRecord, options: UnknownRecord = {}) => {
       const liveDetails = setLiveCardDetails(nextDetails, { runtime: this.runtime }) ?? nextDetails;
 
-      if (!terminalStatePersisted && returnDelivery.kind === "callerMessage")
+      if (!terminalStatePersisted && returnDelivery.kind === "callerMessage" && shouldPresentOutcome())
         terminalStatePersisted = persistAgentCardState(callerSessionManager, liveDetails, persistSessionImmediately);
 
       if (options.refresh !== false) callbacks.onRefresh?.(liveDetails);
@@ -1827,9 +1883,6 @@ export class PiGenticOrchestrator {
       async: targetAsync,
       fork: targetFork,
     });
-    const delegationId = Schema.decodeUnknownSync(DelegationId)(
-      `delegation:${callerSessionId}:${targetSessionId}:${startedAt}`,
-    );
     let aborting = false;
     const abortTarget = async (options: UnknownRecord = {}) => {
       if (aborting) return;
@@ -1848,6 +1901,7 @@ export class PiGenticOrchestrator {
       id: delegationId,
       callerSessionId,
       targetSessionId,
+      completionMode: returnDelivery.kind === "callerMessage" && invokeMeLater ? "joined" : "detached",
       isCancellable: () => target.session.isStreaming === true,
       abort: async (options: UnknownRecord = {}) => {
         await abortTarget(options);
@@ -1903,16 +1957,19 @@ export class PiGenticOrchestrator {
       try {
         const receipt = buildReceiptText(callerAgent, callerSessionId, input.message);
         const targetPrompt = await prepareTargetPromptForSend(target.session, input.message, receipt);
+        const promptOptions: NonNullable<Parameters<PiAgentSession["prompt"]>[1]> = {
+          ...(target.session.isStreaming ? { streamingBehavior: "steer" } : {}),
+          preflightResult: (accepted) => {
+            if (accepted) acceptRequest();
+          },
+        };
         await promptSessionAndWaitForTurnEnd(
           target.session,
           this.runtime,
-          () =>
-            target.session.prompt(
-              targetPrompt.text,
-              target.session.isStreaming ? { streamingBehavior: "steer" } : undefined,
-            ),
+          () => target.session.prompt(targetPrompt.text, promptOptions),
           callbacks.signal,
         );
+        acceptRequest();
         if (targetPrompt.command && !startsAgentTurn(targetPrompt.command)) {
           const answer = slashCommandDeliveryText(targetPrompt.command, targetSessionId);
           const completed = recordRunResult(
@@ -1926,7 +1983,7 @@ export class PiGenticOrchestrator {
           return { answer, details: completed };
         }
         if (targetBusy) await waitForSessionTurnEnd(target.session, this.runtime, callbacks.signal);
-        const completedTarget = await awaitTargetCompletion(target, this.runtime, callbacks.signal);
+        const completedTarget = await awaitTargetCompletion(target, delegationId, this.runtime, callbacks.signal);
         const outcome = sessionRunOutcome(completedTarget, { request: input.message });
         const completed = recordRunResult(
           completedTarget,
@@ -1943,16 +2000,17 @@ export class PiGenticOrchestrator {
         const returnText =
           outcome.status === "done" ? buildReturnText(target.agentName, targetSessionId, outcome.text) : outcome.text;
         if (returnDelivery.kind === "callerMessage") {
-          await this.deliverCallerCard(ctx, {
-            callerSessionId,
-            callerSessionManager,
-            callerCwd,
-            config,
-            text: returnText,
-            details: completed,
-            invoke: invokeMeLater,
-            queue: returnDelivery.queue,
-          });
+          if (shouldPresentOutcome())
+            await this.deliverCallerCard(ctx, {
+              callerSessionId,
+              callerSessionManager,
+              callerCwd,
+              config,
+              text: returnText,
+              details: completed,
+              invoke: invokeMeLater,
+              queue: returnDelivery.queue,
+            });
 
           return { answer: outcome.text, details: completed };
         }
@@ -1970,7 +2028,7 @@ export class PiGenticOrchestrator {
             activities: completeSessionActivities(target.session),
           }),
         );
-        if (returnDelivery.kind === "callerMessage")
+        if (returnDelivery.kind === "callerMessage" && shouldPresentOutcome())
           await this.deliverCallerCard(ctx, {
             callerSessionId,
             callerSessionManager,
@@ -1990,6 +2048,7 @@ export class PiGenticOrchestrator {
           callbacks.signal?.removeEventListener?.("abort", abortFromSignal);
           operationSignal?.removeEventListener("abort", abortFromOperation);
           activeCall.unregister();
+          returnDeliveryMembership.release();
 
           if (target.session.isStreaming !== true) {
             unregisterLiveRuntime(targetSessionId);
@@ -2022,8 +2081,9 @@ export class PiGenticOrchestrator {
       }).pipe(
         Effect.catch((message) =>
           Effect.tryPromise({
-            try: () =>
-              this.deliverCallerCard(ctx, {
+            try: async () => {
+              if (!shouldPresentOutcome()) return;
+              await this.deliverCallerCard(ctx, {
                 callerSessionId,
                 callerSessionManager,
                 callerCwd,
@@ -2038,7 +2098,8 @@ export class PiGenticOrchestrator {
                 }),
                 invoke: false,
                 queue: returnDelivery.queue,
-              }),
+              });
+            },
             catch: getErrorMessage,
           }).pipe(
             Effect.ignore,
@@ -2058,14 +2119,7 @@ export class PiGenticOrchestrator {
         ),
       );
 
-      await this.runtime.runPromise(
-        Effect.flatMap(DelegationFibers, (fibers) =>
-          fibers.run(delegationId, operation, {
-            callerSessionId: identity.callerSessionId,
-            joinsCallerCompletion: invokeMeLater,
-          }),
-        ),
-      );
+      await this.runtime.runPromise(Effect.flatMap(DelegationFibers, (fibers) => fibers.run(delegationId, operation)));
 
       return {
         text: sendPendingText({

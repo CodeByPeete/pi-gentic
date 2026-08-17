@@ -3,6 +3,8 @@ import { Schema } from "effect";
 import { InvalidDelegationTransition } from "./errors.js";
 import { DelegationId, SessionId } from "./identifiers.js";
 
+export type DelegationCompletionMode = "joined" | "detached";
+
 const IdentityFields = {
   delegationId: DelegationId,
   callerSessionId: SessionId,

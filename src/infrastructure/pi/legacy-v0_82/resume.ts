@@ -10,12 +10,20 @@ import type { ExtensionRuntime } from "../../../runtime/ExtensionRuntime.js";
 import { defaultAgentDir, formatDuration, shortestUniqueSessionId, shortSessionId } from "../../../catalog.js";
 import { reportRuntimeDiagnostic } from "../../../diagnostics.js";
 import type { PiTheme } from "../../../pi-types.js";
-import { getLiveRuntimeState, livePath, loadPiCodingAgentPeer } from "./bridge.js";
+import {
+  getLiveRuntimeState,
+  listRuntimeSessions,
+  livePath,
+  loadPiCodingAgentPeer,
+  runtimeSessionIsRunning,
+} from "./bridge.js";
 import {
   enrichSessionSummary,
   enrichSessionTreeSkeletonEffect,
+  enrichSessionTreeWindowEffect,
   listAllFastSessionSkeletonsEffect,
   listFastSessionSkeletonsEffect,
+  orderSessionTree,
   summarizeSession,
   withRuntimeState,
 } from "../../../sessions.js";
@@ -200,7 +208,7 @@ function cachedSessionLoader(
           args,
           isolated: sessions.length > FAST_RESUME_THRESHOLD,
         });
-        void bridge.runtime.runPromise(Cache.refresh(cache, key)).catch(recordCompatibilityDiagnostic);
+        void bridge.runtime.runPromise(Cache.refresh(cache, key)).catch(recordSessionListDiagnostic);
         return cloneSessions(sessions);
       }
 
@@ -211,7 +219,7 @@ function cachedSessionLoader(
         .then((entry) => entry.sessions)
         .catch(async (error) => {
           await bridge.runtime.runPromise(Cache.invalidate(cache, key));
-          recordCompatibilityDiagnostic(error);
+          recordSessionListDiagnostic(error);
           throw error;
         });
       void pending.catch(() => undefined);
@@ -258,10 +266,14 @@ async function quickSessionList(scope: "current" | "all", args: unknown[], runti
     typeof args[scope === "current" ? 1 : 0] === "string" ? String(args[scope === "current" ? 1 : 0]) : undefined;
   const cwd = scope === "current" && typeof args[0] === "string" ? args[0] : sessionDir;
 
+  let skeletons: LegacyRecord[];
+
   if (scope === "all" && !sessionDir)
-    return runtime.runPromise(listAllFastSessionSkeletonsEffect(path.join(defaultAgentDir(), "sessions")));
-  if (!cwd || !sessionDir) return [];
-  return runtime.runPromise(listFastSessionSkeletonsEffect(sessionDir, cwd));
+    skeletons = await runtime.runPromise(listAllFastSessionSkeletonsEffect(path.join(defaultAgentDir(), "sessions")));
+  else if (cwd && sessionDir) skeletons = await runtime.runPromise(listFastSessionSkeletonsEffect(sessionDir, cwd));
+  else skeletons = [];
+
+  return runtime.runPromise(enrichSessionTreeWindowEffect(skeletons, FAST_RESUME_THRESHOLD));
 }
 
 export function visibleSessionMembership(mode: LegacyRecord) {
@@ -556,6 +568,9 @@ export function decorateResumeSelector(
   const refreshSessions = () => {
     for (const session of list.allSessions ?? []) refreshDecoratedSession(session);
   };
+  const refreshVisibleSessions = () => {
+    for (const { session } of visibleSessionRange(list).nodes) refreshDecoratedSession(session);
+  };
   const refresh = (hydrated: LegacyRecord[] = []) => {
     if (hydrated.length > 0) {
       const property = component.scope === "all" ? "allSessions" : "currentSessions";
@@ -581,6 +596,8 @@ export function decorateResumeSelector(
         Stream.runForEach((skeletons) =>
           Effect.sync(() => {
             const current = (component.currentSessions ?? list.allSessions ?? []).map(originalSession);
+
+            if (current.length === 0 && component.currentLoading === true) return;
             const knownPaths = new Set(current.map((session: LegacyRecord) => session.path));
             const membership =
               knownPaths.size === 0
@@ -602,14 +619,12 @@ export function decorateResumeSelector(
     );
   }
   const syncRefreshTimer = () => {
-    const running = (list.allSessions ?? []).some(
-      (session: DecoratedSession) => sessionPresentation(session)?.running === true,
-    );
+    const running = listRuntimeSessions().some(runtimeSessionIsRunning);
 
     if (running && !refreshFiber && runtime) {
       refreshFiber = runtime.runFork(
         Effect.sync(() => {
-          refreshSessions();
+          refreshVisibleSessions();
           requestRender();
         }).pipe(Effect.repeat(Schedule.spaced(Duration.millis(REFRESH_INTERVAL_MS)))),
       );
@@ -622,23 +637,20 @@ export function decorateResumeSelector(
   list.setSessions = (sessions: LegacyRecord[], showCwd: boolean) => {
     const decorated = decorateSessions(sessions ?? []);
     const query = String(list.searchInput?.getValue?.() ?? "");
-    const flatThread =
-      list.sortMode === "threaded" &&
-      list.nameFilter === "all" &&
-      !query.trim() &&
-      decorated.every((session) => !session.parentSessionPath);
-    const result = flatThread ? setFlatThreadSessions(list, decorated, showCwd) : nativeSetSessions(decorated, showCwd);
+    const result = shouldSetThreadedSessions(list, query)
+      ? setThreadedSessions(list, decorated, showCwd)
+      : nativeSetSessions(decorated, showCwd);
 
     if (query.trim()) nativeFilterSessions(query);
     syncRefreshTimer();
     return result;
   };
-  list.filterSessions = (query: string) => {
-    refreshSessions();
-    return nativeFilterSessions(query);
-  };
+  list.filterSessions = (query: string) =>
+    shouldSetThreadedSessions(list, query)
+      ? setThreadedSessions(list, list.allSessions ?? [], list.showCwd)
+      : nativeFilterSessions(query);
   list.render = (width: number) => {
-    refreshSessions();
+    refreshVisibleSessions();
     syncRefreshTimer();
 
     return renderDecoratedRows(list, nativeRender(width), width, theme);
@@ -684,20 +696,39 @@ export function decorateResumeSelector(
   return dispose;
 }
 
-function setFlatThreadSessions(list: LegacyRecord, sessions: DecoratedSession[], showCwd: boolean) {
-  const ordered = [...sessions].sort(
-    (left, right) => (right.modified as Date).getTime() - (left.modified as Date).getTime(),
-  );
+function shouldSetThreadedSessions(list: LegacyRecord, query: string) {
+  return list.sortMode === "threaded" && list.nameFilter === "all" && !query.trim();
+}
+
+function setThreadedSessions(list: LegacyRecord, sessions: DecoratedSession[], showCwd: boolean) {
+  const nodes = threadedSessionNodes(sessions);
 
   list.allSessions = sessions;
   list.showCwd = showCwd;
-  list.filteredSessions = ordered.map((session, index) => ({
-    session,
-    depth: 0,
-    isLast: index === ordered.length - 1,
-    ancestorContinues: [],
-  }));
-  list.selectedIndex = Math.min(list.selectedIndex, Math.max(0, ordered.length - 1));
+  list.filteredSessions = nodes;
+  list.selectedIndex = Math.min(Number(list.selectedIndex ?? 0), Math.max(0, nodes.length - 1));
+}
+
+function threadedSessionNodes(sessions: DecoratedSession[]) {
+  const sessionsByPath = new Map(sessions.map((session) => [session.path, session]));
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+  const ancestors: Array<{ isLast: boolean }> = [];
+
+  return orderSessionTree(sessions).map((orderedSession) => {
+    const depth = Math.max(0, Number(orderedSession.depth ?? 0));
+    const isLast = orderedSession.isLast === true;
+    const session = sessionsByPath.get(orderedSession.path) ?? sessionsById.get(orderedSession.id) ?? orderedSession;
+
+    ancestors.length = depth;
+    const node = {
+      session,
+      depth,
+      isLast,
+      ancestorContinues: ancestors.map((ancestor, index) => index > 0 && !ancestor.isLast),
+    };
+    ancestors[depth] = node;
+    return node;
+  });
 }
 
 function assertDecoratableSessionList(list: LegacyRecord) {
@@ -794,12 +825,20 @@ function refreshDecoratedSession(session: DecoratedSession, persisted?: LegacyRe
   session.allMessagesText = search;
 }
 
-function renderDecoratedRows(list: LegacyRecord, lines: string[], width: number, theme: PiTheme) {
+function visibleSessionRange(list: LegacyRecord) {
   const filtered = list.filteredSessions ?? [];
   const maxVisible = Math.max(1, Number(list.maxVisible ?? 10));
   const selectedIndex = Math.min(Math.max(0, Number(list.selectedIndex ?? 0)), Math.max(0, filtered.length - 1));
   const start = Math.max(0, Math.min(selectedIndex - Math.floor(maxVisible / 2), filtered.length - maxVisible));
-  const visible = filtered.slice(start, Math.min(start + maxVisible, filtered.length));
+
+  return {
+    start,
+    nodes: filtered.slice(start, Math.min(start + maxVisible, filtered.length)),
+  };
+}
+
+function renderDecoratedRows(list: LegacyRecord, lines: string[], width: number, theme: PiTheme) {
+  const { nodes: visible, start } = visibleSessionRange(list);
   const searchLineCount = list.searchInput?.render?.(width)?.length ?? 1;
   const rowOffset = searchLineCount + 1;
   const result = [...lines];
@@ -908,6 +947,10 @@ function originalSession(session: DecoratedSession | undefined) {
 
 function sessionPresentation(session: DecoratedSession | undefined): LegacyRecord | undefined {
   return session?.[SESSION_PRESENTATION];
+}
+
+function recordSessionListDiagnostic(error: unknown) {
+  reportRuntimeDiagnostic("legacy-resume-session-list", error instanceof ResumeSessionListFailed ? error.cause : error);
 }
 
 function recordCompatibilityDiagnostic(error: unknown) {

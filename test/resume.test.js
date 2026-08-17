@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Duration, Effect, Schedule, Stream } from "effect";
-import { deleteRuntimeSession, loadPiCodingAgentPeer, setRuntimeSession } from "../dist/pi-host.js";
+import {
+  deleteRuntimeSession,
+  hostCompatibilityDiagnostics,
+  loadPiCodingAgentPeer,
+  setRuntimeSession,
+} from "../dist/pi-host.js";
+import { clearRuntimeDiagnostics, readRuntimeDiagnostics } from "../dist/diagnostics.js";
 import {
   decorateResumeSelector,
   installResumeBridge,
@@ -12,7 +18,11 @@ import {
   visibleSessionMembership,
 } from "../dist/resume.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
-import { listFastSessionSkeletonsEffect, listSessionSkeletonsEffect } from "../dist/sessions.js";
+import {
+  enrichSessionTreeWindowEffect,
+  listFastSessionSkeletonsEffect,
+  listSessionSkeletonsEffect,
+} from "../dist/sessions.js";
 
 const themeCodes = {
   accent: 35,
@@ -67,6 +77,42 @@ function writeSession(agentName) {
   );
 
   return { dir, file };
+}
+
+function writeSessionTree(sessionCount) {
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-resume-tree-"));
+  const cwd = path.join(dir, "work");
+  const parentId = "019f4444-aaaa-7000-8000-000000000000";
+  const parentPath = path.join(dir, `2026-07-13T20-00-00-000Z_${parentId}.jsonl`);
+  mkdirSync(cwd);
+  writeFileSync(
+    parentPath,
+    `${JSON.stringify({
+      type: "session",
+      version: 3,
+      id: parentId,
+      timestamp: "2026-07-13T20:00:00.000Z",
+      cwd,
+    })}\n`,
+  );
+  const childIds = Array.from({ length: sessionCount - 1 }, (_, index) => {
+    const sequence = index + 1;
+    const childId = `019f4444-bbbb-7000-8000-${String(sequence).padStart(12, "0")}`;
+    writeFileSync(
+      path.join(dir, `2026-07-13T20-00-00-${String(sequence).padStart(3, "0")}Z_${childId}.jsonl`),
+      `${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: childId,
+        timestamp: "2026-07-13T20:00:01.000Z",
+        cwd,
+        parentSession: parentPath,
+      })}\n`,
+    );
+    return childId;
+  });
+
+  return { dir, cwd, parentPath, childIds };
 }
 
 function nativeSelector() {
@@ -199,6 +245,69 @@ test("metadata refresh preserves the active resume search", () => {
   }
 });
 
+test("resume decorator derives threaded rows from session relationships", () => {
+  const { component, list } = nativeSelector();
+  list.sortMode = "threaded";
+  list.nameFilter = "all";
+  list.searchInput.getValue = () => "";
+  const dispose = decorateResumeSelector(component, undefined, testTheme);
+  const parent = {
+    id: "parent",
+    path: "/sessions/parent.jsonl",
+    modified: new Date(1),
+    firstMessage: "Parent",
+    allMessagesText: "Parent",
+  };
+  const child = {
+    id: "child",
+    path: "/sessions/child.jsonl",
+    parentSessionPath: parent.path,
+    modified: new Date(2),
+    firstMessage: "Child",
+    allMessagesText: "Child",
+  };
+  const grandchild = {
+    id: "grandchild",
+    path: "/sessions/grandchild.jsonl",
+    parentSessionPath: child.path,
+    modified: new Date(3),
+    firstMessage: "Grandchild",
+    allMessagesText: "Grandchild",
+  };
+
+  try {
+    list.setSessions([grandchild, parent, child], false);
+
+    assert.deepEqual(
+      list.filteredSessions.map(({ session, depth }) => [session.id, depth]),
+      [
+        ["parent", 0],
+        ["child", 1],
+        ["grandchild", 2],
+      ],
+    );
+    assert.deepEqual(list.filteredSessions[2].ancestorContinues, [false, false]);
+    const output = stripAnsi(list.render(120).join("\n"));
+    assert.match(output, /└─ ○ Child/);
+    assert.match(output, /   └─ ○ Grandchild/);
+
+    list.sortMode = "recent";
+    list.filterSessions("");
+    assert.deepEqual(
+      list.filteredSessions.map(({ depth }) => depth),
+      [0, 0, 0],
+    );
+    list.sortMode = "threaded";
+    list.filterSessions("");
+    assert.deepEqual(
+      list.filteredSessions.map(({ depth }) => depth),
+      [0, 1, 2],
+    );
+  } finally {
+    dispose();
+  }
+});
+
 test("named sessions keep native filtering without warning-colored rows", () => {
   const { dir, file } = writeSession(undefined);
   const { component, list } = nativeSelector();
@@ -281,7 +390,7 @@ test("resume decorator searches agent metadata and updates live timers", async (
   }
 });
 
-test("fast session skeletons preserve native tree metadata", async () => {
+test("bounded session skeleton enrichment preserves native tree metadata", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-session-skeleton-"));
   const parentId = "019f1111-aaaa-7000-8000-000000000001";
   const childId = "019f1111-aaaa-7000-8000-000000000002";
@@ -312,7 +421,8 @@ test("fast session skeletons preserve native tree metadata", async () => {
   }
 
   try {
-    const sessions = await runtime.runPromise(listSessionSkeletonsEffect(dir, dir));
+    const skeletons = await runtime.runPromise(listFastSessionSkeletonsEffect(dir, dir));
+    const sessions = await runtime.runPromise(enrichSessionTreeWindowEffect(skeletons, 2));
     const child = sessions.find((session) => session.id === childId);
 
     assert.equal(sessions.length, 502);
@@ -409,6 +519,7 @@ test("Effect membership streams contain missing and stale visible scopes", async
 
 test("an open resume selector reconciles added and removed sessions without reopening", async () => {
   const { component, list } = nativeSelector();
+  component.currentLoading = true;
   const runtime = createExtensionRuntime();
   const first = {
     id: "019f1111-aaaa-7000-8000-000000000001",
@@ -439,8 +550,10 @@ test("an open resume selector reconciles added and removed sessions without reop
   );
 
   try {
-    list.setSessions([first], false);
     await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(list.allSessions, []);
+    list.setSessions([first], false);
+    component.currentLoading = false;
     membership = [second, first];
     await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -532,6 +645,51 @@ test("resume decorator opens 1000-session lists without synchronous enrichment",
   }
 });
 
+test("resume search refreshes only visible rows across repeated 1000-session navigation", () => {
+  const metadataReads = Array.from({ length: 1_000 }, () => 0);
+  const sessions = Array.from({ length: 1_000 }, (_, index) => ({
+    id: `019f${String(index).padStart(4, "0")}-aaaa-7000-8000-${String(index).padStart(12, "0")}`,
+    path: `session-${index}.jsonl`,
+    cwd: process.cwd(),
+    get modified() {
+      metadataReads[index] += 1;
+      return new Date(index);
+    },
+    messageCount: 1,
+    firstMessage: `Fixture session ${index}`,
+    allMessagesText: `Fixture session ${index}`,
+  }));
+  const { component, list } = nativeSelector();
+  list.render = function renderVisibleSessions() {
+    return [
+      ">",
+      "",
+      ...this.filteredSessions.slice(0, this.maxVisible).map(({ session }) => `  ${session.firstMessage}  1 now`),
+    ];
+  };
+  const dispose = decorateResumeSelector(component, undefined, testTheme);
+
+  try {
+    list.setSessions(sessions, false);
+    metadataReads.fill(0);
+    const query = "Fixture session 999";
+
+    for (let cycle = 0; cycle < 10; cycle++) {
+      for (let length = 1; length <= query.length; length++) {
+        list.filterSessions(query.slice(0, length));
+        list.render(140);
+      }
+    }
+
+    assert.equal(list.filteredSessions.length, 1);
+    assert.ok(metadataReads[0] > 0, "The initially visible row was not refreshed.");
+    assert.ok(metadataReads[999] > 0, "The searched row was not refreshed.");
+    assert.equal(metadataReads[500], 0, "An offscreen row was refreshed during search.");
+  } finally {
+    dispose();
+  }
+});
+
 test("resume decorator rejects an inaccessible native theme", () => {
   const { component } = nativeSelector();
 
@@ -567,6 +725,7 @@ test("resume cache stays complete across child cwd changes and persists native m
   const childCwd = path.join(dir, "child-worktree");
   const missDir = mkdtempSync(path.join(tmpdir(), "pi-gentic-resume-miss-"));
   const agentDir = mkdtempSync(path.join(tmpdir(), "pi-gentic-resume-agent-"));
+  const tree = writeSessionTree(101);
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   mkdirSync(childCwd);
   process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -577,7 +736,7 @@ test("resume cache stays complete across child cwd changes and persists native m
   let loads = 0;
   let rejectNativeList = false;
   SessionManager.listAll = async function countedListAll(...args) {
-    loads++;
+    if (args[0] === dir) loads++;
     if (rejectNativeList) throw new Error("native list unavailable");
     return nativeListAll.apply(this, args);
   };
@@ -585,6 +744,11 @@ test("resume cache stays complete across child cwd changes and persists native m
 
   try {
     await installResumeBridge(runtime);
+    const initialTree = await SessionManager.list(tree.cwd, tree.dir);
+
+    assert.equal(initialTree.length, 101);
+    assert.equal(initialTree.find((session) => session.id === tree.childIds[0])?.parentSessionPath, tree.parentPath);
+
     const first = await SessionManager.list(dir, dir);
     const fromChild = await SessionManager.list(childCwd, dir, () => {});
 
@@ -623,8 +787,16 @@ test("resume cache stays complete across child cwd changes and persists native m
     rmSync(file);
     assert.deepEqual(await SessionManager.list(childCwd, dir), []);
 
+    const compatibilityDiagnostics = hostCompatibilityDiagnostics();
+    clearRuntimeDiagnostics();
     rejectNativeList = true;
     await assert.rejects(SessionManager.list(missDir, missDir), /native list unavailable/);
+
+    assert.deepEqual(hostCompatibilityDiagnostics(), compatibilityDiagnostics);
+    assert.deepEqual(
+      readRuntimeDiagnostics().map(({ scope, message, severity }) => ({ scope, message, severity })),
+      [{ scope: "legacy-resume-session-list", message: "native list unavailable", severity: "debug" }],
+    );
   } finally {
     SessionManager.list = nativeList;
     SessionManager.listAll = nativeListAll;
@@ -632,6 +804,7 @@ test("resume cache stays complete across child cwd changes and persists native m
     rmSync(dir, { recursive: true, force: true });
     rmSync(missDir, { recursive: true, force: true });
     rmSync(agentDir, { recursive: true, force: true });
+    rmSync(tree.dir, { recursive: true, force: true });
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
   }

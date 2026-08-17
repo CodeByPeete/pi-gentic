@@ -725,6 +725,102 @@ def capture_prompt_preflight_switch():
         completion_marker.unlink(missing_ok=True)
 
 
+def capture_session_transition_isolation():
+    reset_output(clear_artifacts=False)
+    provider_extension = OUTPUT / "session-isolation-provider.mjs"
+    request_log = OUTPUT / "session-isolation-requests.jsonl"
+    request_log.unlink(missing_ok=True)
+    provider_extension.write_text(
+        "import { appendFileSync } from 'node:fs';\n"
+        "import { fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';\n"
+        f"const requestLog = {json.dumps(str(request_log))};\n"
+        "const faux = fauxProvider({ provider: 'session-isolation', tokensPerSecond: 4, tokenSize: { min: 1, max: 1 } });\n"
+        "const response = (label, text) => (_context, options) => {\n"
+        "  appendFileSync(requestLog, JSON.stringify({ label, sessionId: options?.sessionId, at: Date.now() }) + '\\n');\n"
+        "  return fauxAssistantMessage(text);\n"
+        "};\n"
+        "faux.setResponses([\n"
+        "  response('background', 'BACKGROUND-SESSION-STREAM-' + 'x'.repeat(200)),\n"
+        "  response('new', 'NEW-SESSION-STREAM-' + 'y'.repeat(80)),\n"
+        "]);\n"
+        "export default function (pi) { pi.registerProvider(faux.provider); }\n",
+        encoding="utf-8",
+    )
+    proc = spawn(
+        [
+            "--extension",
+            str(provider_extension),
+            "--model",
+            "session-isolation/faux-1",
+        ]
+    )
+    try:
+        proc.write("Start the background response.\r")
+        wait_for(
+            "background session streaming",
+            lambda value: "BACKGROUND-SESSION-STREAM" in value,
+            timeout=20,
+        )
+        background_screenshot = render_png(
+            "session-isolation-background-streaming-terminal.png"
+        )
+
+        proc.write("/new\r")
+        time.sleep(0.01)
+        proc.write("This immediate prompt belongs to the new session.\r")
+        wait_for(
+            "new session streaming before background completion",
+            lambda value: "New session started" in value
+            and "NEW-SESSION-STREAM" in value,
+            timeout=10,
+        )
+        requests = [
+            json.loads(line)
+            for line in request_log.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        if [request.get("label") for request in requests] != ["background", "new"]:
+            raise AssertionError(f"Unexpected provider requests: {requests!r}")
+        if not requests[0].get("sessionId") or requests[0]["sessionId"] == requests[1].get("sessionId"):
+            raise AssertionError(f"Prompts were not isolated by session: {requests!r}")
+        if "x" * 200 in screen_text():
+            raise AssertionError("New session prompt waited for the background response to finish")
+        new_session_screenshot = render_png(
+            "session-isolation-new-session-streaming-terminal.png"
+        )
+
+        proc.write("/resume\r")
+        background_short_id = requests[0]["sessionId"][:13]
+        new_short_id = requests[1]["sessionId"][:13]
+        wait_for(
+            "concurrent sessions in resume",
+            lambda value: "Resume Session" in value
+            and background_short_id in value
+            and new_short_id in value,
+            timeout=20,
+        )
+        resume_screenshot = render_png(
+            "session-isolation-concurrent-resume-terminal.png"
+        )
+        evidence = OUTPUT / "session-isolation-check.txt"
+        evidence.write_text(
+            "background_session_id="
+            + requests[0]["sessionId"]
+            + "\nnew_session_id="
+            + requests[1]["sessionId"]
+            + "\nnew_prompt_started_before_background_completed=true\n",
+            encoding="utf-8",
+        )
+        print(background_screenshot)
+        print(new_session_screenshot)
+        print(resume_screenshot)
+        print(evidence)
+    finally:
+        stop(proc)
+        provider_extension.unlink(missing_ok=True)
+        request_log.unlink(missing_ok=True)
+
+
 def capture_resume_1000_sessions():
     reset_output(clear_artifacts=False)
     start = datetime.datetime(2026, 7, 23, tzinfo=datetime.timezone.utc)
@@ -781,6 +877,8 @@ def capture_resume_1000_sessions():
             timeout=10,
         )
         first_render_ms = round((time.monotonic() - started_at) * 1000, 1)
+        if not tree_session_line("019f03e7"):
+            raise AssertionError("The large-session child was flat during the first render")
         loading_text = screen_text()
         loading_screenshot = render_png(
             "resume-1000-sessions-loading-terminal.png"
@@ -901,7 +999,7 @@ def capture_resume_1000_sessions():
         proc.write("/resume\r")
         wait_for(
             "final child resume tree",
-            lambda text: "Resume Session" in text and "Fixture session 999" in text,
+            lambda text: "Resume Session" in text and bool(tree_session_line("Fixture session 999")),
             timeout=5,
         )
         screenshot = render_png("resume-1000-sessions-terminal.png")
@@ -1059,6 +1157,7 @@ def main():
     if "--deterministic" in sys.argv:
         capture_completed_card_answer()
         capture_prompt_preflight_switch()
+        capture_session_transition_isolation()
         if os.environ.get("RUNNER_OS") != "Linux":
             capture_resume_1000_sessions()
         return

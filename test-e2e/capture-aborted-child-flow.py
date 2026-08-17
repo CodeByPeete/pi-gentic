@@ -15,7 +15,8 @@ SESSION_DIR = OUTPUT / "sessions"
 WORK_DIR = OUTPUT / "work"
 RAW_LOG = OUTPUT / "terminal.raw.log"
 PI_BIN = shutil.which("pi")
-PI = [PI_BIN] if PI_BIN else [shutil.which("node") or "node", r"C:\Users\petro\AppData\Local\pi-managed\node_modules\@earendil-works\pi-coding-agent\dist\cli.js"]
+PI_CLI = PACKAGE / "node_modules" / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"
+PI = [PI_BIN] if PI_BIN else [shutil.which("node") or "node", str(PI_CLI)]
 COLS = 150
 ROWS = 46
 

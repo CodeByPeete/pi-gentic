@@ -17,8 +17,8 @@ WORK_DIR = OUTPUT / "work"
 RAW_LOG = OUTPUT / "terminal.raw.log"
 PI = shutil.which("pi")
 if not PI:
-    PI_CLI = r"C:\Users\petro\AppData\Local\pi-managed\node_modules\@earendil-works\pi-coding-agent\dist\cli.js"
-    PI = [shutil.which("node") or "node", PI_CLI]
+    PI_CLI = PACKAGE / "node_modules" / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"
+    PI = [shutil.which("node") or "node", str(PI_CLI)]
 else:
     PI = [PI]
 COLS = 150

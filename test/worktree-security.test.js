@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { prepareWorktree } from "../dist/worktrees.js";
+import { prepareWorktree } from "./support/worktree.js";
 
 function createRepository() {
   const root = mkdtempSync(path.join(tmpdir(), "pi-gentic-worktree-security-"));

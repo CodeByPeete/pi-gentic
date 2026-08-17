@@ -3,15 +3,16 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { buildManualSkillMessage, completeSkill, parseSkillCommand } from "../dist/interface.js";
+import { buildManualSkillMessage, parseSkillCommand } from "../dist/interface/commands.js";
+import { completeSkill } from "../dist/interface/completions.js";
+import { assertCanCreateSubagent } from "../dist/application/agents/state.js";
+import { resolveSessionPolicy } from "../dist/domain/session-policy.js";
 import {
   loadConfiguration,
   normalizeAgentDefinition,
   parseMarkdownDefinition,
-  systemPromptSkillEntries,
-} from "../dist/catalog.js";
-import { loadAvailableSkills } from "../dist/catalog.js";
-import { assertCanCreateSubagent, resolveSessionPolicy } from "../dist/catalog.js";
+} from "../dist/infrastructure/configuration/agents.js";
+import { loadAvailableSkills, systemPromptSkillEntries } from "../dist/infrastructure/configuration/skills.js";
 
 function tempRoot() {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-test-"));

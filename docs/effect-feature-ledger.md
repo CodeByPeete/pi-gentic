@@ -8,7 +8,7 @@ Pi-gentic uses Effect 4. The linked Effect 3 sidebar is the adoption checklist b
 | Error Management | Tagged expected errors, defects, causes, exits, typed fallback, timeout, interruption, and accumulated schema diagnostics preserve every failure channel. |
 | Requirements Management | `Context.Service` contracts and `Layer` composition provide Git, worktree, registry, fiber, filesystem, path, clock, logging, and runtime capabilities. |
 | Resource Management | `Scope`, `Effect.scoped`, acquire/release semantics, and managed fibers own child processes, subscriptions, timers, caches, and runtime disposal. |
-| Observability | Structured Effect logs, spans, redacted attributes, Git metrics, bounded compatibility diagnostics, and runtime snapshots provide local observability without network exporters. |
+| Observability | Structured Effect logs, spans, redacted attributes, Git metrics, bounded Pi host diagnostics, and runtime snapshots provide local observability without network exporters. |
 | Configuration | Pi remains authoritative for settings and trust. Effect Schema decodes the trusted configuration boundary; an Effect `ConfigProvider` becomes appropriate when Pi exposes configuration as an Effect service. |
 | Runtime | One `ManagedRuntime` belongs to each loaded extension host. Session replacement preserves it; quit and reload dispose it. |
 | Scheduling | `Schedule.spaced` drives live repaint cadence without catch-up bursts after event-loop stalls. Effect timeouts bound Git, and retry schedules are restricted to classified transient failures. |
@@ -23,14 +23,12 @@ Pi-gentic uses Effect 4. The linked Effect 3 sidebar is the adoption checklist b
 | Data Types | `Cause`, `Duration`, `Exit`, `HashMap`, `HashSet`, `Option`, `Redacted`, and `Result` model their matching domain values. `BigDecimal` activates when Pi supplies decimal billing data; inventing a parallel cost model is prohibited. |
 | Equal, Hash, Equivalence, Order | Native Pi identity, paths, and session ordering remain authoritative. Effect equality and ordering activate for pi-gentic-owned value objects; applying competing semantics to mutable native host objects is prohibited. |
 | Schema | Boundary decoding, tagged classes and errors, brands, transformations, generated JSON Schema, equivalence, arbitrary values, and formatted diagnostics share one contract. |
-| AI | Pi remains the sole model and provider executor. Effect AI may describe structured planning/results at the adapter, but may never replace or narrow Pi model capabilities. |
+| AI | Pi remains the sole model and provider executor. Effect AI may describe structured planning/results at the Pi host boundary, but may never replace or narrow Pi model capabilities. |
 | Micro | Micro is an alternative runtime rather than an additional layer. Pi-gentic uses full Effect because scopes, layers, streams, cache, metrics, and managed fibers are required. |
 | Platform | Node `FileSystem`, scheduled filesystem membership checks, `Path`, `ChildProcessSpawner`, process streams, and host terminal utilities preserve platform capabilities. Large Pi session summaries run through the exact-version native loader outside the TUI event loop. Key-value persistence remains Pi JSONL, and terminal ownership remains Pi TUI. |
 
-## Source reduction
+## Source organization
 
-The `336a484` baseline contained 10,769 TypeScript source lines. The current implementation contains 9,771, a reduction of 998 lines or 9.3%. Capability parity remains the hard limit on deletion. The count is produced from tracked runtime source with:
+The extension entry is the only TypeScript file directly under `src/`. Domain rules, use cases, host access, commands, cards, and shared helpers each have one explicit home.
 
-```sh
-git ls-files 'src/*.ts' 'src/**/*.ts' | xargs cat | wc -l
-```
+The former flat files were reduced from 2,581 to at most 1,307 lines for delegation, from 1,133 to at most 341 for configuration, from 1,114 to at most 467 for cards, from 761 to at most 466 for sessions, and from 609 to at most 370 for commands and completion. The published entry decreased from 647 to 319 lines. Capability parity remains the hard limit on deletion.

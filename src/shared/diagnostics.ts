@@ -1,6 +1,6 @@
 export type DiagnosticSeverity = "debug" | "warning" | "error";
 
-export type RuntimeDiagnostic = {
+type RuntimeDiagnostic = {
   readonly scope: string;
   readonly message: string;
   readonly severity: DiagnosticSeverity;
@@ -20,10 +20,6 @@ export function reportRuntimeDiagnostic(scope: string, error: unknown, severity:
 
   if (runtimeDiagnostics.length > MAX_DIAGNOSTICS)
     runtimeDiagnostics.splice(0, runtimeDiagnostics.length - MAX_DIAGNOSTICS);
-}
-
-export function clearRuntimeDiagnostics() {
-  runtimeDiagnostics.length = 0;
 }
 
 export function readRuntimeDiagnostics(minimumSeverity: DiagnosticSeverity = "debug") {

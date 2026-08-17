@@ -16,7 +16,7 @@ export class DelegationQueued extends Schema.TaggedClass<DelegationQueued>()("De
   queuedAt: Schema.Finite,
 }) {}
 
-export class DelegationRunning extends Schema.TaggedClass<DelegationRunning>()("DelegationRunning", {
+class DelegationRunning extends Schema.TaggedClass<DelegationRunning>()("DelegationRunning", {
   ...IdentityFields,
   queuedAt: Schema.Finite,
   startedAt: Schema.Finite,

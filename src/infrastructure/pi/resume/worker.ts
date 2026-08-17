@@ -1,6 +1,6 @@
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Schema } from "effect";
-import { enrichSessionSummary } from "../../../sessions.js";
+import { enrichSessionSummary } from "../../../application/sessions/model.js";
 
 const RequestSchema = Schema.Union([
   Schema.Struct({ scope: Schema.Literal("current"), cwd: Schema.String, sessionDir: Schema.optional(Schema.String) }),

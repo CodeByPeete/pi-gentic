@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
@@ -12,10 +12,17 @@ const emailAddress = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const allowedEmailDomains = new Set(["example.com", "users.noreply.github.com"]);
 
 function trackedTextFiles() {
-  const files = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\0").filter(Boolean);
+  const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+    cwd: root,
+    encoding: "utf8",
+  })
+    .split("\0")
+    .filter(Boolean);
 
   return files.flatMap((file) => {
-    const content = readFileSync(path.join(root, file));
+    const absolutePath = path.join(root, file);
+    if (!existsSync(absolutePath)) return [];
+    const content = readFileSync(absolutePath);
 
     return content.includes(0) ? [] : [{ file, content: content.toString("utf8") }];
   });

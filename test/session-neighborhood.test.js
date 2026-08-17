@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { filterSessionNeighborhood, sessionDiscoveryScope } from "../dist/sessions.js";
+import { filterSessionNeighborhood, sessionDiscoveryScope } from "../dist/application/sessions/model.js";
 
 test("session neighborhood keeps the current session when both radii are zero", () => {
   const sessions = [

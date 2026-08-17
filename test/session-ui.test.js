@@ -4,16 +4,14 @@ import { TuiMainScreen } from "@earendil-works/pi-tui";
 import {
   AGENT_WIDGET_KEY,
   LIVE_REFRESH_WIDGET_KEY,
-  clearLiveCardDetails,
-  getLiveCardDetails,
-  renderAgentsResult,
   sessionHasVisibleLiveCard,
   setAgentLabel,
-  setLiveCardDetails,
   showCard,
   startLiveRefresh,
   startSessionLiveCardRefresh,
-} from "../dist/ui.js";
+} from "../dist/interface/cards/live.js";
+import { renderAgentsResult } from "../dist/interface/cards/render.js";
+import { clearLiveCardDetails, getLiveCardDetails, setLiveCardDetails } from "../dist/interface/cards/state.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
 
 const runtime = createExtensionRuntime();
@@ -283,7 +281,7 @@ test("live panel gives every active session one compact detailed row", async () 
       message: "Research redraw behavior",
       startedAt: Date.now() - 4_000,
       updatedAt: Date.now() - 1_000,
-      activities: [{ type: "tool", name: "read", summary: "src/ui.ts" }],
+      activities: [{ type: "tool", name: "read", summary: "src/interface/cards/render.ts" }],
     },
     {
       cardId: "compact-two",
@@ -355,7 +353,10 @@ test("live panel gives every active session one compact detailed row", async () 
     const builderRows = lines.filter((line) => line.includes("builder"));
 
     assert.equal(researcherRows.length, 1);
-    assert.match(researcherRows[0], /\[ASYNC\].*\(019f9c28-97d3\).*\[read\] src\/ui\.ts.*idle.*total/);
+    assert.match(
+      researcherRows[0],
+      /\[ASYNC\].*\(019f9c28-97d3\).*\[read\] src\/interface\/cards\/render\.ts.*idle.*total/,
+    );
     assert.equal(builderRows.length, 1);
     assert.match(builderRows[0], /\[SYNC\].*\(019f9c28-d112\).*Queued: Continue the terminal fix.*idle.*total/);
     assert.equal(lines.filter((line) => line.includes("agent (child-th)")).length, 1);
@@ -454,7 +455,9 @@ test("forty-eight updating sessions coalesce into responsive incremental termina
 
 test("duplicate extension instances keep one shared live panel", async () => {
   const nonce = Date.now();
-  const modules = await Promise.all([1, 2].map((id) => import(`../dist/ui.js?live-panel-${id}=${nonce}`)));
+  const modules = await Promise.all(
+    [1, 2].map((id) => import(`../dist/interface/cards/live.js?live-panel-${id}=${nonce}`)),
+  );
   const calls = [[], []];
   const stops = modules.map(({ startSessionLiveCardRefresh }, index) =>
     startSessionLiveCardRefresh(
@@ -558,7 +561,7 @@ test("live card updates stay in the visible panel without clearing terminal scro
     setLiveCardDetails({
       ...details,
       updatedAt: Date.now(),
-      activities: [{ type: "tool", name: "read", summary: "src/ui.ts" }],
+      activities: [{ type: "tool", name: "read", summary: "src/interface/cards/render.ts" }],
     });
     await new Promise((resolve) => setTimeout(resolve, 140));
 
@@ -567,7 +570,7 @@ test("live card updates stay in the visible panel without clearing terminal scro
       writes.some((value) => value.includes("\x1b[3J")),
       false,
     );
-    assert.match(writes.join(""), /\[read\].*src\/ui\.ts/);
+    assert.match(writes.join(""), /\[read\].*src\/interface\/cards\/render\.ts/);
 
     writes.length = 0;
     await new Promise((resolve) => setTimeout(resolve, 1_100));

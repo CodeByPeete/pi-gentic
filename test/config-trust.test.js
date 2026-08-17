@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { loadConfiguration, loadPiSettings } from "../dist/catalog.js";
+import { loadConfiguration, loadPiSettings } from "../dist/infrastructure/configuration/agents.js";
 
 function createFixture() {
   const root = mkdtempSync(path.join(tmpdir(), "pi-gentic-trust-"));

@@ -1,12 +1,63 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber } from "effect";
 import {
+  activeDelegationMap,
   awaitJoinedDelegations,
+  createDelegationId,
+  getActiveDelegation,
   listActiveDelegations,
   registerActiveDelegation,
+  settleActiveDelegation,
 } from "../src/infrastructure/runtime/DelegationRegistry.js";
 
 describe("DelegationRegistry", () => {
+  it.effect("exposes one stable identity and idempotent settlement", () =>
+    Effect.gen(function* () {
+      const id = createDelegationId();
+      const registration = registerActiveDelegation({
+        id,
+        callerSessionId: "registry-caller",
+        targetSessionId: "registry-target",
+        completionMode: "detached",
+        isCancellable: () => true,
+      });
+
+      assert.match(id, /^delegation:[0-9a-f-]{36}$/);
+      assert.strictEqual(getActiveDelegation(id)?.id, id);
+      assert.isTrue(activeDelegationMap().has(id));
+      assert.isTrue(getActiveDelegation(id)?.isCancellable?.());
+      assert.isFalse(settleActiveDelegation("delegation:00000000-0000-0000-0000-000000000000"));
+      assert.isTrue(settleActiveDelegation(id));
+      assert.isFalse(registration.unregister());
+      assert.isUndefined(getActiveDelegation(id));
+      assert.isUndefined(getActiveDelegation(""));
+      assert.strictEqual(yield* awaitJoinedDelegations(id), 0);
+    }),
+  );
+
+  it("rejects a duplicate active identity without replacing the first registration", () => {
+    const first = registerActiveDelegation({
+      id: "duplicate-registry-id",
+      callerSessionId: "duplicate-caller",
+      completionMode: "detached",
+    });
+
+    try {
+      assert.throws(
+        () =>
+          registerActiveDelegation({
+            id: "duplicate-registry-id",
+            callerSessionId: "replacement-caller",
+            completionMode: "detached",
+          }),
+        /already registered/i,
+      );
+      assert.strictEqual(getActiveDelegation(first.id)?.callerSessionId, "duplicate-caller");
+    } finally {
+      first.unregister();
+    }
+  });
+
   it.effect("joins every requested delegation while detached work remains independent", () =>
     Effect.gen(function* () {
       const parent = registerActiveDelegation({

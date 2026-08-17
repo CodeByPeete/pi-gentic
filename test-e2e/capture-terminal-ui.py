@@ -48,6 +48,7 @@ screen = TerminalScreen(COLS, ROWS)
 stream = pyte.ByteStream(screen)
 raw_chunks = []
 stop_reader = False
+screen_lock = threading.Lock()
 
 
 def write_test_agents(root):
@@ -115,11 +116,19 @@ def reader(proc):
             time.sleep(0.02)
             continue
         raw_chunks.append(data)
-        stream.feed(data.encode("utf-8", errors="replace"))
+        with screen_lock:
+            stream.feed(data.encode("utf-8", errors="replace"))
+
+
+def terminal_snapshot():
+    with screen_lock:
+        text = "\n".join(screen.display)
+        buffer = [(y, dict(line)) for y, line in screen.buffer.items()]
+    return text, buffer
 
 
 def screen_text():
-    return "\n".join(screen.display)
+    return terminal_snapshot()[0]
 
 
 def wait_for(label, predicate, timeout=60):
@@ -149,7 +158,16 @@ def color(name):
     return palette.get(str(name), palette["default"])
 
 
-def render_png(name):
+def render_png(name, predicate=None, timeout=10):
+    deadline = time.time() + timeout
+    while True:
+        text_snapshot, buffer_snapshot = terminal_snapshot()
+        if predicate is None or predicate(text_snapshot):
+            break
+        if time.time() >= deadline:
+            raise TimeoutError(f"Timed out capturing stable screen for {name}\n--- screen ---\n{text_snapshot}")
+        time.sleep(0.02)
+
     font_candidates = [
         os.environ.get("PI_E2E_FONT"),
         "C:/Windows/Fonts/consola.ttf",
@@ -165,7 +183,7 @@ def render_png(name):
     margin = 8
     image = Image.new("RGB", (COLS * cell_w + margin * 2, ROWS * cell_h + margin * 2), (9, 9, 11))
     draw = ImageDraw.Draw(image)
-    for y, line in enumerate(list(screen.buffer.values())):
+    for y, line in buffer_snapshot:
         for x, char in line.items():
             text = char.data or " "
             fg = color(char.fg)
@@ -176,7 +194,7 @@ def render_png(name):
             draw.text((margin + x * cell_w, margin + y * cell_h), text, font=font, fill=fg)
     path = OUTPUT / name
     image.save(path)
-    (OUTPUT / f"{pathlib.Path(name).stem}.txt").write_text(screen_text(), encoding="utf-8")
+    (OUTPUT / f"{pathlib.Path(name).stem}.txt").write_text(text_snapshot, encoding="utf-8")
     return path
 
 
@@ -743,7 +761,12 @@ def capture_session_transition_isolation():
         "  response('background', 'BACKGROUND-SESSION-STREAM-' + 'x'.repeat(200)),\n"
         "  response('new', 'NEW-SESSION-STREAM-' + 'y'.repeat(80)),\n"
         "]);\n"
-        "export default function (pi) { pi.registerProvider(faux.provider); }\n",
+        "export default function (pi) {\n"
+        "  pi.registerProvider(faux.provider);\n"
+        "  pi.on('session_start', async (event) => {\n"
+        "    if (event.reason === 'new') await new Promise((resolve) => setTimeout(resolve, 1500));\n"
+        "  });\n"
+        "}\n",
         encoding="utf-8",
     )
     proc = spawn(
@@ -768,6 +791,17 @@ def capture_session_transition_isolation():
         proc.write("/new\r")
         time.sleep(0.01)
         proc.write("This immediate prompt belongs to the new session.\r")
+        wait_for(
+            "queued prompt visible during new session startup",
+            lambda value: "1 message queued for new session" in value
+            and "This immediate prompt belongs to the new session." in value,
+            timeout=10,
+        )
+        queued_screenshot = render_png(
+            "session-isolation-queued-for-new-session-terminal.png",
+            lambda value: "1 message queued for new session" in value
+            and "This immediate prompt belongs to the new session." in value,
+        )
         wait_for(
             "new session streaming before background completion",
             lambda value: "New session started" in value
@@ -808,10 +842,12 @@ def capture_session_transition_isolation():
             + requests[0]["sessionId"]
             + "\nnew_session_id="
             + requests[1]["sessionId"]
+            + "\nqueued_prompt_visible_before_new_session_ready=true"
             + "\nnew_prompt_started_before_background_completed=true\n",
             encoding="utf-8",
         )
         print(background_screenshot)
+        print(queued_screenshot)
         print(new_session_screenshot)
         print(resume_screenshot)
         print(evidence)

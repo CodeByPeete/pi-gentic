@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { completeSend, isCompletingSendSession } from "../dist/interface.js";
-import { persistAgentCardState } from "../dist/orchestration.js";
+import { completeSend, isCompletingSendSession } from "../dist/interface/completions.js";
+import { persistAgentCardState } from "../dist/application/delegation/delivery.js";
 
 test("send flag completion preserves message text before the completed flag", () => {
   const [completion] = completeSend("please review the patch --a");

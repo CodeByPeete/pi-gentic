@@ -6,23 +6,22 @@ import test from "node:test";
 import { Duration, Effect, Schedule, Stream } from "effect";
 import {
   deleteRuntimeSession,
-  hostCompatibilityDiagnostics,
+  piHostDiagnostics,
   loadPiCodingAgentPeer,
   setRuntimeSession,
-} from "../dist/pi-host.js";
-import { clearRuntimeDiagnostics, readRuntimeDiagnostics } from "../dist/diagnostics.js";
+} from "../dist/infrastructure/pi/host.js";
+import { readRuntimeDiagnostics } from "../dist/shared/diagnostics.js";
 import {
   decorateResumeSelector,
-  installResumeBridge,
+  installResumeIntegration,
   loadSessionListIsolated,
   visibleSessionMembership,
-} from "../dist/resume.js";
+} from "../dist/infrastructure/pi/resume/index.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
 import {
   enrichSessionTreeWindowEffect,
   listFastSessionSkeletonsEffect,
-  listSessionSkeletonsEffect,
-} from "../dist/sessions.js";
+} from "../dist/application/sessions/directory.js";
 
 const themeCodes = {
   accent: 35,
@@ -743,7 +742,7 @@ test("resume cache stays complete across child cwd changes and persists native m
   const runtime = createExtensionRuntime();
 
   try {
-    await installResumeBridge(runtime);
+    await installResumeIntegration(runtime);
     const initialTree = await SessionManager.list(tree.cwd, tree.dir);
 
     assert.equal(initialTree.length, 101);
@@ -787,15 +786,17 @@ test("resume cache stays complete across child cwd changes and persists native m
     rmSync(file);
     assert.deepEqual(await SessionManager.list(childCwd, dir), []);
 
-    const compatibilityDiagnostics = hostCompatibilityDiagnostics();
-    clearRuntimeDiagnostics();
+    const hostDiagnostics = piHostDiagnostics();
+    const diagnosticCount = readRuntimeDiagnostics().length;
     rejectNativeList = true;
     await assert.rejects(SessionManager.list(missDir, missDir), /native list unavailable/);
 
-    assert.deepEqual(hostCompatibilityDiagnostics(), compatibilityDiagnostics);
+    assert.deepEqual(piHostDiagnostics(), hostDiagnostics);
     assert.deepEqual(
-      readRuntimeDiagnostics().map(({ scope, message, severity }) => ({ scope, message, severity })),
-      [{ scope: "legacy-resume-session-list", message: "native list unavailable", severity: "debug" }],
+      readRuntimeDiagnostics()
+        .slice(diagnosticCount)
+        .map(({ scope, message, severity }) => ({ scope, message, severity })),
+      [{ scope: "pi-host-resume-session-list", message: "native list unavailable", severity: "debug" }],
     );
   } finally {
     SessionManager.list = nativeList;
@@ -810,19 +811,19 @@ test("resume cache stays complete across child cwd changes and persists native m
   }
 });
 
-test("resume bridge decorates the native selector without replacing its host", async () => {
+test("resume integration decorates the native selector without replacing its host", async () => {
   const peer = await loadPiCodingAgentPeer();
   const runtime = createExtensionRuntime();
-  await installResumeBridge(runtime);
-  const bridge = globalThis[Symbol.for("pi-gentic.resume-bridge")];
-  const originalSelector = bridge.originalShowSessionSelector;
+  await installResumeIntegration(runtime);
+  const integration = globalThis[Symbol.for("pi-gentic.resume-integration")];
+  const originalSelector = integration.originalShowSessionSelector;
   const { component, list } = nativeSelector();
   let disposed = 0;
   component.dispose = () => disposed++;
   let hostCalls = 0;
   let hostDone = 0;
   let finish;
-  bridge.originalShowSessionSelector = function () {
+  integration.originalShowSessionSelector = function () {
     hostCalls += 1;
     return this.showSelector((done) => {
       finish = done;
@@ -846,7 +847,7 @@ test("resume bridge decorates the native selector without replacing its host", a
     assert.equal(hostCalls, 1);
     assert.equal(typeof mode.showSelector, "function");
   } finally {
-    bridge.originalShowSessionSelector = originalSelector;
+    integration.originalShowSessionSelector = originalSelector;
     await runtime.dispose();
   }
 });

@@ -88,28 +88,28 @@ export const AgentsToolParametersSchema = Schema.Union([
 
 type DecodedAgentsToolInput = typeof AgentsToolParametersSchema.Type;
 
-export class ListAgentsAction extends Schema.TaggedClass<ListAgentsAction>()("ListAgentsAction", {}) {}
+class ListAgentsAction extends Schema.TaggedClass<ListAgentsAction>()("ListAgentsAction", {}) {}
 
-export class GetAgentsAction extends Schema.TaggedClass<GetAgentsAction>()("GetAgentsAction", {
+class GetAgentsAction extends Schema.TaggedClass<GetAgentsAction>()("GetAgentsAction", {
   agent: Schema.String,
 }) {}
 
-export class StatusAgentsAction extends Schema.TaggedClass<StatusAgentsAction>()("StatusAgentsAction", {
+class StatusAgentsAction extends Schema.TaggedClass<StatusAgentsAction>()("StatusAgentsAction", {
   sessionId: Schema.String,
 }) {}
 
-export class LoadAgentsAction extends Schema.TaggedClass<LoadAgentsAction>()("LoadAgentsAction", {
+class LoadAgentsAction extends Schema.TaggedClass<LoadAgentsAction>()("LoadAgentsAction", {
   agent: Schema.String,
   overrides: Schema.optionalKey(Overrides),
 }) {}
 
-export class SendAgentsAction extends Schema.TaggedClass<SendAgentsAction>()("SendAgentsAction", SendFields) {}
+class SendAgentsAction extends Schema.TaggedClass<SendAgentsAction>()("SendAgentsAction", SendFields) {}
 
-export class AbortAgentsAction extends Schema.TaggedClass<AbortAgentsAction>()("AbortAgentsAction", {
+class AbortAgentsAction extends Schema.TaggedClass<AbortAgentsAction>()("AbortAgentsAction", {
   sessionId: Schema.optionalKey(Schema.String),
 }) {}
 
-export class DiscoverSessionsAction extends Schema.TaggedClass<DiscoverSessionsAction>()("DiscoverSessionsAction", {
+class DiscoverSessionsAction extends Schema.TaggedClass<DiscoverSessionsAction>()("DiscoverSessionsAction", {
   rx: Schema.optionalKey(Schema.Finite),
   ry: Schema.optionalKey(Schema.Finite),
 }) {}

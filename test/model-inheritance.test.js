@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyInheritedModel, inheritedModelForPolicy } from "../dist/pi-host.js";
+import { applyInheritedModel, inheritedModelForPolicy } from "../dist/infrastructure/pi/host.js";
 
 test("agentless child sessions inherit the active model when policy has no model", () => {
   assert.deepEqual(inheritedModelForPolicy({}, { provider: "openai-codex", id: "gpt-5.4-mini" }), {

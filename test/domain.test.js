@@ -1,22 +1,27 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  applyFilterList,
-  buildReceiptText,
-  buildReturnText,
-  chooseBoolean,
-  coalesce,
-  defaultAgentDir,
+  delegationReceipt as buildReceiptText,
+  delegationReturn as buildReturnText,
+} from "../dist/application/delegation/messages.js";
+import { applyFilterList, mergeFilterLayers } from "../dist/domain/session-policy.js";
+import { defaultAgentDir } from "../dist/infrastructure/configuration/agents.js";
+import {
+  booleanOr as chooseBoolean,
+  errorMessage as getErrorMessage,
   formatDuration,
-  getErrorMessage,
   isRecord,
-  mergeFilterLayers,
-  parseIntegerRadius,
+  nonNegativeInteger as parseIntegerRadius,
   shortestUniqueSessionId,
   shortSessionId,
-  toStringArray,
-} from "../dist/catalog.js";
-import { normalizeToolInput, parseAgentCommand, parseSendCommand, tokenizeCommandLine } from "../dist/interface.js";
+  stringList as toStringArray,
+} from "../dist/shared/value.js";
+import {
+  normalizeToolInput,
+  parseAgentCommand,
+  parseSendCommand,
+  tokenizeCommandLine,
+} from "../dist/interface/commands.js";
 
 const names = ["read", "write", "bash", "agents", "ask_question", "reviewer"];
 
@@ -199,7 +204,7 @@ test("the agent directory honors its environment override and native default", (
   }
 });
 
-test("catalog scalar helpers normalize every supported boundary shape", () => {
+test("shared scalar helpers normalize every supported boundary shape", () => {
   assert.deepEqual(toStringArray(["read", 1, "write"]), ["read", "write"]);
   assert.deepEqual(toStringArray("read, write, "), ["read", "write"]);
   assert.equal(toStringArray(42), undefined);
@@ -207,8 +212,6 @@ test("catalog scalar helpers normalize every supported boundary shape", () => {
   assert.equal(getErrorMessage("failed"), "failed");
   assert.equal(chooseBoolean(false, true), false);
   assert.equal(chooseBoolean("false", true), true);
-  assert.equal(coalesce(undefined, "fallback"), "fallback");
-  assert.equal(coalesce("value", "fallback"), "value");
 });
 
 test("filter layers preserve omission, ignore malformed layers, and honor denial", () => {

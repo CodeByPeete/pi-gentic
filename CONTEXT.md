@@ -60,6 +60,10 @@ _Avoid_: Fire-and-forget task, orphaned call
 A live Pi execution environment attached to one persisted Session identity.
 _Avoid_: Host, instance
 
+**Session Transition**:
+One visible change to a new, resumed, forked, cloned, or imported Session. Input accepted while its destination opens stays attached to that transition until the destination is ready, cancelled, or failed.
+_Avoid_: Global input wait, background completion wait
+
 **Runtime Lease**:
 A scoped right to use a Session Runtime while Delegation or presentation work owns it.
 _Avoid_: Reference, registration
@@ -77,5 +81,5 @@ Observable progress emitted by a Target Session during a Delegation Run.
 _Avoid_: Event, log
 
 **Host Capability**:
-A versioned public Pi operation required to preserve pi-gentic behavior.
-_Avoid_: Private hook, compatibility patch
+An operation from the currently installed Pi host required to preserve pi-gentic behavior. Private capabilities stay contained in the direct Pi integration.
+_Avoid_: Version adapter, migration path, scattered private hook

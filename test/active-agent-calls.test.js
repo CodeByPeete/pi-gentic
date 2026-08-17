@@ -7,7 +7,7 @@ import {
   handleInteractiveEscape,
   hasAgentCallsForSession,
   registerAgentCall,
-} from "../dist/pi-host.js";
+} from "../dist/infrastructure/pi/host.js";
 
 test("aborting a session aborts targeted agent calls recursively", async () => {
   const aborted = [];

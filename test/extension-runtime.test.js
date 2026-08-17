@@ -5,8 +5,8 @@ import path from "node:path";
 import test from "node:test";
 import { validateToolCall } from "@earendil-works/pi-ai";
 import piGentic from "../dist/extension.js";
-import { reportRuntimeDiagnostic } from "../dist/diagnostics.js";
-import { deleteRuntimeSession, loadPiCodingAgentPeer, setRuntimeSession } from "../dist/pi-host.js";
+import { reportRuntimeDiagnostic } from "../dist/shared/diagnostics.js";
+import { deleteRuntimeSession, loadPiCodingAgentPeer, setRuntimeSession } from "../dist/infrastructure/pi/host.js";
 
 const theme = {
   bold: (text) => text,

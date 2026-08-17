@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { renderAgentsCall, renderAgentsResult } from "../dist/interface/cards/render.js";
 import {
   CARD_STATE_ENTRY_TYPE,
   clearLiveCardDetails,
-  renderAgentsCall,
-  renderAgentsResult,
   restorePersistedCardDetails,
   setLiveCardDetails,
-} from "../dist/ui.js";
+} from "../dist/interface/cards/state.js";
 
 const theme = {
   bold: (text) => `\x1b[1m${text}\x1b[22m`,
@@ -15,30 +14,8 @@ const theme = {
   fg: (_name, text) => text,
 };
 
-function sessions(count) {
-  return Array.from({ length: count }, (_, index) => ({
-    sessionId: `session-${String(index + 1).padStart(2, "0")}`,
-    agentName: "builder",
-    lastMessage: `Session ${index + 1}`,
-    depth: index % 3 === 0 ? 0 : 1,
-    inactiveMs: index * 1_000,
-    running: true,
-  }));
-}
-
 function text(lines) {
   return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-}
-
-function visibleWidth(text) {
-  const clean = String(text)
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
-
-  return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(clean)].reduce((width, { segment }) => {
-    if (/\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(segment)) return width + 2;
-    return width + 1;
-  }, 0);
 }
 
 function terminalTextWidth(text) {

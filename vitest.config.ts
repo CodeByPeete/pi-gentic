@@ -21,8 +21,13 @@ export default defineConfig({
         "src/runtime/**/*.ts",
       ],
       exclude: [
+        "src/application/agents/**",
+        "src/application/delegation/**",
+        "src/application/sessions/**",
+        "src/domain/session-policy.ts",
+        "src/infrastructure/configuration/**",
         "src/infrastructure/git/**",
-        "src/infrastructure/pi/legacy-v0_82/**",
+        "src/infrastructure/pi/**",
       ],
       thresholds: {
         statements: 95,

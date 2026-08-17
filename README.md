@@ -14,6 +14,8 @@ You
 
 Each session keeps its own conversation history. The main session can send work, continue immediately, and receive the result later.
 
+When a session change starts while another session is answering, the earlier answer continues in its original session. Input entered while the destination opens is shown as queued, then passed through Pi's normal input handling when that destination is ready. A cancelled or failed session change restores unsent input to the editor.
+
 ## Requirements
 
 This release requires:
@@ -22,7 +24,7 @@ This release requires:
 - Node.js `22.19.0` or newer
 - Git when you want delegated sessions to use separate work folders
 
-Pi-gentic checks the installed Pi version when it starts. It shows a compatibility error if the version or a required Pi feature does not match.
+Pi-gentic targets the current Pi release directly. Its Pi packages are pinned together and updated in place when Pi releases a new version. Startup reports an error when the installed host is missing a required capability.
 
 > Pi packages can run commands and access files. Review third-party packages before installing them.
 
@@ -459,13 +461,13 @@ flowchart TD
     Coordinator --> Worktrees[Worktree manager]
     Worktrees --> Git[Git]
     Sessions --> UI[Pi terminal interface]
-    Boundary --> Adapter[Version-pinned Pi adapter]
-    Adapter --> Pi
+    Boundary --> Host[Current Pi host integration]
+    Host --> Pi
 ```
 
 One managed runtime belongs to the loaded extension. It owns background work, live updates, timers, process streams, and cleanup. Unknown data from Pi, processes, configuration, and saved cards is checked at its boundary. Long-running cards keep the latest 100 activities and the exact number of hidden activities.
 
-The remaining private Pi integration is kept in one version-pinned adapter and guarded by compatibility tests. See the [host-contract decision](docs/adr/0002-pi-host-contract.md) and [Effect feature ledger](docs/effect-feature-ledger.md) for the detailed design record.
+The Pi host integration lives directly in `src/infrastructure/pi/`. It targets the installed current Pi release, with no older-version branches or migration layer. See the [host-contract decision](docs/adr/0002-pi-host-contract.md) and [Effect feature ledger](docs/effect-feature-ledger.md) for the detailed design record.
 
 ### Development
 
@@ -479,9 +481,12 @@ The installation prepares the local Effect source used by the stricter checks. C
 
 ```bash
 npm run check
+npm run lint
+npm run check:dead-code
 npm run test:integration
-npm run test:compat
+npm run test:host
 npm run test:coverage
+npm run test:coverage:host
 npm run test:coverage:effect
 npm run test:ui
 npm run test:e2e
@@ -514,7 +519,14 @@ pi-gentic/
 ├─ .github/workflows/   checks and npm publishing
 ├─ docs/                design records and README images
 ├─ scripts/             repeatable setup helpers
-├─ src/                 extension source
+├─ src/
+│  ├─ extension.ts      published Pi entry
+│  ├─ domain/           rules and validated domain values
+│  ├─ application/      agent, delegation, session, and worktree use cases
+│  ├─ infrastructure/   configuration, Git, processes, runtimes, and Pi integration
+│  ├─ interface/        commands, completions, cards, and terminal presentation
+│  ├─ runtime/          managed Effect runtime composition
+│  └─ shared/           small dependency-free helpers
 ├─ test/                main automated checks
 ├─ test-effect/         Effect-focused checks
 ├─ test-ui/             terminal component captures

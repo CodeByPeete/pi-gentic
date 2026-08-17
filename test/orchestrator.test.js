@@ -4,25 +4,27 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { applyFilterList } from "../dist/catalog.js";
-import { availableAgentLines, filterSkillPrompt } from "../dist/catalog.js";
+import { availableAgentLines } from "../dist/application/agents/prompt.js";
 import {
-  abortActor,
-  branchForkBeforeDelegation,
   collectSessionActivities,
   createSessionActivityMonitor,
+  formatSessionStatus,
+  lastRuntimeActivities,
+  sessionRunOutcome,
+  sessionStatus,
+} from "../dist/application/delegation/activity.js";
+import {
+  abortActor,
   contextStillActive,
   deliverCardToCaller,
   deliverReturnToCaller,
   deliverSendContextToCaller,
   deliverToLiveCaller,
-  lastRuntimeActivities,
-  persistReturnForCaller,
-  persistAgentCardState,
-} from "../dist/orchestration.js";
-import {
   isTargetSlashCommand,
+  persistAgentCardState,
+  persistReturnForCaller,
   prepareTargetPromptForSend,
+  promptSessionAndWaitForTurnEnd,
   resolveReturnDelivery,
   sendConfirmationText,
   sendPendingText,
@@ -30,16 +32,19 @@ import {
   sendUserMessageOptions,
   shouldDeferSendCompletion,
   slashCommandDeliveryText,
-  promptSessionAndWaitForTurnEnd,
-} from "../dist/orchestration.js";
-import { sessionRunOutcome } from "../dist/orchestration.js";
-import { formatSessionStatus, sessionStatus } from "../dist/orchestration.js";
-import { assertAvailableAgent, filterAvailableAgents } from "../dist/catalog.js";
-import { resolveSessionPolicy } from "../dist/catalog.js";
-import { PiGenticOrchestrator, prepareWorktree } from "../dist/orchestration.js";
-import { deleteRuntimeSession, loadPiCodingAgentPeer, registerAgentCall, setRuntimeSession } from "../dist/pi-host.js";
+} from "../dist/application/delegation/delivery.js";
+import { branchForkBeforeDelegation, PiGenticOrchestrator } from "../dist/application/delegation/orchestrator.js";
+import { assertAvailableAgent, filterAvailableAgents } from "../dist/application/agents/state.js";
+import { resolveSessionPolicy } from "../dist/domain/session-policy.js";
+import { prepareWorktree } from "./support/worktree.js";
+import {
+  deleteRuntimeSession,
+  loadPiCodingAgentPeer,
+  registerAgentCall,
+  setRuntimeSession,
+} from "../dist/infrastructure/pi/host.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
-import { clearLiveCardDetails, getLiveCardDetails } from "../dist/ui.js";
+import { clearLiveCardDetails, getLiveCardDetails } from "../dist/interface/cards/state.js";
 
 const effectRuntime = createExtensionRuntime();
 test.after(() => effectRuntime.dispose());
@@ -56,19 +61,6 @@ function createGitRepo(prefix = path.join(tmpdir(), "pi-gentic-worktree-repo-"))
   });
 
   return repo;
-}
-
-function callerContext(sessionId) {
-  return {
-    cwd: process.cwd(),
-    isIdle: () => true,
-    sessionManager: {
-      appendCustomEntry() {},
-      getEntries: () => [],
-      getSessionFile: () => `${sessionId}.jsonl`,
-      getSessionId: () => sessionId,
-    },
-  };
 }
 
 test("terminal card persistence validates snapshots and copies activities", () => {
@@ -256,7 +248,7 @@ test("prompt skill content stays native while agent descriptions remain policy-s
     "  </skill>",
     "</available_skills>",
   ].join("\n");
-  const prompt = `${filterSkillPrompt(basePrompt, [], ["tdd"])}\n${availableAgentLines(
+  const prompt = `${basePrompt}\n${availableAgentLines(
     [
       { name: "researcher", description: "Finds reliable context" },
       { name: "builder", description: "Builds patches" },

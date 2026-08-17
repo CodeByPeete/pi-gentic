@@ -6,16 +6,18 @@ import { test } from "node:test";
 import {
   assertDifferentSession,
   assertSessionMessagingScope,
-  buildSessionTree,
   enrichSessionSummaries,
   orderSessionTree,
   resolveSessionReference,
-  sessionCompletionScope,
   summarizeSession,
   treeSwitchPath,
+} from "../dist/application/sessions/model.js";
+import {
+  buildSessionTree,
+  sessionCompletionScope,
   withRuntimeState,
-} from "../dist/sessions.js";
-import { deleteRuntimeSession, setRuntimeSession } from "../dist/pi-host.js";
+} from "../dist/application/sessions/runtime-view.js";
+import { deleteRuntimeSession, setRuntimeSession } from "../dist/infrastructure/pi/host.js";
 
 const sessions = [
   { id: "12345678-aaaa", path: "/tmp/one.jsonl", firstMessage: "one" },

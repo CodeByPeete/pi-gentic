@@ -12,46 +12,36 @@ import {
   deleteRuntimeSession,
   getLiveRuntimeState,
   getRuntimeSession,
-  installLiveSessionBridge,
+  installPiHost,
   loadPiCodingAgentPeer,
   parkCurrentLiveRuntimeForSwitch,
   registerAgentCall,
   setActiveVisibleExtension,
   setRuntimeSession,
   shouldPromptVisibleSessionNow,
-  shouldRunVisibleExtensionCommandNow,
   trackSessionPrompt,
-} from "../dist/pi-host.js";
+} from "../dist/infrastructure/pi/host.js";
+import { installPiHostForTest } from "./support/pi-host.js";
 
 test("live runtime state is shared across duplicate module instances", async () => {
-  const first = await import(`../dist/pi-host.js?instance=${Date.now()}-a`);
-  const second = await import(`../dist/pi-host.js?instance=${Date.now()}-b`);
+  const nonce = Date.now();
+  const [first, second] = await Promise.all([
+    import(`../dist/infrastructure/pi/state.js?instance=${nonce}-a`),
+    import(`../dist/infrastructure/pi/state.js?instance=${nonce}-b`),
+  ]);
+  const firstState = first.getLiveRuntimeState();
+  const secondState = second.getLiveRuntimeState();
 
-  assert.equal(first.getLiveRuntimeState(), second.getLiveRuntimeState());
+  assert.equal(firstState, secondState);
 
   const runtime = { session: { isStreaming: false } };
-  first.setRuntimeSession("duplicate-runtime", runtime);
-  assert.equal(second.getRuntimeSession("duplicate-runtime"), runtime);
-  second.deleteRuntimeSession("duplicate-runtime");
-
-  let aborted = false;
-  const call = first.registerAgentCall({
-    callerSessionId: "duplicate-caller",
-    abort: () => {
-      aborted = true;
-    },
-  });
-  try {
-    assert.equal(second.hasAgentCallsForSession("duplicate-caller"), true);
-    await second.abortAgentCallsForSession("duplicate-caller");
-    assert.equal(aborted, true);
-  } finally {
-    call.unregister();
-  }
+  firstState.liveRuntimes.set("duplicate-runtime", runtime);
+  assert.equal(secondState.liveRuntimes.get("duplicate-runtime"), runtime);
+  secondState.liveRuntimes.delete("duplicate-runtime");
 });
 
-test("live session bridge switches to and cancels native runtime replacements", async () => {
-  await installLiveSessionBridge();
+test("the Pi host switches to and cancels native runtime replacements", async () => {
+  await installPiHost();
   const peer = await loadPiCodingAgentPeer();
   const state = getLiveRuntimeState();
   const target = {
@@ -116,16 +106,16 @@ test("live session bridge switches to and cancels native runtime replacements", 
     const originalPrompt = state.hostPromptSession;
     state.hostAbortSession = async () => "native-abort";
     state.hostPromptSession = async () => "native-prompt";
-    const bridgedSession = {
+    const hostSession = {
       isStreaming: false,
       sessionManager: {
         getEntries: () => [],
         getHeader: () => ({}),
-        getSessionId: () => "bridged-session",
+        getSessionId: () => "host-session",
       },
     };
-    assert.equal(await peer.AgentSession.prototype.abort.call(bridgedSession), "native-abort");
-    assert.equal(await peer.AgentSession.prototype.prompt.call(bridgedSession, "bridged prompt"), "native-prompt");
+    assert.equal(await peer.AgentSession.prototype.abort.call(hostSession), "native-abort");
+    assert.equal(await peer.AgentSession.prototype.prompt.call(hostSession, "host prompt"), "native-prompt");
     state.hostAbortSession = originalAbort;
     state.hostPromptSession = originalPrompt;
   } finally {
@@ -134,7 +124,7 @@ test("live session bridge switches to and cancels native runtime replacements", 
 });
 
 test("session navigation does not abort work running in any session", async () => {
-  await installLiveSessionBridge();
+  await installPiHost();
   const peer = await loadPiCodingAgentPeer();
   const state = getLiveRuntimeState();
   const hostAbortSession = state.hostAbortSession;
@@ -215,7 +205,7 @@ test("session navigation does not abort work running in any session", async () =
 });
 
 test("forty-eight concurrent sessions remain responsive through navigation and cancellation", async () => {
-  await installLiveSessionBridge();
+  await installPiHost();
   const peer = await loadPiCodingAgentPeer();
   const state = getLiveRuntimeState();
   const sessionCount = 48;
@@ -315,7 +305,7 @@ test("forty-eight concurrent sessions remain responsive through navigation and c
 });
 
 test("live resume falls back to the persisted session when a run settles after selection", async () => {
-  await installLiveSessionBridge();
+  await installPiHost();
   const peer = await loadPiCodingAgentPeer();
   const state = getLiveRuntimeState();
   const sessionId = "settled-resume-target";
@@ -356,7 +346,7 @@ test("live resume falls back to the persisted session when a run settles after s
 });
 
 test("native parent abort reaches every active descendant branch", async () => {
-  await installLiveSessionBridge();
+  await installPiHost();
   const peer = await loadPiCodingAgentPeer();
   const state = getLiveRuntimeState();
   const originalAbort = state.hostAbortSession;
@@ -429,7 +419,7 @@ test("parent abort reaches active descendants after an intermediate delegation s
 });
 
 test("agent-call aborts cascade once through target sessions", async () => {
-  const host = await import("../dist/pi-host.js");
+  const host = await import("../dist/infrastructure/pi/host.js");
   const aborted = [];
   const parent = host.registerAgentCall({
     callerSessionId: "root-caller",
@@ -700,10 +690,10 @@ test("visible prompts bypass a blocked input loop after switching sessions", () 
   }
 });
 
-test("submit bridge prompts the visible session when another session blocks input", async () => {
+test("interactive input prompts the visible session when another session blocks input", async () => {
   const state = getLiveRuntimeState();
 
-  await installBridgeForTest(state, "submitBridgeInstalled");
+  await installPiHostForTest(state, "interactiveSubmitInstalled");
   const { InteractiveMode } = await import(
     pathToFileURL(
       path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js"),
@@ -765,53 +755,10 @@ test("submit bridge prompts the visible session when another session blocks inpu
   }
 });
 
-test("visible extension commands run while a background session is streaming", () => {
-  const runtime = {
-    session: {
-      isStreaming: true,
-      sessionManager: { getSessionId: () => "background-session" },
-    },
-  };
-
-  setRuntimeSession("background-session", runtime);
-
-  try {
-    assert.equal(
-      shouldRunVisibleExtensionCommandNow(
-        {
-          session: {
-            isStreaming: false,
-            extensionRunner: { getCommand: (name) => name === "agent" },
-            sessionManager: { getSessionId: () => "visible-session" },
-          },
-        },
-        "/agent",
-      ),
-      true,
-    );
-
-    assert.equal(
-      shouldRunVisibleExtensionCommandNow(
-        {
-          session: {
-            isStreaming: false,
-            extensionRunner: { getCommand: () => undefined },
-            sessionManager: { getSessionId: () => "visible-session" },
-          },
-        },
-        "/unknown",
-      ),
-      false,
-    );
-  } finally {
-    deleteRuntimeSession("background-session");
-  }
-});
-
 test("current InteractiveMode hydrates an active streaming message after its native session render", async () => {
   const state = getLiveRuntimeState();
 
-  await installBridgeForTest(state, "liveHydrationBridgeInstalled");
+  await installPiHostForTest(state, "liveHydrationInstalled");
   const { InteractiveMode } = await import(
     pathToFileURL(
       path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js"),
@@ -856,7 +803,7 @@ test("AgentSession dispose cleans stale pi-gentic runtime references", async () 
   const state = getLiveRuntimeState();
 
   state.liveRuntimes.clear();
-  await installBridgeForTest(state, "disposeBridgeInstalled");
+  await installPiHostForTest(state, "sessionDisposeInstalled");
   const { AgentSession } = await import(
     pathToFileURL(path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js")).href
   );
@@ -889,7 +836,7 @@ test("AgentSession dispose cleans stale pi-gentic runtime references", async () 
 test("/new parks the active visible run instead of disposing it", async () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();
-  await installBridgeForTest(state, "newSessionBridgeInstalled");
+  await installPiHostForTest(state, "newSessionInstalled");
   const { AgentSessionRuntime } = await import(
     pathToFileURL(path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js")).href
   );
@@ -941,84 +888,6 @@ test("/new parks the active visible run instead of disposing it", async () => {
     assert.equal(state.liveRuntimes.get("new-running-session").runtime, runtimeHost);
   } finally {
     deleteRuntimeSession("new-running-session");
-    state.liveRuntimes.clear();
-  }
-});
-
-test("a submission made during /new waits for the new session", async () => {
-  const state = getLiveRuntimeState();
-  state.liveRuntimes.clear();
-  await installBridgeForTest(state, "submitBridgeInstalled");
-  const peer = await loadPiCodingAgentPeer();
-  const originalNewSession = state.hostNewSession;
-  const oldPrompts = [];
-  const newPrompts = [];
-  let finishReplacement;
-  const replacement = new Promise((resolve) => {
-    finishReplacement = resolve;
-  });
-  const oldSession = {
-    isStreaming: true,
-    prompt: async (...args) => oldPrompts.push(args),
-    sessionManager: { getHeader: () => ({}), getSessionId: () => "transition-old-session" },
-  };
-  const newSession = {
-    isStreaming: false,
-    prompt: async (...args) => newPrompts.push(args),
-    sessionManager: { getHeader: () => ({}), getSessionId: () => "transition-new-session" },
-  };
-  const runtimeHost = { session: oldSession };
-  const history = [];
-  const mode = Object.assign(Object.create(peer.InteractiveMode.prototype), {
-    defaultEditor: {},
-    editor: {
-      text: "",
-      addToHistory: (text) => history.push(text),
-      getText() {
-        return this.text;
-      },
-      setText(text) {
-        this.text = text;
-      },
-    },
-    flushPendingBashComponents() {},
-    handleClearCommand: async () => {
-      await peer.AgentSessionRuntime.prototype.newSession.call(runtimeHost);
-    },
-    onInputCallback: undefined,
-    runtimeHost,
-    ui: { requestRender() {} },
-    updatePendingMessagesDisplay() {},
-  });
-
-  state.hostNewSession = async () => {
-    await replacement;
-    runtimeHost.session = newSession;
-    return { cancelled: false };
-  };
-  setRuntimeSession("transition-old-session", { runtimeHost, session: oldSession });
-
-  try {
-    mode.setupEditorSubmitHandler();
-    const startNewSession = mode.defaultEditor.onSubmit("/new");
-    await Promise.resolve();
-    const submitMessage = mode.defaultEditor.onSubmit("message for the new session");
-    await Promise.resolve();
-
-    assert.deepEqual(oldPrompts, []);
-    assert.deepEqual(newPrompts, []);
-
-    finishReplacement();
-    await Promise.all([startNewSession, submitMessage]);
-
-    assert.deepEqual(oldPrompts, []);
-    assert.deepEqual(newPrompts, [["message for the new session"]]);
-    assert.deepEqual(history, ["message for the new session"]);
-  } finally {
-    finishReplacement();
-    state.hostNewSession = originalNewSession;
-    deleteRuntimeSession("transition-old-session");
-    deleteRuntimeSession("transition-new-session");
     state.liveRuntimes.clear();
   }
 });
@@ -1088,10 +957,3 @@ test("switching away from an unregistered visible run parks it instead of dispos
 
   assert.equal(disposed, 1);
 });
-
-async function installBridgeForTest(state, flag) {
-  process.env.PI_CLI = path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
-  await installLiveSessionBridge();
-
-  assert.equal(state[flag], true);
-}

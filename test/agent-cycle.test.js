@@ -7,7 +7,7 @@ import {
   getActiveState,
   nextAgentName,
   shouldApplyDefaultAgent,
-} from "../dist/catalog.js";
+} from "../dist/application/agents/state.js";
 
 test("agent cycle includes cleared state before configured agents", () => {
   const agents = [{ name: "builder" }, { name: "researcher" }];

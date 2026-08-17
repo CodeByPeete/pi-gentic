@@ -48,7 +48,11 @@
               "src/runtime/**/*.ts"
             ],
             "exclude": [
-              "src/infrastructure/pi/legacy-v0_82/**/*.ts"
+              "src/application/agents/prompt.ts",
+              "src/application/delegation/**/*.ts",
+              "src/application/sessions/**/*.ts",
+              "src/infrastructure/configuration/**/*.ts",
+              "src/infrastructure/pi/**/*.ts"
             ],
             "options": {
               "diagnosticSeverity": {

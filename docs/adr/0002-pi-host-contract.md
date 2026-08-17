@@ -1,7 +1,9 @@
-# Use an upstream-first Pi host contract
+# Track the current Pi host directly
 
-Pi-gentic uses Pi's public extension and session features wherever they preserve the required behavior. The remaining private integration stays inside one version-pinned adapter so undocumented Pi details do not spread through the application.
+Pi-gentic uses Pi's public extension and session features wherever they preserve the required behavior. The remaining private host integration lives directly in `src/infrastructure/pi/` so those details stay out of the application.
 
-Version `0.4.0` requires Pi `0.84.2` exactly. The adapter checks both that version and the private capabilities it needs before installation. An unsupported host fails early with a compatibility message.
+The package targets the current Pi release only. Version `0.4.0` currently depends on Pi `0.84.2`, which is the latest published release. All Pi packages move together when Pi is updated. The codebase keeps one host implementation in place, with no older-version adapter, migration path, or runtime version dispatch.
 
-The adapter can be removed after Pi's public host contract covers the same live-session, session-switching, abort, prompt, and resume behavior and passes the existing compatibility suite. Until then, the package keeps its Pi peer dependencies pinned to the exact tested version.
+Startup validates the capabilities pi-gentic needs and reports missing host operations clearly. Host contract, session transition, resume, integration, terminal, and UI tests must pass against every Pi update.
+
+Private integration can be removed as Pi exposes equivalent public operations. Until then, the direct host modules preserve native Pi commands, input handling, sessions, and rendering.

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PiGenticOrchestrator } from "../dist/orchestration.js";
-import { deleteRuntimeSession } from "../dist/pi-host.js";
+import { PiGenticOrchestrator } from "../dist/application/delegation/orchestrator.js";
+import { deleteRuntimeSession } from "../dist/infrastructure/pi/host.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
-import { clearLiveCardDetails } from "../dist/ui.js";
+import { clearLiveCardDetails } from "../dist/interface/cards/state.js";
 
 const effectRuntime = createExtensionRuntime();
 test.after(() => effectRuntime.dispose());

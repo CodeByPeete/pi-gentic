@@ -37,21 +37,11 @@ export class GitCommandFailed extends Schema.TaggedErrorClass<GitCommandFailed>(
   cause: CauseField,
 }) {}
 
-export class HostVersionUnsupported extends Schema.TaggedErrorClass<HostVersionUnsupported>()(
-  "HostVersionUnsupported",
-  {
-    message: Schema.String,
-    supportedVersion: Schema.String,
-    receivedVersion: Schema.String,
-  },
-) {}
-
 export class HostCapabilityUnavailable extends Schema.TaggedErrorClass<HostCapabilityUnavailable>()(
   "HostCapabilityUnavailable",
   {
     message: Schema.String,
     capability: Schema.String,
-    hostVersion: Schema.String,
   },
 ) {}
 

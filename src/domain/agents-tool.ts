@@ -20,7 +20,7 @@ const SendFields = {
   fork: Schema.optionalKey(
     Schema.Boolean.annotate({
       description:
-        "Whether a new child copies the caller's active conversation branch. This is independent of worktree creation.",
+        "Whether a new child copies the caller's completed earlier conversation. The current request is replaced by the child's assignment. This is independent of worktree creation.",
     }),
   ),
   cwd: Schema.optionalKey(

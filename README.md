@@ -183,7 +183,7 @@ When `--session` is absent, pi-gentic creates a child session. When `--session` 
 | `--session <id>` | Continue an existing session. Short unique IDs are accepted. |
 | `--bg` | Continue the caller immediately and return the result later. |
 | `--fg` | Wait for a new child session to finish. |
-| `--fork` | Start the child with a copy of the caller's active conversation branch. |
+| `--fork` | Copy the caller's completed earlier conversation. The current request is replaced by the child's assignment. |
 | `--no-invoke` | Add the result to the caller without automatically starting another response. |
 | `--cwd <folder>` | Set the target session's working folder. With `--worktree`, this is the requested worktree destination. |
 | `--worktree [branch]` | Create or reuse a Git worktree. The branch name may be omitted. |
@@ -390,7 +390,7 @@ Return concise findings with evidence.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `async` | `false` | New child sends use the background by default. Existing-session sends always use the background. |
-| `fork` | `false` | New children copy the caller's active conversation branch by default. |
+| `fork` | `false` | New children copy the caller's completed earlier conversation by default. The current request is replaced by the child's assignment. |
 | `cwd` | caller's folder | Default working folder for a child session. |
 | `invokeMeLater.async` | `true` | A background result may automatically start a new caller response. |
 | `invokeMeLater.withSession` | `true` | A foreground child result may automatically continue the caller. |

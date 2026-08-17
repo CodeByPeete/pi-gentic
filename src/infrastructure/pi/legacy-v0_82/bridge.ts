@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { defaultAgentDir, getActiveState, isRecord } from "../../../catalog.js";
+import { defaultAgentDir, getActiveState, isRecord, shortSessionId } from "../../../catalog.js";
 import { reportRuntimeDiagnostic } from "../../../diagnostics.js";
 import type {
   PiAgentRuntimeHost,
@@ -189,6 +189,37 @@ export function registerAgentCall(call: Omit<AgentCall, "id" | "startedAt"> & { 
 
 export function hasAgentCallsForSession(sessionId: unknown) {
   return activeCallsForSession(sessionId).length > 0;
+}
+
+export function assertNoAgentCallCycle(callerSessionId: unknown, targetSessionId: unknown) {
+  const caller = String(callerSessionId ?? "");
+  const target = String(targetSessionId ?? "");
+
+  if (!caller || !target) return;
+  const targetsByCaller = new Map<string, Set<string>>();
+
+  for (const call of getLiveRuntimeState().activeCalls.values()) {
+    if (!call.callerSessionId || !call.targetSessionId) continue;
+    const targets = targetsByCaller.get(call.callerSessionId) ?? new Set<string>();
+
+    targets.add(call.targetSessionId);
+    targetsByCaller.set(call.callerSessionId, targets);
+  }
+
+  const pending = [target];
+  const visited = new Set<string>();
+
+  while (pending.length > 0) {
+    const sessionId = pending.pop();
+
+    if (!sessionId || visited.has(sessionId)) continue;
+    if (sessionId === caller)
+      throw new Error(
+        `Cannot send from session ${shortSessionId(caller)} to session ${shortSessionId(target)} because it would create an active delegation cycle. Wait for the active request to finish before messaging that session.`,
+      );
+    visited.add(sessionId);
+    pending.push(...(targetsByCaller.get(sessionId) ?? []));
+  }
 }
 
 function hasCancellableAgentCallsForSession(sessionId: unknown) {

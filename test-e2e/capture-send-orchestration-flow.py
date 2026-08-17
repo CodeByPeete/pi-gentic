@@ -26,6 +26,7 @@ ROWS = 46
 MODEL = os.environ.get("PI_GENTIC_E2E_MODEL", "gpt-5.4-mini")
 MODEL_FULL = MODEL if "/" in MODEL else f"openai-codex/{MODEL}"
 ACTIVATION_ONLY = os.environ.get("PI_GENTIC_E2E_ACTIVATION_ONLY") == "1"
+FORK_BOUNDARY_ONLY = os.environ.get("PI_GENTIC_E2E_FORK_BOUNDARY_ONLY") == "1"
 
 screen = pyte.Screen(COLS, ROWS)
 stream = pyte.ByteStream(screen)
@@ -120,7 +121,15 @@ def spawn():
         "COLORTERM": "truecolor",
         "PI_TUI_WRITE_LOG": str(OUTPUT / "pi-tui-write.log"),
     })
-    args = [*PI, "--session-dir", str(SESSION_DIR)]
+    args = [
+        *PI,
+        "--approve",
+        "--no-extensions",
+        "--extension",
+        str(PACKAGE / "dist" / "extension.js"),
+        "--session-dir",
+        str(SESSION_DIR),
+    ]
     proc = winpty.PtyProcess.spawn(args, cwd=str(WORK_DIR), env=env, dimensions=(ROWS, COLS))
     threading.Thread(target=reader, args=(proc,), daemon=True).start()
     time.sleep(0.5)
@@ -190,10 +199,40 @@ def wait_for_child_answer(needle, timeout=180):
                 except json.JSONDecodeError:
                     continue
                 message = entry.get("message", {})
-                if message.get("role") == "assistant" and needle in json.dumps(message):
+                blocks = message.get("content", [])
+                assistant_text = blocks if isinstance(blocks, str) else "\n".join(
+                    block.get("text", "") for block in blocks if isinstance(block, dict) and block.get("type") == "text"
+                )
+                if message.get("role") == "assistant" and needle in assistant_text:
                     return path, content
         time.sleep(0.25)
     raise AssertionError(f"No active child session answered with {needle!r}")
+
+
+def assert_fork_delegation_boundary(content):
+    entries = [json.loads(line) for line in content.splitlines() if line.strip()]
+    entries_by_id = {entry.get("id"): entry for entry in entries if entry.get("id")}
+    current = entries[-1]
+    active_entries = []
+
+    while current and current.get("type") != "session":
+        active_entries.append(current)
+        current = entries_by_id.get(current.get("parentId"))
+
+    def has_agents_call(entry):
+        message = entry.get("message", {})
+        return message.get("role") == "assistant" and any(
+            block.get("type") == "toolCall" and block.get("name") == "agents"
+            for block in message.get("content", [])
+            if isinstance(block, dict)
+        )
+
+    copied_calls = [entry for entry in entries if has_agents_call(entry)]
+    active_calls = [entry for entry in active_entries if has_agents_call(entry)]
+    if len(copied_calls) != 1 or active_calls:
+        raise AssertionError(
+            f"Expected one preserved off-branch delegation call and none in active child context; copied={len(copied_calls)}, active={len(active_calls)}"
+        )
 
 
 def ensure_model(proc):
@@ -237,6 +276,34 @@ def main():
     try:
         ensure_model(proc)
         render_png("01-pi-started.png")
+
+        if FORK_BOUNDARY_ONLY:
+            child_token = "CHILD-FORK-BOUNDARY-OK"
+            parent_token = "PARENT-FORK-DELEGATED-OK"
+            run_command(
+                proc,
+                "Call the agents tool exactly once to create a worker child. Use action send, agent worker, async true, fork true, invokeMeLater false, and message "
+                f"'Reply with the exact text {child_token} without using tools.' After the call is accepted, reply with the exact text {parent_token}.",
+            )
+            wait_for(
+                "forked child started",
+                lambda value: "Agent call worker" in value and child_token in value and "Agent call failed." not in value,
+                timeout=90,
+            )
+            render_png("02-forked-child-started.png")
+            child_path, child_content = wait_for_child_answer(child_token)
+            assert_fork_delegation_boundary(child_content)
+            wait_for(
+                "forked child completed",
+                lambda value: "Agent answered." in value and parent_token in value,
+                timeout=90,
+            )
+            completed = render_png("03-forked-child-completed.png")
+            (OUTPUT / "summary.txt").write_text(
+                f"model={MODEL_FULL}\nchild={child_path.name}\nactive_child_agents_calls=0\ncompletion={completed.name}\n",
+                encoding="utf-8",
+            )
+            return
 
         if ACTIVATION_ONLY:
             activation_token = "CHILD-ACTIVATION-OK"

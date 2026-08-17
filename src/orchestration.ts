@@ -49,6 +49,7 @@ import { DelegationFibers } from "./infrastructure/runtime/DelegationFibers.js";
 import { RuntimeMetadata, RuntimeRegistry } from "./infrastructure/runtime/RuntimeRegistry.js";
 import {
   abortAgentCall,
+  assertNoAgentCallCycle,
   activeVisibleContext,
   activeVisibleExtension,
   activeVisibleSession,
@@ -1364,6 +1365,37 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
   return typeof value === "string" && ["minimal", "low", "medium", "high", "xhigh", "max"].includes(value);
 }
 
+export function branchForkBeforeDelegation(
+  sessionManager: Pick<SessionManager, "branch" | "getEntry" | "getLeafId" | "resetLeaf">,
+  call: unknown,
+) {
+  if (!isRecord(call)) return false;
+  const callerEntryId = call.callerEntryId;
+  const forkBoundaryEntryId = call.forkBoundaryEntryId;
+  const toolCallId = call.toolCallId;
+
+  if (
+    typeof callerEntryId !== "string" ||
+    (forkBoundaryEntryId !== null && typeof forkBoundaryEntryId !== "string") ||
+    typeof toolCallId !== "string" ||
+    sessionManager.getLeafId() !== callerEntryId
+  )
+    return false;
+  const entry = sessionManager.getEntry(callerEntryId);
+
+  if (!isRecord(entry) || entry.type !== "message" || !isRecord(entry.message)) return false;
+  const content = Array.isArray(entry.message.content) ? entry.message.content : [];
+  const isDelegationTurn = content.some(
+    (block) => isRecord(block) && block.type === "toolCall" && block.name === "agents" && block.id === toolCallId,
+  );
+
+  if (!isDelegationTurn) return false;
+  if (forkBoundaryEntryId === null) sessionManager.resetLeaf();
+  else sessionManager.branch(forkBoundaryEntryId);
+
+  return true;
+}
+
 export class PiGenticOrchestrator {
   pi: PiApi;
   currentAgentName?: string;
@@ -1663,6 +1695,7 @@ export class PiGenticOrchestrator {
       ctx,
       { ...input, async: targetAsync, fork: targetFork, cwd },
       config,
+      { call: callbacks.call },
     );
     const targetSessionId = target.session.sessionManager.getSessionId();
     const targetBusy = target.session.isStreaming === true;
@@ -2020,11 +2053,19 @@ export class PiGenticOrchestrator {
     if (input.overrides) return this.applySessionOverrides(session, input.overrides, config);
   }
 
-  async resolveTargetSession(ctx: PiContext, input: SendInput, config: Configuration): Promise<PiRuntimeSession> {
+  async resolveTargetSession(
+    ctx: PiContext,
+    input: SendInput,
+    config: Configuration,
+    options: { call?: UnknownRecord } = {},
+  ): Promise<PiRuntimeSession> {
     if (input.sessionId) {
       const session = await this.getOrOpenSession(ctx, input.sessionId, input.cwd);
+      const callerSessionId = ctx.sessionManager.getSessionId();
+      const targetSessionId = session.session.sessionManager.getSessionId();
 
-      assertDifferentSession(ctx.sessionManager.getSessionId(), session.session.sessionManager.getSessionId());
+      assertDifferentSession(callerSessionId, targetSessionId);
+      assertNoAgentCallCycle(callerSessionId, targetSessionId);
       await this.assertCanMessageSession(ctx, session, config);
 
       await this.applyRequestedTargetPolicy(session.session, input, config);
@@ -2032,7 +2073,7 @@ export class PiGenticOrchestrator {
       return session;
     }
 
-    const session = await this.createChildSession(ctx, input, config);
+    const session = await this.createChildSession(ctx, input, config, options);
 
     await this.applyRequestedTargetPolicy(session.session, input, config);
 
@@ -2081,6 +2122,7 @@ export class PiGenticOrchestrator {
     ctx: PiContext,
     input: SendInput,
     config: Configuration = this.load(ctx),
+    options: { call?: UnknownRecord } = {},
   ): Promise<PiRuntimeSession> {
     let sessionManager;
     const sessionDir = ctx.sessionManager.getSessionDir();
@@ -2090,6 +2132,7 @@ export class PiGenticOrchestrator {
 
     if (input.fork && parentSession) {
       sessionManager = SessionManager.forkFrom(parentSession, input.cwd ?? ctx.cwd, sessionDir);
+      branchForkBeforeDelegation(sessionManager, options.call);
     } else {
       sessionManager = SessionManager.create(input.cwd ?? ctx.cwd, sessionDir, {
         parentSession,

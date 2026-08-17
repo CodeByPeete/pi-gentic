@@ -59,6 +59,7 @@ export default async function piGentic(pi: ExtensionAPI) {
   await installResumeBridge(runtime);
   const orchestrator = new PiGenticOrchestrator(pi, runtime);
   const completionContext = createCompletionContext(pi);
+  const delegationContextBoundaries = new WeakMap<PiContext["sessionManager"], string | null>();
   let runtimeDisposed = false;
 
   pi.on("session_shutdown", async (event) => {
@@ -135,7 +136,14 @@ export default async function piGentic(pi: ExtensionAPI) {
     orchestrator.prepareVisibleTurn(ctx);
   });
 
-  pi.on("before_agent_start", (event, ctx) => orchestrator.buildPromptAppend(ctx, event));
+  pi.on("before_agent_start", (event, ctx) => {
+    const forkBoundaryEntryId = ctx.sessionManager.getLeafId?.();
+
+    if (forkBoundaryEntryId !== undefined) delegationContextBoundaries.set(ctx.sessionManager, forkBoundaryEntryId);
+    else delegationContextBoundaries.delete(ctx.sessionManager);
+
+    return orchestrator.buildPromptAppend(ctx, event);
+  });
 
   pi.registerCommand("agent", {
     description: "Set, clear, or show the active pi-gentic agent",
@@ -276,9 +284,12 @@ export default async function piGentic(pi: ExtensionAPI) {
       try {
         const input = await runtime.runPromise(normalizeAgentsToolInput(params));
         const callerEntryId = ctx.sessionManager.getLeafId?.();
+        const forkBoundaryEntryId =
+          input._tag === "SendAgentsAction" ? delegationContextBoundaries.get(ctx.sessionManager) : undefined;
         const call = {
           toolCallId,
           ...(callerEntryId ? { callerEntryId } : {}),
+          ...(forkBoundaryEntryId !== undefined ? { forkBoundaryEntryId } : {}),
           parameters: params,
         };
         const result = await executeAction(orchestrator, ctx, input, onUpdate, signal, call);

@@ -45,6 +45,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   const notifications = [];
   const messages = [];
   const activeEntries = [];
+  let activeLeafId;
   const pi = {
     events: { emit: () => {} },
     getAllTools,
@@ -89,6 +90,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
       getSessionDir: () => cwd,
       getSessionFile: () => undefined,
       getSessionId: () => "019fdddd-1111-7111-8111-111111111111",
+      getLeafId: () => activeLeafId,
     },
     ui: {
       notify: (...args) => notifications.push(args),
@@ -143,7 +145,8 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     },
   );
   const toolSchema = JSON.stringify(tools[0].parameters);
-  assert.match(toolSchema, /copies the caller's active conversation branch/);
+  assert.match(toolSchema, /copies the caller's completed earlier conversation/);
+  assert.match(toolSchema, /current request is replaced by the child's assignment/);
   assert.match(toolSchema, /Source Git repository/);
   assert.match(toolSchema, /automatic branch and path generation/);
   assert.equal(
@@ -216,6 +219,20 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   await commands.get("send").handler("message --session missing", ctx);
   await commands.get("send").handler("message --agent missing-agent", ctx);
   assert.match(notifications.flat().join("\n"), /No active agent|Usage/);
+
+  activeLeafId = "completed-conversation-entry";
+  for (const handler of events.get("before_agent_start") ?? []) await handler({ systemPrompt: "Base" }, ctx);
+  activeLeafId = "delegation-entry";
+  const sendResult = await tools[0].execute(
+    "tool-send",
+    { action: "send", message: "delegate this", sessionId: targetSessionId, invokeMeLater: false },
+    AbortSignal.timeout(1000),
+    () => {},
+    ctx,
+  );
+  assert.equal(sendResult.details.call.callerEntryId, "delegation-entry");
+  assert.equal(sendResult.details.call.forkBoundaryEntryId, "completed-conversation-entry");
+  activeLeafId = undefined;
 
   const toolResult = await tools[0].execute("tool-call", { action: "list" }, AbortSignal.timeout(1000), () => {}, ctx);
   assert.equal(toolResult.isError, undefined);

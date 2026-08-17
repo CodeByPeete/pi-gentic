@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import { applyFilterList } from "../dist/catalog.js";
 import { availableAgentLines, filterSkillPrompt } from "../dist/catalog.js";
 import {
   abortActor,
+  branchForkBeforeDelegation,
   collectSessionActivities,
   createSessionActivityMonitor,
   contextStillActive,
@@ -36,7 +37,7 @@ import { formatSessionStatus, sessionStatus } from "../dist/orchestration.js";
 import { assertAvailableAgent, filterAvailableAgents } from "../dist/catalog.js";
 import { resolveSessionPolicy } from "../dist/catalog.js";
 import { PiGenticOrchestrator, prepareWorktree } from "../dist/orchestration.js";
-import { deleteRuntimeSession, loadPiCodingAgentPeer, setRuntimeSession } from "../dist/pi-host.js";
+import { deleteRuntimeSession, loadPiCodingAgentPeer, registerAgentCall, setRuntimeSession } from "../dist/pi-host.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
 
 const effectRuntime = createExtensionRuntime();
@@ -1280,6 +1281,130 @@ test("orchestrator routes target, status, abort, and policy operations", async (
   assert.deepEqual(Object.keys(orchestrator.cardDetails("send", "done")).sort(), ["kind", "status", "updatedAt"]);
 });
 
+test("forked children exclude the caller's unfinished delegation turn", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "pi-gentic-fork-boundary-"));
+  const { SessionManager } = await loadPiCodingAgentPeer();
+
+  try {
+    const parent = SessionManager.create(root, root);
+    const usage = {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    parent.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "Earlier caller question" }],
+      timestamp: Date.now(),
+    });
+    const forkBoundaryEntryId = parent.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "Retained caller context" }],
+      api: "test",
+      provider: "test",
+      model: "test",
+      usage,
+      stopReason: "stop",
+      timestamp: Date.now(),
+    });
+    parent.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "Delegate the current request" }],
+      timestamp: Date.now(),
+    });
+    const callerEntryId = parent.appendMessage({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "delegation-call",
+          name: "agents",
+          arguments: { action: "send", fork: true, message: "Research this" },
+        },
+      ],
+      api: "test",
+      provider: "test",
+      model: "test",
+      usage,
+      stopReason: "toolUse",
+      timestamp: Date.now(),
+    });
+    const child = SessionManager.forkFrom(parent.getSessionFile(), root, root);
+    const unmatchedChild = SessionManager.forkFrom(parent.getSessionFile(), root, root);
+
+    assert.equal(
+      branchForkBeforeDelegation(child, {
+        callerEntryId,
+        forkBoundaryEntryId,
+        toolCallId: "delegation-call",
+      }),
+      true,
+    );
+    child.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "Message from parent: Research this" }],
+      timestamp: Date.now(),
+    });
+
+    const messages = child.buildSessionContext().messages;
+    assert.deepEqual(
+      messages.map((message) => message.role),
+      ["user", "assistant", "user"],
+    );
+    assert.equal(messages[1].content[0].text, "Retained caller context");
+    assert.equal(child.getEntry(callerEntryId).message.content[0].type, "toolCall");
+
+    assert.equal(
+      branchForkBeforeDelegation(unmatchedChild, {
+        callerEntryId,
+        forkBoundaryEntryId,
+        toolCallId: "another-call",
+      }),
+      false,
+    );
+    assert.deepEqual(
+      unmatchedChild.buildSessionContext().messages.map((message) => message.role),
+      ["user", "assistant", "user", "assistant"],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("orchestrator rejects messages that close an active delegation cycle", async () => {
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
+  const activeCall = registerAgentCall({ callerSessionId: "parent", targetSessionId: "child" });
+  const target = {
+    session: {
+      sessionManager: {
+        getSessionId: () => "parent",
+      },
+    },
+  };
+
+  orchestrator.getOrOpenSession = async () => target;
+
+  try {
+    await assert.rejects(
+      orchestrator.resolveTargetSession(
+        {
+          sessionManager: {
+            getSessionId: () => "child",
+          },
+        },
+        { message: "Reply to parent", sessionId: "parent" },
+        {},
+      ),
+      /active delegation cycle/,
+    );
+  } finally {
+    activeCall.unregister();
+  }
+});
+
 test("orchestrator creates native child and fork session runtimes", async () => {
   const peer = await loadPiCodingAgentPeer();
   const originals = {
@@ -1291,11 +1416,29 @@ test("orchestrator creates native child and fork session runtimes", async () => 
   };
   let createdManager;
   let forkedManager;
+  const forkOperations = [];
   const manager = (sessionId) => ({
-    appendSessionInfo: () => {},
+    appendSessionInfo: () => {
+      if (sessionId === "forked-child") forkOperations.push("session-info");
+    },
+    branch: (entryId) => forkOperations.push(`branch:${entryId}`),
     flush: () => {},
     getCwd: () => process.cwd(),
     getEntries: () => [],
+    getEntry: (entryId) => {
+      if (sessionId !== "forked-child") return undefined;
+      if (entryId !== "delegation-entry") return undefined;
+      return {
+        id: entryId,
+        parentId: "unfinished-turn-entry",
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "delegation-call", name: "agents" }],
+        },
+      };
+    },
+    getLeafId: () => (sessionId === "forked-child" ? "delegation-entry" : undefined),
     getSessionFile: () => `${sessionId}.jsonl`,
     getSessionId: () => sessionId,
   });
@@ -1322,8 +1465,20 @@ test("orchestrator creates native child and fork session runtimes", async () => 
     assert.equal(created.session.sessionManager, createdManager);
     assert.equal(created.parentSessionPath, "parent.jsonl");
 
-    const forked = await orchestrator.createChildSession(ctx, { message: "fork child", fork: true }, {});
+    const forked = await orchestrator.createChildSession(
+      ctx,
+      { message: "fork child", fork: true },
+      {},
+      {
+        call: {
+          callerEntryId: "delegation-entry",
+          forkBoundaryEntryId: "completed-conversation-entry",
+          toolCallId: "delegation-call",
+        },
+      },
+    );
     assert.equal(forked.session.sessionManager, forkedManager);
+    assert.deepEqual(forkOperations, ["branch:completed-conversation-entry", "session-info"]);
 
     const reopened = await orchestrator.createRuntimeForSessionManager(manager("registered-runtime"), process.cwd());
     assert.equal(reopened.session.sessionManager.getSessionId(), "registered-runtime");

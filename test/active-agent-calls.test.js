@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   abortAgentCall,
   abortAgentCallsForSession,
+  assertNoAgentCallCycle,
   handleInteractiveEscape,
   hasAgentCallsForSession,
   registerAgentCall,
@@ -78,6 +79,27 @@ test("aborting one tool call leaves sibling calls running", async () => {
   } finally {
     first.unregister();
     second.unregister();
+  }
+});
+
+test("active agent calls reject direct and transitive reply loops", () => {
+  const parentCall = registerAgentCall({ callerSessionId: "parent", targetSessionId: "child" });
+  const childCall = registerAgentCall({ callerSessionId: "child", targetSessionId: "grandchild" });
+
+  try {
+    assert.throws(
+      () => assertNoAgentCallCycle("child", "parent"),
+      /Cannot send from session child to session parent.*active delegation cycle/,
+    );
+    assert.throws(
+      () => assertNoAgentCallCycle("grandchild", "parent"),
+      /Cannot send from session grandchi to session parent.*active delegation cycle/,
+    );
+    assert.doesNotThrow(() => assertNoAgentCallCycle("parent", "sibling"));
+    assert.doesNotThrow(() => assertNoAgentCallCycle("parent", "child"));
+  } finally {
+    parentCall.unregister();
+    childCall.unregister();
   }
 });
 

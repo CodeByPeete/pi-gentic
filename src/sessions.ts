@@ -478,6 +478,7 @@ export function runtimeSessionSummary(runtime: PiRuntimeSession) {
     sessionId,
     shortId: shortSessionId(sessionId),
     path: runtime.session.sessionManager.getSessionFile(),
+    parentSessionId: runtime.parentSessionId,
     parentSessionPath: runtime.parentSessionPath,
     agentName: runtime.agentName,
     lastMessage: runtime.lastMessage ?? (runtime.agentName ? `Message to ${runtime.agentName}` : "Child session"),

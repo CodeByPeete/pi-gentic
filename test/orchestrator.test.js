@@ -81,6 +81,25 @@ test("terminal card persistence validates snapshots and copies activities", () =
   assert.notEqual(entries[0][1].activities, activities);
   assert.deepEqual(entries[0][1].activities, activities);
 
+  const longActivities = Array.from({ length: 20 }, (_, index) => ({
+    id: `activity-${index}`,
+    type: "tool",
+    name: "read",
+  }));
+  const compactEntries = [];
+  assert.equal(
+    persistAgentCardState(
+      { appendCustomEntry: (...args) => compactEntries.push(args) },
+      { cardId: "compact", status: "done", activities: longActivities },
+    ),
+    true,
+  );
+  assert.equal(compactEntries[0][1].activityCount, 20);
+  assert.deepEqual(
+    compactEntries[0][1].activities.map(({ id }) => id),
+    longActivities.slice(-14).map(({ id }) => id),
+  );
+
   const assistantActivities = collectSessionActivities({
     agent: {
       state: {
@@ -433,7 +452,7 @@ test("send with no invoke returns answer as context without triggering a caller 
   assert.match(sentMessages[0].message.content, /Worker answer/);
 });
 
-test("aborted async sends persist terminal failures after the caller extension becomes stale", async () => {
+test("aborted async sends preserve target failures after caller invocation fails", async () => {
   const callerSessionId = "stale-caller";
   const targetSessionId = "aborted-target";
   const persistedMessages = [];
@@ -514,8 +533,9 @@ test("aborted async sends persist terminal failures after the caller extension b
 
     assert.equal(persistedMessages.length, 1);
     assert.equal(persistedMessages[0][0], "pi-gentic:card");
-    assert.match(persistedMessages[0][1], /Caller session unavailable/);
-    assert.equal(persistedMessages[0][3].status, "error");
+    assert.match(persistedMessages[0][1], /was aborted while handling your request/);
+    assert.doesNotMatch(persistedMessages[0][1], /Caller session unavailable/);
+    assert.equal(persistedMessages[0][3].status, "aborted");
   } finally {
     deleteRuntimeSession(targetSessionId);
   }
@@ -678,6 +698,98 @@ test("background sends deliver successful terminal state to the caller", async (
   }
 });
 
+test("background target errors invoke unopened caller sessions with the provider error", async () => {
+  const targetSessionId = "background-error-target";
+  const callerSessionManager = {
+    appendCustomEntry() {},
+    appendCustomMessageEntry() {},
+    getCwd: () => process.cwd(),
+    getEntries: () => [],
+    getSessionFile: () => "caller.jsonl",
+    getSessionId: () => "background-error-caller",
+  };
+  const otherSessionManager = { getSessionId: () => "visible-other" };
+  let visibleSessionManager = callerSessionManager;
+  let finishTarget;
+  const targetCanFinish = new Promise((resolve) => {
+    finishTarget = resolve;
+  });
+  const messages = [];
+  const target = {
+    agentName: "researcher",
+    session: {
+      agent: { state: { messages } },
+      isStreaming: false,
+      sessionManager: {
+        appendCustomMessageEntry() {},
+        getSessionId: () => targetSessionId,
+      },
+      prompt: async () => {
+        await targetCanFinish;
+        messages.push({
+          role: "assistant",
+          content: "",
+          stopReason: "error",
+          errorMessage: "Codex stream ended after output began and cannot be continued from its incomplete response.",
+          diagnostics: [
+            {
+              type: "provider_stream_failure",
+              error: { message: "Your input exceeds the context window of this model." },
+            },
+          ],
+        });
+      },
+      abort: async () => {},
+    },
+  };
+  const callerDeliveries = [];
+  let settle;
+  const settled = new Promise((resolve) => {
+    settle = resolve;
+  });
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [], sendMessage: () => {} }, effectRuntime);
+  orchestrator.load = () => ({});
+  orchestrator.resolvePolicy = () => ({ agentsTool: {} });
+  orchestrator.resolveTargetSession = async () => target;
+  orchestrator.applyPolicyToAgentSession = async () => {};
+  orchestrator.createRuntimeForSessionManager = async (sessionManager) => ({
+    session: {
+      isStreaming: false,
+      isIdle: true,
+      sessionManager,
+      sendCustomMessage: (...args) => {
+        callerDeliveries.push(args);
+        return Promise.resolve();
+      },
+    },
+  });
+  const ctx = {
+    cwd: process.cwd(),
+    isIdle: () => true,
+    get sessionManager() {
+      return visibleSessionManager;
+    },
+  };
+
+  try {
+    await orchestrator.send(
+      ctx,
+      { message: "Research this in the background", async: true, invokeMeLater: true },
+      { onSettled: settle },
+    );
+    visibleSessionManager = otherSessionManager;
+    finishTarget();
+    await settled;
+
+    assert.equal(callerDeliveries.length, 1);
+    assert.match(callerDeliveries[0][0].content, /Your input exceeds the context window of this model\./);
+    assert.doesNotMatch(callerDeliveries[0][0].content, /cannot be continued/);
+    assert.deepEqual(callerDeliveries[0][1], { triggerTurn: true });
+  } finally {
+    deleteRuntimeSession(targetSessionId);
+  }
+});
+
 test("deferred completion uses one visible context message to invoke the live caller", async () => {
   const sent = [];
   const mode = await deliverCardToCaller({
@@ -765,12 +877,36 @@ test("deferred completion invokes an inactive caller with the same canonical car
   assert.deepEqual(persisted, []);
 });
 
-test("deferred completion cards persist in their original caller session", async () => {
+test("deferred completion preserves the original card when inactive caller invocation fails", async () => {
+  const persisted = [];
+  const mode = await deliverCardToCaller({
+    pi: { sendMessage() {} },
+    ctx: { sessionManager: { getSessionId: () => "visible-other" } },
+    callerSessionId: "caller",
+    callerSessionManager: {
+      appendCustomMessageEntry: (...args) => persisted.push(args),
+    },
+    text: "Target context limit exceeded",
+    details: { cardId: "send:child:1", status: "error" },
+    invoke: true,
+    invokeInactiveCaller: async () => {
+      throw new Error("caller invocation failed");
+    },
+  });
+
+  assert.equal(mode, "persisted");
+  assert.deepEqual(persisted, [
+    ["pi-gentic:card", "Target context limit exceeded", true, { cardId: "send:child:1", status: "error" }],
+  ]);
+});
+
+test("deferred completion cards persist bounded activity history in their original caller session", async () => {
   const entries = [];
   let persisted = 0;
   const sessionManager = {
     appendCustomMessageEntry: (...args) => entries.push(args),
   };
+  const activities = Array.from({ length: 20 }, (_, index) => ({ id: `activity-${index}`, type: "tool" }));
   const mode = await deliverCardToCaller({
     pi: { sendMessage() {} },
     ctx: {
@@ -780,7 +916,7 @@ test("deferred completion cards persist in their original caller session", async
     callerSessionId: "caller",
     callerSessionManager: sessionManager,
     text: "Agent answer",
-    details: { cardId: "send:child:1", status: "done" },
+    details: { cardId: "send:child:1", status: "done", activities },
     persist: (value) => {
       assert.equal(value, sessionManager);
       persisted += 1;
@@ -788,7 +924,14 @@ test("deferred completion cards persist in their original caller session", async
   });
 
   assert.equal(mode, "persisted");
-  assert.deepEqual(entries, [["pi-gentic:card", "Agent answer", true, { cardId: "send:child:1", status: "done" }]]);
+  assert.equal(entries[0][0], "pi-gentic:card");
+  assert.equal(entries[0][1], "Agent answer");
+  assert.equal(entries[0][2], true);
+  assert.equal(entries[0][3].activityCount, 20);
+  assert.deepEqual(
+    entries[0][3].activities.map(({ id }) => id),
+    activities.slice(-14).map(({ id }) => id),
+  );
   assert.equal(persisted, 1);
 });
 
@@ -1457,12 +1600,14 @@ test("orchestrator creates native child and fork session runtimes", async () => 
       flush: () => {},
       getSessionDir: () => process.cwd(),
       getSessionFile: () => "parent.jsonl",
+      getSessionId: () => "parent-session",
     },
   };
 
   try {
     const created = await orchestrator.createChildSession(ctx, { message: "create child" }, {});
     assert.equal(created.session.sessionManager, createdManager);
+    assert.equal(created.parentSessionId, "parent-session");
     assert.equal(created.parentSessionPath, "parent.jsonl");
 
     const forked = await orchestrator.createChildSession(
@@ -1557,6 +1702,40 @@ test("orchestrator invokes registered caller runtimes with structured returns", 
     });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(persisted.at(-1)[0], "pi-gentic:return-invoke-error");
+
+    const inactiveDeliveries = [];
+    orchestrator.runtimeForCallerInvocation = async () => ({
+      session: {
+        isStreaming: false,
+        isIdle: true,
+        sessionManager: callerSessionManager,
+        sendCustomMessage: (...args) => {
+          inactiveDeliveries.push(args);
+          return Promise.resolve();
+        },
+      },
+    });
+    await orchestrator.invokeCallerSession({
+      callerSessionManager,
+      callerCwd: process.cwd(),
+      message: {
+        customType: "pi-gentic:return-context",
+        content: "Inactive return",
+        display: true,
+      },
+      config: {},
+    });
+    assert.deepEqual(inactiveDeliveries, [
+      [
+        {
+          customType: "pi-gentic:return-context",
+          content: "Inactive return",
+          display: true,
+        },
+        { triggerTurn: true },
+      ],
+    ]);
+    delete orchestrator.runtimeForCallerInvocation;
 
     orchestrator.createRuntimeForSessionManager = async () => ({ fresh: true });
     assert.deepEqual(
@@ -1992,6 +2171,26 @@ test("session outcomes explain model errors and missing responses", () => {
   );
   assert.equal(modelError.status, "error");
   assert.match(modelError.text, /Provider unavailable/);
+
+  const diagnosticError = sessionRunOutcome(
+    runtime([
+      {
+        role: "assistant",
+        content: "",
+        stopReason: "error",
+        errorMessage: "Codex stream ended after output began and cannot be continued from its incomplete response.",
+        diagnostics: [
+          {
+            type: "provider_stream_failure",
+            error: { message: "Your input exceeds the context window of this model." },
+          },
+        ],
+      },
+    ]),
+    { request: "Research" },
+  );
+  assert.match(diagnosticError.text, /Your input exceeds the context window of this model\./);
+  assert.doesNotMatch(diagnosticError.text, /cannot be continued/);
 
   const thrown = sessionRunOutcome(runtime([]), {
     request: "Review",

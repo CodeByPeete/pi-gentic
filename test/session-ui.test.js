@@ -365,6 +365,93 @@ test("live panel gives every active session one compact detailed row", async () 
   }
 });
 
+test("forty-eight updating sessions coalesce into responsive incremental terminal frames", async () => {
+  const writes = [];
+  const terminal = {
+    columns: 140,
+    rows: 54,
+    write: (value) => writes.push(value),
+    start() {},
+    stop() {},
+    hideCursor() {},
+    showCursor() {},
+    setTitle() {},
+  };
+  const tui = new TuiMainScreen(terminal);
+  const theme = { bold: (text) => text, fg: (_name, text) => text };
+  const cards = Array.from({ length: 48 }, (_, index) => ({
+    cardId: `load-card-${index}`,
+    kind: "send",
+    status: "running",
+    livePanel: true,
+    callerSessionId: "load-parent",
+    sessionId: `load-session-${String(index).padStart(2, "0")}`,
+    agentName: `worker-${String(index).padStart(2, "0")}`,
+    async: true,
+    message: `Process load task ${index}`,
+    startedAt: Date.now() - 1_000,
+    updatedAt: Date.now() - 1_000,
+    activities: [],
+  }));
+  const editor = {
+    invalidate() {},
+    render() {
+      return ["editor", "footer"];
+    },
+  };
+  let widget;
+  const ctx = {
+    mode: "tui",
+    sessionManager: { getSessionId: () => "load-parent", getEntries: () => [] },
+    ui: {
+      setWidget(_key, factory) {
+        if (widget) tui.removeChild(widget);
+        widget = factory?.(tui, theme);
+        if (widget) tui.addChild(widget);
+        tui.requestRender();
+      },
+    },
+  };
+
+  cards.forEach((card) => setLiveCardDetails(card));
+  tui.addChild(editor);
+  tui.start();
+  const stop = startSessionLiveCardRefresh(ctx, runtime);
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const initialPanel = widget.render(140).join("\n");
+
+    assert.match(initialPanel, /… 5 earlier active cards/);
+    assert.doesNotMatch(initialPanel, /worker-04/);
+    assert.match(initialPanel, /worker-05/);
+    const redrawsBeforeUpdate = tui.fullRedraws;
+    writes.length = 0;
+    const updateStartedAt = performance.now();
+
+    cards.forEach((card, index) =>
+      setLiveCardDetails({
+        ...card,
+        updatedAt: Date.now(),
+        activities: [{ type: "tool", name: "read", summary: `load-${index}.ts` }],
+      }),
+    );
+    const updateDurationMs = performance.now() - updateStartedAt;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const output = writes.join("");
+
+    assert.equal(tui.fullRedraws, redrawsBeforeUpdate);
+    assert.equal(output.includes("\x1b[3J"), false);
+    assert.match(output, /worker-47/);
+    assert.match(output, /load-47\.ts/);
+    assert.ok(updateDurationMs < 100, `Expected 48 updates under 100ms, took ${updateDurationMs.toFixed(1)}ms.`);
+  } finally {
+    stop();
+    tui.stop();
+    cards.forEach(clearLiveCardDetails);
+  }
+});
+
 test("duplicate extension instances keep one shared live panel", async () => {
   const nonce = Date.now();
   const modules = await Promise.all([1, 2].map((id) => import(`../dist/ui.js?live-panel-${id}=${nonce}`)));
@@ -515,13 +602,13 @@ test("bounded activity cards retain the exact hidden activity count", () => {
     })),
   });
 
-  assert.match(card.render(100).join("\n"), /\[\+19991 activities\]/);
+  assert.match(card.render(100).join("\n"), /\[\+19987 activities\]/);
 });
 
 function renderCard(details) {
   return renderAgentsResult(
     { content: [{ type: "text", text: details.message }], details },
-    { expanded: false, isPartial: true },
+    { expanded: true, isPartial: true },
     { bold: (text) => text, fg: (_name, text) => text },
     { args: {} },
   );

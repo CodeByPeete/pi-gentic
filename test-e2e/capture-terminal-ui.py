@@ -180,7 +180,7 @@ def render_png(name):
     return path
 
 
-def spawn(extra_args=None, cwd=INTERACTIVE_WORK_DIR):
+def spawn(extra_args=None, cwd=INTERACTIVE_WORK_DIR, wait_for_initial=True):
     env = os.environ.copy()
     env.update({
         "TERM": "xterm-256color",
@@ -224,7 +224,8 @@ def spawn(extra_args=None, cwd=INTERACTIVE_WORK_DIR):
     thread.start()
     time.sleep(0.4)
     proc.write("\x1b[?0u\x1b[?1;2c")
-    wait_for("initial editor", lambda text: "[Extensions]" in text and "extension.js" in text, timeout=20)
+    if wait_for_initial:
+        wait_for("initial editor", lambda text: "[Extensions]" in text and "extension.js" in text, timeout=20)
     return proc
 
 
@@ -603,26 +604,29 @@ def capture_completed_card_answer():
     fixture.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
     proc = spawn(["--session", str(fixture)])
     try:
-        text = wait_for("completed card answer", lambda value: "Agent answered." in value and answer in value, timeout=30)
-        if request in text:
-            raise AssertionError("Completed card body displayed the request instead of the answer")
+        collapsed = wait_for("compact completed card", lambda value: "Agent answered." in value, timeout=30)
+        if answer in collapsed or request in collapsed or "Ctrl+O" in collapsed:
+            raise AssertionError("Collapsed historical card displayed details instead of only the agent-call marker")
+        collapsed_screenshot = render_png("completed-card-collapsed-terminal.png")
         proc.write("\x0f")
         expanded = wait_for(
-            "completed card call properties",
-            lambda value: "Call properties" in value
+            "completed card answer and call properties",
+            lambda value: answer in value
+            and "Call properties" in value
             and "toolCallId: tool-call-fixture" in value
             and "worktree: task-branch" in value,
             timeout=10,
         )
         if "callerEntryId: entry-fixture" not in expanded or "repo:" not in expanded:
             raise AssertionError("Expanded historical card omitted exact agent call properties")
-        screenshot = render_png("completed-card-answer-terminal.png")
+        expanded_screenshot = render_png("completed-card-answer-terminal.png")
         evidence = OUTPUT / "completed-card-answer-check.txt"
         evidence.write_text(
-            "answer_in_card=true\nrequest_in_collapsed_card=false\nexact_call_properties=true\n",
+            "collapsed_marker_only=true\nanswer_in_expanded_card=true\nexact_call_properties=true\n",
             encoding="utf-8",
         )
-        print(screenshot)
+        print(collapsed_screenshot)
+        print(expanded_screenshot)
         print(evidence)
     finally:
         stop(proc)
@@ -928,8 +932,37 @@ def capture_abort_after_session_switch():
         stop(proc)
 
 
+def capture_lag_session():
+    if LAG_SESSION_SOURCE is None or not LAG_SESSION_SOURCE.exists():
+        raise FileNotFoundError("PI_E2E_LAG_SESSION must point to the session under test")
+    reset_output()
+    proc = spawn(["--session", str(LAG_SESSION_FILE)], wait_for_initial=False)
+    try:
+        wait_for(
+            "lag session compact cards",
+            lambda text: "Agent call (" in text and "Bewerbungen" in text,
+            timeout=30,
+        )
+        time.sleep(0.5)
+        screenshot = render_png("lag-session-compact-cards-terminal.png")
+        probe = "responsiveness-check"
+        started_at = time.perf_counter()
+        proc.write(probe)
+        wait_for("lag session editor response", lambda text: probe in text, timeout=5)
+        response_seconds = time.perf_counter() - started_at
+        evidence = OUTPUT / "lag-session-performance-check.txt"
+        evidence.write_text(f"editor_response_seconds={response_seconds:.3f}\n", encoding="utf-8")
+        print(screenshot)
+        print(evidence)
+    finally:
+        stop(proc)
+
+
 def main():
     global stop_reader, screen, stream
+    if os.environ.get("PI_E2E_LAG_ONLY") == "1":
+        capture_lag_session()
+        return
     if "--deterministic" in sys.argv:
         capture_completed_card_answer()
         if os.environ.get("RUNNER_OS") != "Linux":

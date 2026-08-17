@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TUI } from "@earendil-works/pi-tui";
 import { Duration, Effect, Exit, Fiber, Schedule, Schema } from "effect";
 import { formatDuration, isRecord, shortestUniqueSessionId, shortSessionId } from "./catalog.js";
@@ -7,6 +8,7 @@ import type { ExtensionRuntime } from "./runtime/ExtensionRuntime.js";
 
 const COMPLETED_CARD_TTL_MS = 60_000;
 export const PersistedCardDetailsSchema = Schema.Record(Schema.String, Schema.UndefinedOr(Schema.Json));
+export const MAX_CARD_ACTIVITY_LINES = 14;
 
 const ACTIVE_CARD_STATUSES = new Set(["queued", "running"]);
 const TERMINAL_CARD_STATUSES = new Set(["done", "error", "aborted", "stopped"]);
@@ -88,6 +90,22 @@ function booleanField(value: unknown) {
 
 function numberField(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+export function prepareCardDetailsForHistory(details: UnknownRecord) {
+  if (!Array.isArray(details.activities)) return { ...details };
+  const { activityCount, ...historyDetails } = details;
+  const activities = details.activities.filter(isRecord);
+  const retainedActivities = activities.slice(-MAX_CARD_ACTIVITY_LINES);
+  const recordedActivityCount = numberField(activityCount);
+
+  return {
+    ...historyDetails,
+    activities: retainedActivities,
+    ...(recordedActivityCount !== undefined || retainedActivities.length < activities.length
+      ? { activityCount: Math.max(recordedActivityCount ?? 0, activities.length) }
+      : {}),
+  };
 }
 
 interface LiveCardEntry {
@@ -522,12 +540,14 @@ class LiveCardsPanel {
     if (cards.length === 0) return [];
     const terminalRows = Math.max(8, Number(this.tui.terminal?.rows ?? 24));
     const rowLimit = Math.max(1, terminalRows - 10);
-    const hiddenCount = Math.max(0, cards.length - rowLimit);
-    const visibleCards = cards.slice(-rowLimit);
+    const truncated = cards.length > rowLimit;
+    const visibleCount = truncated ? rowLimit - 1 : rowLimit;
+    const visibleCards = visibleCount > 0 ? cards.slice(-visibleCount) : [];
+    const hiddenCount = cards.length - visibleCards.length;
     const sessionIds = visibleCards.map((details) => details.sessionId);
     const rows = visibleCards.map((details) => this.cardRow(details, Math.max(10, width - 4), sessionIds));
 
-    if (hiddenCount > 0) rows[0] = this.dim(`… ${hiddenCount} earlier active card${hiddenCount === 1 ? "" : "s"}`);
+    if (hiddenCount > 0) rows.unshift(this.dim(`… ${hiddenCount} earlier active card${hiddenCount === 1 ? "" : "s"}`));
 
     return renderBordered(
       width,
@@ -742,10 +762,19 @@ class InvisibleComponent {
   }
 }
 
+interface CardRenderCache {
+  readonly width: number;
+  readonly data: CardDetails;
+  readonly persistedDetails?: CardDetails;
+  readonly liveDetails?: CardDetails;
+  readonly lines: string[];
+}
+
 class AgentsCard {
   theme: PiTheme;
   data: CardDetails;
   expanded: boolean;
+  renderCache?: CardRenderCache;
 
   constructor(theme: PiTheme) {
     this.theme = theme;
@@ -756,12 +785,25 @@ class AgentsCard {
   update(data: CardDetails, expanded: boolean) {
     this.data = data;
     this.expanded = expanded;
+    this.renderCache = undefined;
   }
 
-  invalidate() {}
+  invalidate() {
+    this.renderCache = undefined;
+  }
 
   render(width: number) {
     const { details, liveDetails, persistedDetails, live } = resolveCardDetails(this.data);
+    const cache = this.renderCache;
+
+    if (
+      cache?.width === width &&
+      cache.data === this.data &&
+      cache.persistedDetails === persistedDetails &&
+      cache.liveDetails === liveDetails
+    )
+      return cache.lines;
+
     const staleRunning = details.status === "running" && !live;
     this.data = {
       ...details,
@@ -770,26 +812,23 @@ class AgentsCard {
       status: staleRunning ? "restored" : details.status,
       completedAt: staleRunning ? (details.completedAt ?? details.updatedAt ?? details.startedAt) : details.completedAt,
     };
-    return renderBordered(
+    const lines = renderBordered(
       width,
       (text) => this.colorBorder(text),
       (innerWidth) => this.buildLines(innerWidth),
     );
+
+    this.renderCache = { width, data: this.data, persistedDetails, liveDetails, lines };
+
+    return lines;
   }
 
   buildLines(width: number) {
     const header = this.header(width);
-    const maxBodyLines = 11;
-    const body = this.expanded
-      ? this.body(width).flatMap((line) => wrap(line, width))
-      : this.collapsedBody(width, maxBodyLines);
-    const footer = this.footer(width);
-    const visibleBody =
-      !this.expanded && body.length > maxBodyLines
-        ? [...body.slice(0, maxBodyLines - 1), this.muted(`… ${body.length - maxBodyLines + 1} more`)]
-        : body;
 
-    return [header, "", ...visibleBody, "", footer];
+    if (!this.expanded) return [header];
+
+    return [header, "", ...this.body(width).flatMap((line) => wrap(line, width)), "", this.footer(width)];
   }
 
   header(width: number) {
@@ -799,12 +838,8 @@ class AgentsCard {
     const agent =
       this.data.agentName && this.data.agentName !== "agentless" ? ` ${this.agent(this.data.agentName)}` : "";
     const session = this.data.sessionId ? ` ${this.dim(`(${shortSessionId(this.data.sessionId)})`)}` : "";
-    const inactive =
-      this.data.live && this.data.status === "running" && this.data.updatedAt
-        ? `${this.dim("Inactive:")} ${this.timer(formatDuration(Date.now() - this.data.updatedAt))}`
-        : "";
 
-    return joinWithRight(`${icon} ${async}${this.bold(title)}${agent}${session}`, inactive, width);
+    return fit(`${icon} ${async}${this.bold(title)}${agent}${session}`, width);
   }
 
   title() {
@@ -859,25 +894,21 @@ class AgentsCard {
     const properties = Object.entries(parameters).map(
       ([key, value]) => `${this.muted(`${key}:`)} ${formatValue(value)}`,
     );
-    const effective = effectiveParameters
-      ? [
-          "",
-          this.bold("Effective properties"),
-          ...Object.entries(effectiveParameters).map(
-            ([key, value]) => `${this.muted(`${key}:`)} ${formatValue(value)}`,
-          ),
-        ]
+    const resolvedProperties = effectiveParameters
+      ? Object.entries(effectiveParameters).filter(
+          ([key, value]) => !(key in parameters) || !isDeepStrictEqual(parameters[key], value),
+        )
       : [];
+    const resolved =
+      resolvedProperties.length > 0
+        ? [
+            "",
+            this.bold("Resolved properties"),
+            ...resolvedProperties.map(([key, value]) => `${this.muted(`${key}:`)} ${formatValue(value)}`),
+          ]
+        : [];
 
-    return [this.bold("Call properties"), ...identity, ...properties, ...effective];
-  }
-
-  collapsedBody(width: number, maxLines: number) {
-    if (this.data.kind !== "send" || this.data.error) return this.body(width);
-    const content = wrap(this.bodyText(), width).slice(0, 2);
-    const activities = this.activityLines(width, Math.max(0, maxLines - content.length));
-
-    return [...content, ...activities];
+    return [this.bold("Call properties"), ...identity, ...properties, ...resolved];
   }
 
   bodyText() {
@@ -938,7 +969,7 @@ class AgentsCard {
     return lines.length ? lines : [this.muted("No configuration changes.")];
   }
 
-  activityLines(width: number, maxLines = this.expanded ? 14 : 4) {
+  activityLines(width: number, maxLines = this.expanded ? MAX_CARD_ACTIVITY_LINES : 4) {
     const answer = normalizeInline(this.data.answer);
     const activities = Array.isArray(this.data.activities)
       ? this.data.activities.filter(
@@ -969,9 +1000,7 @@ class AgentsCard {
 
   totalDurationText() {
     if (this.data.kind !== "send" || !this.data.startedAt) return "";
-    const endAt =
-      this.data.completedAt ??
-      (this.data.live && isActiveCard(this.data) ? Date.now() : (this.data.updatedAt ?? this.data.startedAt));
+    const endAt = this.data.completedAt ?? this.data.updatedAt ?? this.data.startedAt;
 
     return formatDuration(Math.max(0, endAt - this.data.startedAt));
   }

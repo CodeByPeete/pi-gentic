@@ -126,6 +126,49 @@ test("agents tool call renders its exact invocation at the transcript call site"
   assert.match(output, /worktree: true/);
 });
 
+test("expanded delegation cards show resolved changes without repeating call properties", () => {
+  const output = text(
+    renderAgentsResult(
+      {
+        content: [{ type: "text", text: "Delegated from session parent." }],
+        details: {
+          kind: "delegation",
+          status: "done",
+          sessionId: "child-session",
+          call: {
+            toolCallId: "tool-call-delegation",
+            callerEntryId: "caller-entry",
+            parameters: {
+              action: "send",
+              agent: "researcher",
+              message: "Research the request",
+            },
+            effectiveParameters: {
+              action: "send",
+              agent: "researcher",
+              message: "Research the request",
+              async: false,
+              fork: false,
+              cwd: "/repository",
+            },
+          },
+        },
+      },
+      { expanded: true },
+      theme,
+      {},
+    ).render(160),
+  );
+
+  assert.equal(output.match(/action: send/g)?.length, 1);
+  assert.equal(output.match(/agent: researcher/g)?.length, 1);
+  assert.equal(output.match(/message: Research the request/g)?.length, 1);
+  assert.match(output, /Resolved properties/);
+  assert.match(output, /async: false/);
+  assert.match(output, /fork: false/);
+  assert.match(output, /cwd: \/repository/);
+});
+
 test("completed agent cards preserve exact invocation properties", () => {
   const call = renderAgentsCall({ action: "send", message: "delegate", repo: "/repository", worktree: "task" }, theme, {
     toolCallId: "tool-call-2",
@@ -241,7 +284,7 @@ test("persisted orchestration snapshots keep their captured inactivity", () => {
           ],
         },
       },
-      { expanded: false, isPartial: false },
+      { expanded: true, isPartial: false },
       theme,
       { args: {}, isError: false },
     );
@@ -257,7 +300,7 @@ test("persisted orchestration snapshots keep their captured inactivity", () => {
   }
 });
 
-test("active send cards keep live inactivity timers", () => {
+test("active transcript cards remain stable while live inactivity stays in the panel", () => {
   const originalNow = Date.now;
   const cardId = "active-send-card";
 
@@ -283,8 +326,8 @@ test("active send cards keep live inactivity timers", () => {
     Date.now = () => 1_001_000;
     const after = text(component.render(120));
 
-    assert.match(before, /Inactive: 1m:00s/);
-    assert.match(after, /Inactive: 1m:01s/);
+    assert.equal(after, before);
+    assert.doesNotMatch(after, /Inactive:/);
   } finally {
     clearLiveCardDetails({ cardId });
     Date.now = originalNow;
@@ -378,7 +421,7 @@ test("terminal card state restores duration and activities after restart", () =>
           content: [{ type: "text", text: "Sent a message" }],
           details: initialDetails,
         },
-        { expanded: false, isPartial: false },
+        { expanded: true, isPartial: false },
         theme,
         { args: {}, isError: false },
       ).render(120),
@@ -410,45 +453,39 @@ test("persisted card restoration rejects malformed host entries", () => {
   );
 });
 
-test("collapsed completed send cards show the answer before recent activities", () => {
-  const activities = Array.from({ length: 10 }, (_, index) => ({
-    type: "tool",
-    name: "read",
-    summary: `activity ${index + 1}`,
-  }));
-  const output = text(
-    renderAgentsResult(
-      {
-        content: [
-          {
-            type: "text",
-            text: "Message from [researcher] agent from session child:\nWrapped answer",
-          },
-        ],
-        details: {
-          kind: "send",
-          status: "done",
-          message: "Original task that should stay out of the completed body",
-          answer: "Answer line one\nAnswer line two\nAnswer line three",
-          activities,
-          startedAt: 1_000,
-          completedAt: 2_000,
-        },
-      },
-      { expanded: false, isPartial: false },
-      theme,
-      { args: {}, isError: false },
-    ).render(120),
-  );
+test("collapsed send cards mark the agent call in three rows while expanded cards preserve details", () => {
+  const result = {
+    content: [{ type: "text", text: "Wrapped answer" }],
+    details: {
+      kind: "send",
+      status: "done",
+      agentName: "researcher",
+      sessionId: "child-session",
+      message: "Original task",
+      answer: "Final answer",
+      activities: [{ type: "tool", name: "read", summary: "result.json" }],
+      startedAt: 1_000,
+      completedAt: 2_000,
+    },
+  };
+  const collapsed = renderAgentsResult(result, { expanded: false, isPartial: false }, theme, {
+    args: {},
+    isError: false,
+  }).render(120);
 
-  assert.match(output, /Answer line one/);
-  assert.match(output, /Answer line two/);
-  assert.doesNotMatch(output, /Answer line three/);
-  assert.doesNotMatch(output, /Original task/);
-  assert.doesNotMatch(output, /Wrapped answer/);
-  assert.doesNotMatch(output, /activity 1(?:\D|$)/);
-  assert.match(output, /activity 10/);
-  assert.equal([...output.matchAll(/\[read\] activity/g)].length, 8);
+  assert.equal(collapsed.length, 3);
+  assert.match(text(collapsed), /Agent answered\. researcher/);
+  assert.doesNotMatch(text(collapsed), /Final answer|Original task|result\.json|Ctrl\+O/);
+
+  const expanded = text(
+    renderAgentsResult(result, { expanded: true, isPartial: false }, theme, {
+      args: {},
+      isError: false,
+    }).render(120),
+  );
+  assert.match(expanded, /Final answer/);
+  assert.match(expanded, /\[read\] result\.json/);
+  assert.match(expanded, /Ctrl\+O to collapse/);
 });
 
 test("completed cards from older sessions fall back to their returned content", () => {
@@ -463,7 +500,7 @@ test("completed cards from older sessions fall back to their returned content", 
           completedAt: 2_000,
         },
       },
-      { expanded: false, isPartial: false },
+      { expanded: true, isPartial: false },
       theme,
       { args: {}, isError: false },
     ).render(120),
@@ -517,7 +554,7 @@ test("stopped send cards use a specific title instead of a generic failure", () 
           ].join("\n"),
         },
       },
-      { expanded: false, isPartial: false },
+      { expanded: true, isPartial: false },
       theme,
       { args: {}, isError: false },
     ).render(120),
@@ -574,7 +611,7 @@ test("send completion card displays the agent name only once in the header", () 
   assert.equal([...output.matchAll(/sypheros/g)].length, 1);
 });
 
-test("send cards render live child activity and stop inactive timers when done", () => {
+test("send cards render completed child activity when expanded", () => {
   const component = renderAgentsResult(
     {
       content: [{ type: "text", text: "create a temporary file" }],
@@ -587,7 +624,7 @@ test("send cards render live child activity and stop inactive timers when done",
         updatedAt: Date.now() - 60_000,
       },
     },
-    { expanded: false, isPartial: false },
+    { expanded: true, isPartial: false },
     theme,
     { args: {}, isError: false },
   );
@@ -633,7 +670,7 @@ test("send card activity renders multiline answers without breaking the box", ()
           completedAt: Date.now(),
         },
       },
-      { expanded: false, isPartial: false },
+      { expanded: true, isPartial: false },
       theme,
       { args: {}, isError: false },
     ).render(120),
@@ -657,13 +694,13 @@ test("error footer keeps its duration text without a trailing ellipsis", () => {
           completedAt: Date.now(),
         },
       },
-      { expanded: false, isPartial: false },
+      { expanded: true, isPartial: false },
       theme,
       { args: {}, isError: true },
     ).render(140),
   );
 
-  assert.match(output, /Ctrl\+O to expand\s+0s/);
+  assert.match(output, /Ctrl\+O to collapse\s+0s/);
 
   assert.doesNotMatch(output, /0…/);
 });
@@ -687,7 +724,7 @@ test("multiline aborted cards keep every rendered line inside the border", () =>
           completedAt: Date.now(),
         },
       },
-      { expanded: false, isPartial: false },
+      { expanded: true, isPartial: false },
       theme,
       { args: {}, isError: false },
     ).render(120),
@@ -731,4 +768,54 @@ test("cards preserve terminal geometry through repeated narrow and wide resizes"
 
   for (const width of [24, 40, 80, 160, 32, 120])
     for (const line of component.render(width)) assert.equal(terminalTextWidth(line), width, `${width}: ${line}`);
+});
+
+test("completed cards reuse stable renders and refresh after width or persisted detail changes", () => {
+  const cardId = "send:cache-regression";
+  const component = renderAgentsResult(
+    {
+      content: [{ type: "text", text: "Initial answer" }],
+      details: {
+        cardId,
+        kind: "send",
+        status: "done",
+        answer: "Initial answer",
+        activities: Array.from({ length: 100 }, (_, index) => ({
+          type: "tool",
+          name: "read",
+          summary: `result-${index}.json`,
+        })),
+      },
+    },
+    { expanded: false, isPartial: false },
+    theme,
+    { args: {}, isError: false },
+  );
+
+  const wide = component.render(120);
+  assert.strictEqual(component.render(120), wide);
+
+  const narrow = component.render(80);
+  assert.notStrictEqual(narrow, wide);
+  assert.strictEqual(component.render(80), narrow);
+
+  restorePersistedCardDetails({
+    getBranch: () => [
+      {
+        customType: CARD_STATE_ENTRY_TYPE,
+        data: {
+          cardId,
+          kind: "send",
+          status: "done",
+          agentName: "updated-agent",
+          answer: "Updated persisted answer",
+        },
+      },
+    ],
+  });
+
+  const updated = component.render(80);
+  assert.notStrictEqual(updated, narrow);
+  assert.match(text(updated), /updated-agent/);
+  assert.strictEqual(component.render(80), updated);
 });

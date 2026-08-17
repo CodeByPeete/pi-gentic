@@ -96,6 +96,7 @@ import {
   CARD_STATE_ENTRY_TYPE,
   PersistedCardDetailsSchema,
   isTerminalCard,
+  prepareCardDetailsForHistory,
   setAgentLabel,
   setLiveCardDetails,
   setPersistedCardDetails,
@@ -320,11 +321,8 @@ export async function deliverReturnToCaller({
 
   if (liveDelivery.delivered) return liveDelivery.mode;
 
-  if (invoke && invokeInactiveCaller) {
-    await invokeInactiveCaller(text);
-
+  if (invoke && (await deliverToInactiveCaller(invokeInactiveCaller, text, "background-return-delivery")))
     return "background";
-  }
 
   persistReturnForCaller({ callerSessionManager, text, invoke, persist });
 
@@ -348,7 +346,7 @@ export async function deliverCardToCaller({
     customType: CARD_MESSAGE_TYPE,
     content: text,
     display: true,
-    details,
+    details: prepareCardDetailsForHistory(details),
   };
   const liveTarget = liveCallerSession(ctx, callerSessionId, visibleSession);
 
@@ -368,14 +366,11 @@ export async function deliverCardToCaller({
     reportRuntimeDiagnostic("live-card-delivery", error);
   }
 
-  if (invoke && invokeInactiveCaller) {
-    await invokeInactiveCaller(message);
-
+  if (invoke && (await deliverToInactiveCaller(invokeInactiveCaller, message, "background-card-delivery")))
     return "background";
-  }
 
   try {
-    callerSessionManager.appendCustomMessageEntry?.(CARD_MESSAGE_TYPE, text, true, details);
+    callerSessionManager.appendCustomMessageEntry?.(CARD_MESSAGE_TYPE, text, true, message.details);
     persist?.(callerSessionManager);
 
     return "persisted";
@@ -711,13 +706,31 @@ function customMessageOptions(ctx: PiContext, queue: DeliveryQueue = "followUp")
   };
 }
 
+async function deliverToInactiveCaller<T>(
+  deliver: ((value: T) => Promise<unknown>) | undefined,
+  value: T,
+  diagnosticSource: string,
+) {
+  if (!deliver) return false;
+
+  try {
+    await deliver(value);
+    return true;
+  } catch (error) {
+    reportRuntimeDiagnostic(diagnosticSource, error);
+    return false;
+  }
+}
+
 function customDeliveryOptions(
   target: SessionController | PiContext,
   invoke: boolean,
   queue: DeliveryQueue = "followUp",
 ) {
-  const streaming =
-    ("isStreaming" in target && target.isStreaming === true) || ("isIdle" in target && target.isIdle?.() === false);
+  if ("isStreaming" in target && target.isStreaming === true) return { deliverAs: queue };
+  if (!("isIdle" in target)) return { triggerTurn: invoke === true };
+  const isIdle = target.isIdle;
+  const streaming = typeof isIdle === "function" ? isIdle.call(target) === false : isIdle === false;
 
   return streaming ? { deliverAs: queue } : { triggerTurn: invoke === true };
 }
@@ -729,11 +742,7 @@ export function persistAgentCardState(
 ) {
   if (!details?.cardId || !isTerminalCard(details)) return false;
   if (typeof sessionManager.appendCustomEntry !== "function") return false;
-  const snapshot = {
-    ...details,
-    activities: Array.isArray(details.activities) ? [...details.activities] : details.activities,
-  };
-
+  const snapshot = prepareCardDetailsForHistory(details);
   const decoded = Schema.decodeUnknownExit(PersistedCardDetailsSchema)(snapshot);
 
   if (Exit.isFailure(decoded)) {
@@ -1021,7 +1030,7 @@ function assistantMessageActivities(message: UnknownRecord) {
     activities.push({
       id: "assistant",
       type: "assistant",
-      text: message.errorMessage || "Unknown error",
+      text: assistantErrorMessage(message) || "Unknown error",
       status: "error",
     });
 
@@ -1118,6 +1127,19 @@ function truncateInline(text: unknown, length: number) {
   return normalized.length > length ? `${normalized.slice(0, Math.max(0, length - 1))}…` : normalized;
 }
 
+function assistantErrorMessage(message: UnknownRecord) {
+  if (Array.isArray(message.diagnostics))
+    for (let index = message.diagnostics.length - 1; index >= 0; index--) {
+      const diagnostic = message.diagnostics[index];
+      if (!isRecord(diagnostic) || !isRecord(diagnostic.error)) continue;
+      const error = diagnostic.error.message;
+
+      if (typeof error === "string" && error.trim()) return error.trim();
+    }
+
+  return typeof message.errorMessage === "string" ? message.errorMessage : undefined;
+}
+
 export function sessionRunOutcome(runtime: PiRuntimeSession, { request, error }: UnknownRecord = {}) {
   const session = runtime.session;
   const assistant = lastAssistantMessage(session.agent.state.messages);
@@ -1136,7 +1158,7 @@ export function sessionRunOutcome(runtime: PiRuntimeSession, { request, error }:
       status: "error",
       text: sessionOutcomeText(runtime, "error", {
         request,
-        error: assistant.errorMessage,
+        error: assistantErrorMessage(assistant),
       }),
     };
 
@@ -1179,7 +1201,9 @@ function recentAssistantError(messages: unknown[], terminalAssistant: UnknownRec
     if (!isRecord(message)) continue;
     if (["user", "custom"].includes(String(message.role))) break;
     if (message.role !== "assistant" || message.stopReason !== "error") continue;
-    if (typeof message.errorMessage === "string") return message.errorMessage;
+    const error = assistantErrorMessage(message);
+
+    if (error) return error;
   }
 
   return undefined;
@@ -2128,6 +2152,7 @@ export class PiGenticOrchestrator {
     const sessionDir = ctx.sessionManager.getSessionDir();
     persistSessionImmediately(ctx.sessionManager);
     await this.assertCanCreateChildSession(ctx, config);
+    const parentSessionId = ctx.sessionManager.getSessionId();
     const parentSession = ctx.sessionManager.getSessionFile();
 
     if (input.fork && parentSession) {
@@ -2149,6 +2174,7 @@ export class PiGenticOrchestrator {
       runtimeHost,
       session: runtimeHost.session,
       agentName: undefined,
+      parentSessionId,
       parentSessionPath: parentSession,
       lastMessage: input.message,
       createdAt: new Date().toISOString(),

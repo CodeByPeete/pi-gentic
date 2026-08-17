@@ -27,6 +27,7 @@ export type PiRuntimeSession = {
   session: PiAgentSession;
   runtimeHost?: PiAgentRuntimeHost;
   agentName?: string;
+  parentSessionId?: string;
   parentSessionPath?: string;
   lastMessage?: string;
   lastActivityAt?: string;

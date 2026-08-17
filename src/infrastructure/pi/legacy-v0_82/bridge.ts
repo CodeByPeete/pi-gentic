@@ -237,9 +237,61 @@ export async function abortAgentCallsForSession(sessionId: unknown, options: Leg
 }
 
 function activeCallsForSession(sessionId: unknown) {
+  const sessionIds = sessionSubtreeIds(sessionId);
+
   return [...getLiveRuntimeState().activeCalls.values()].filter(
-    (call) => call.callerSessionId === sessionId || call.targetSessionId === sessionId,
+    (call) =>
+      (call.callerSessionId !== undefined && sessionIds.has(call.callerSessionId)) ||
+      (call.targetSessionId !== undefined && sessionIds.has(call.targetSessionId)),
   );
+}
+
+function sessionSubtreeIds(sessionId: unknown) {
+  const rootSessionId = String(sessionId ?? "");
+  const subtree = new Set<string>(rootSessionId ? [rootSessionId] : []);
+
+  if (!rootSessionId) return subtree;
+  const children = new Map<string, string[]>();
+  const runtimes = [...getLiveRuntimeState().runtimeSessions.values()];
+  const sessionIdsByPath = new Map(
+    runtimes.flatMap((runtime) => {
+      const id = runtime.session.sessionManager.getSessionId?.();
+      const file = normalizeSessionPath(runtime.session.sessionManager.getSessionFile?.());
+
+      return typeof id === "string" && file ? [[file, id]] : [];
+    }),
+  );
+
+  for (const runtime of runtimes) {
+    const id = runtime.session.sessionManager.getSessionId?.();
+    const parentPath = runtime.parentSessionPath ?? runtime.session.sessionManager.getHeader?.()?.parentSession;
+    const parentId = runtime.parentSessionId ?? sessionIdsByPath.get(normalizeSessionPath(parentPath) ?? "");
+
+    if (typeof id !== "string" || typeof parentId !== "string") continue;
+    children.set(parentId, [...(children.get(parentId) ?? []), id]);
+  }
+
+  const pending = [rootSessionId];
+
+  while (pending.length > 0) {
+    const parentId = pending.pop();
+
+    if (!parentId) continue;
+    for (const childId of children.get(parentId) ?? []) {
+      if (subtree.has(childId)) continue;
+      subtree.add(childId);
+      pending.push(childId);
+    }
+  }
+
+  return subtree;
+}
+
+function normalizeSessionPath(value: unknown) {
+  if (typeof value !== "string" || !value) return undefined;
+  const normalized = path.resolve(value);
+
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 async function abortCalls(calls: AgentCall[], options: LegacyRecord = {}) {
@@ -353,22 +405,21 @@ function installRuntimeSwitchBridge(
   ) {
     const switchOptions = withVisibleContextTracking(state, this, options);
 
-    if (typeof sessionPath !== "string" || !sessionPath.startsWith(LIVE_SESSION_PREFIX)) {
-      const restore = parkCurrentLiveRuntimeForSwitch(state, this);
-
-      try {
-        return await state.hostSwitchSession?.call(this, sessionPath, switchOptions);
-      } finally {
-        restore();
-      }
-    }
+    if (typeof sessionPath !== "string" || !sessionPath.startsWith(LIVE_SESSION_PREFIX))
+      return switchPersistedSession(state, this, sessionPath, switchOptions);
 
     const sessionId = sessionPath.slice(LIVE_SESSION_PREFIX.length);
     const live = state.liveRuntimes.get(sessionId) as
       | { runtime: PiAgentRuntimeHost; metadata?: LegacyRecord }
       | undefined;
 
-    if (!live) throw new Error(`No live pi-gentic session ${sessionId} is available.`);
+    if (!live) {
+      const persistedPath = state.runtimeSessions.get(sessionId)?.session.sessionManager.getSessionFile?.();
+
+      if (typeof persistedPath === "string" && persistedPath)
+        return switchPersistedSession(state, this, persistedPath, switchOptions);
+      throw new Error(`No live pi-gentic session ${sessionId} is available.`);
+    }
     const targetSessionFile = live.runtime.session.sessionFile;
     const beforeResult = await this.emitBeforeSwitch("resume", targetSessionFile);
 
@@ -390,6 +441,21 @@ function installRuntimeSwitchBridge(
 
     return { cancelled: false };
   };
+}
+
+async function switchPersistedSession(
+  state: LiveRuntimeState,
+  runtimeHost: LegacyRecord,
+  sessionPath: string,
+  options: LegacyRecord,
+) {
+  const restore = parkCurrentLiveRuntimeForSwitch(state, runtimeHost);
+
+  try {
+    return await state.hostSwitchSession?.call(runtimeHost, sessionPath, options);
+  } finally {
+    restore();
+  }
 }
 
 function installRuntimeNewSessionBridge(
@@ -443,22 +509,30 @@ export function activeVisibleSession() {
   return getLiveRuntimeState().activeSession;
 }
 
+const noop = () => {};
+const noopAsync = async () => {};
+
+function parkMethod(target: LegacyRecord, method: string, replacement: (...args: unknown[]) => unknown) {
+  const original = target[method];
+
+  if (typeof original !== "function") return noop;
+  target[method] = replacement;
+
+  return () => {
+    if (target[method] === replacement) target[method] = original;
+  };
+}
+
 export function parkCurrentLiveRuntimeForSwitch(state: LiveRuntimeState, runtimeHost: LegacyRecord | undefined) {
   const session = runtimeHost?.session;
-  const sessionId = session?.sessionManager?.getSessionId?.();
-  const tracked = sessionId ? getRuntimeSession(sessionId) : undefined;
-  const liveRuntime = tracked?.runtimeHost ?? (session ? snapshotRuntimeHost(runtimeHost, session) : undefined);
 
-  if (
-    !sessionId ||
-    session?.isStreaming !== true ||
-    !liveRuntime ||
-    liveRuntime.session !== session ||
-    typeof session.dispose !== "function"
-  )
-    return () => {};
-  const originalDispose = session.dispose;
-  const parkedDispose = () => {};
+  if (!session) return noop;
+  const parkAbort = () => parkMethod(session, "abort", noopAsync);
+  const sessionId = session.sessionManager?.getSessionId?.();
+  const tracked = sessionId ? getRuntimeSession(sessionId) : undefined;
+  const liveRuntime = tracked?.runtimeHost ?? snapshotRuntimeHost(runtimeHost, session);
+
+  if (!sessionId || session.isStreaming !== true || !liveRuntime || liveRuntime.session !== session) return parkAbort();
   const runtime = setRuntimeSession(sessionId, {
     ...(tracked ?? {}),
     runtimeHost: liveRuntime,
@@ -471,11 +545,15 @@ export function parkCurrentLiveRuntimeForSwitch(state: LiveRuntimeState, runtime
     runtime: liveRuntime,
     metadata: { agentName: runtime.agentName },
   });
-  session.dispose = parkedDispose;
+
+  if (typeof runtimeHost.teardownCurrent === "function") return parkMethod(runtimeHost, "teardownCurrent", noopAsync);
+  if (typeof session.dispose !== "function") return noop;
+  const restoreAbort = parkAbort();
+  const restoreDispose = parkMethod(session, "dispose", noop);
 
   return () => {
-    if (session.dispose !== parkedDispose) return;
-    session.dispose = originalDispose;
+    restoreAbort();
+    restoreDispose();
   };
 }
 

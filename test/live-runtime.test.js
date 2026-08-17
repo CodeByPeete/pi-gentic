@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import {
+  abortAgentCallsForSession,
   activeVisibleContext,
   activeVisibleExtension,
   deleteRuntimeSession,
@@ -13,6 +14,7 @@ import {
   installLiveSessionBridge,
   loadPiCodingAgentPeer,
   parkCurrentLiveRuntimeForSwitch,
+  registerAgentCall,
   setActiveVisibleExtension,
   setRuntimeSession,
   shouldPromptVisibleSessionNow,
@@ -127,6 +129,301 @@ test("live session bridge switches to and cancels native runtime replacements", 
     state.hostPromptSession = originalPrompt;
   } finally {
     state.liveRuntimes.delete("target-live");
+  }
+});
+
+test("session navigation does not abort work running in any session", async () => {
+  await installLiveSessionBridge();
+  const peer = await loadPiCodingAgentPeer();
+  const state = getLiveRuntimeState();
+  const hostAbortSession = state.hostAbortSession;
+  let sourceAborts = 0;
+
+  state.hostAbortSession = async () => {
+    sourceAborts += 1;
+  };
+
+  try {
+    for (const sourceIsStreaming of [false, true]) {
+      const suffix = sourceIsStreaming ? "streaming" : "idle";
+      const sourceSessionId = `navigation-source-${suffix}`;
+      const targetSessionId = `navigation-target-${suffix}`;
+      let sourceTeardowns = 0;
+      let targetAborts = 0;
+      const source = {
+        isStreaming: sourceIsStreaming,
+        abort(...args) {
+          return peer.AgentSession.prototype.abort.apply(this, args);
+        },
+        dispose: () => {},
+        sessionManager: { getSessionId: () => sourceSessionId },
+      };
+      const target = {
+        isStreaming: true,
+        sessionFile: `${targetSessionId}.jsonl`,
+        sessionManager: { getSessionId: () => targetSessionId },
+      };
+      const call = registerAgentCall({
+        id: `navigation-call-${suffix}`,
+        callerSessionId: sourceSessionId,
+        targetSessionId,
+        abort: () => {
+          targetAborts += 1;
+        },
+      });
+      const runtimeHost = {
+        session: source,
+        emitBeforeSwitch: async () => ({ cancelled: false }),
+        teardownCurrent: async function () {
+          sourceTeardowns += 1;
+          await this.session.abort();
+          this.session.dispose();
+        },
+        apply(result) {
+          this.session = result.session;
+        },
+        finishSessionReplacement: async () => {},
+      };
+
+      state.liveRuntimes.set(targetSessionId, {
+        runtime: { session: target, services: {}, diagnostics: [] },
+        metadata: {},
+      });
+
+      try {
+        assert.deepEqual(
+          await peer.AgentSessionRuntime.prototype.switchSession.call(
+            runtimeHost,
+            `pi-gentic-live:${targetSessionId}`,
+            {},
+          ),
+          { cancelled: false },
+        );
+        assert.equal(sourceAborts, 0);
+        assert.equal(sourceTeardowns, sourceIsStreaming ? 0 : 1);
+        assert.equal(targetAborts, 0);
+        assert.equal(state.activeCalls.has(call.id), true);
+      } finally {
+        call.unregister();
+        state.liveRuntimes.delete(targetSessionId);
+      }
+    }
+  } finally {
+    state.hostAbortSession = hostAbortSession;
+  }
+});
+
+test("forty-eight concurrent sessions remain responsive through navigation and cancellation", async () => {
+  await installLiveSessionBridge();
+  const peer = await loadPiCodingAgentPeer();
+  const state = getLiveRuntimeState();
+  const sessionCount = 48;
+  const rootSessionId = "load-root";
+  const sessions = [];
+  const calls = [];
+  const aborted = [];
+  let teardowns = 0;
+  const startedAt = performance.now();
+
+  for (let index = 0; index < sessionCount; index++) {
+    const sessionId = `load-session-${index}`;
+    let listener;
+    const session = {
+      isStreaming: true,
+      sessionFile: `${sessionId}.jsonl`,
+      abort: async () => {},
+      dispose: () => {},
+      sessionManager: {
+        getHeader: () => ({}),
+        getSessionFile: () => `${sessionId}.jsonl`,
+        getSessionId: () => sessionId,
+      },
+      subscribe(next) {
+        listener = next;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    const runtime = setRuntimeSession(sessionId, { parentSessionId: rootSessionId, session });
+
+    sessions.push({ sessionId, session, runtime, emit: (event) => listener?.(event) });
+    state.liveRuntimes.set(sessionId, { runtime: { session, services: {}, diagnostics: [] }, metadata: {} });
+    calls.push(
+      registerAgentCall({
+        id: `load-call-${index}`,
+        callerSessionId: rootSessionId,
+        targetSessionId: sessionId,
+        abort: () => aborted.push(sessionId),
+      }),
+    );
+  }
+
+  const runtimeHost = {
+    session: sessions[0].session,
+    emitBeforeSwitch: async () => ({ cancelled: false }),
+    teardownCurrent: async function () {
+      teardowns += 1;
+      await this.session.abort();
+      this.session.dispose();
+    },
+    apply(result) {
+      this.session = result.session;
+    },
+    finishSessionReplacement: async () => {},
+  };
+
+  try {
+    await Promise.all(
+      sessions.map(async ({ emit }, index) => {
+        emit({ type: "agent_start" });
+        await Promise.resolve();
+        emit({ type: "tool_execution_update", toolCallId: `load-tool-${index}` });
+      }),
+    );
+
+    for (const { sessionId } of sessions)
+      assert.deepEqual(
+        await peer.AgentSessionRuntime.prototype.switchSession.call(runtimeHost, `pi-gentic-live:${sessionId}`, {}),
+        { cancelled: false },
+      );
+
+    assert.equal(teardowns, 0);
+    assert.equal(
+      sessions.every(({ sessionId }) => state.liveRuntimes.has(sessionId)),
+      true,
+    );
+    assert.equal(
+      sessions.every(({ runtime }) => typeof runtime.lastActivityAt === "string"),
+      true,
+    );
+    assert.equal(
+      calls.every(({ id }) => state.activeCalls.has(id)),
+      true,
+    );
+    assert.equal(await abortAgentCallsForSession(rootSessionId), sessionCount);
+    assert.equal(new Set(aborted).size, sessionCount);
+    assert.ok(performance.now() - startedAt < 2_000);
+  } finally {
+    calls.forEach((call) => call.unregister());
+    sessions.forEach(({ sessionId }) => {
+      state.liveRuntimes.delete(sessionId);
+      deleteRuntimeSession(sessionId);
+    });
+  }
+});
+
+test("live resume falls back to the persisted session when a run settles after selection", async () => {
+  await installLiveSessionBridge();
+  const peer = await loadPiCodingAgentPeer();
+  const state = getLiveRuntimeState();
+  const sessionId = "settled-resume-target";
+  const sessionFile = "settled-resume-target.jsonl";
+  const target = {
+    isStreaming: false,
+    sessionManager: {
+      getSessionFile: () => sessionFile,
+      getSessionId: () => sessionId,
+    },
+  };
+  const originalSwitch = state.hostSwitchSession;
+  const visibleContexts = [];
+  let switchedPath;
+
+  state.hostSwitchSession = async (path, options) => {
+    switchedPath = path;
+    await options.withSession?.({ marker: "persisted-target-context" });
+    return { cancelled: false };
+  };
+  setRuntimeSession(sessionId, { session: target });
+  state.liveRuntimes.delete(sessionId);
+
+  try {
+    assert.deepEqual(
+      await peer.AgentSessionRuntime.prototype.switchSession.call({}, `pi-gentic-live:${sessionId}`, {
+        withSession: (ctx) => visibleContexts.push(ctx),
+      }),
+      { cancelled: false },
+    );
+    assert.equal(switchedPath, sessionFile);
+    assert.deepEqual(visibleContexts, [{ marker: "persisted-target-context" }]);
+    assert.equal(state.activeContext.marker, "persisted-target-context");
+  } finally {
+    state.hostSwitchSession = originalSwitch;
+    deleteRuntimeSession(sessionId);
+  }
+});
+
+test("native parent abort reaches every active descendant branch", async () => {
+  await installLiveSessionBridge();
+  const peer = await loadPiCodingAgentPeer();
+  const state = getLiveRuntimeState();
+  const originalAbort = state.hostAbortSession;
+  const aborted = [];
+  const calls = [
+    registerAgentCall({
+      callerSessionId: "abort-tree-root",
+      targetSessionId: "abort-tree-child-a",
+      abort: () => aborted.push("child-a"),
+    }),
+    registerAgentCall({
+      callerSessionId: "abort-tree-root",
+      targetSessionId: "abort-tree-child-b",
+      abort: () => aborted.push("child-b"),
+    }),
+    registerAgentCall({
+      callerSessionId: "abort-tree-child-a",
+      targetSessionId: "abort-tree-grandchild",
+      abort: () => aborted.push("grandchild"),
+    }),
+  ];
+  let parentAborts = 0;
+
+  state.hostAbortSession = async () => {
+    parentAborts += 1;
+  };
+
+  try {
+    await peer.AgentSession.prototype.abort.call({
+      sessionManager: { getSessionId: () => "abort-tree-root" },
+    });
+
+    assert.equal(parentAborts, 1);
+    assert.deepEqual(new Set(aborted), new Set(["child-a", "child-b", "grandchild"]));
+    assert.equal(state.activeCalls.has(calls[0].id), false);
+    assert.equal(state.activeCalls.has(calls[1].id), false);
+    assert.equal(state.activeCalls.has(calls[2].id), false);
+  } finally {
+    state.hostAbortSession = originalAbort;
+    calls.forEach((call) => call.unregister());
+  }
+});
+
+test("parent abort reaches active descendants after an intermediate delegation settles", async () => {
+  const aborted = [];
+  const sessions = [
+    ["settled-tree-root", {}],
+    ["settled-tree-child", { parentSessionId: "settled-tree-root" }],
+    ["settled-tree-grandchild", { parentSessionId: "settled-tree-child" }],
+  ];
+
+  for (const [sessionId, metadata] of sessions)
+    setRuntimeSession(sessionId, {
+      session: { sessionManager: { getSessionId: () => sessionId } },
+      ...metadata,
+    });
+  const call = registerAgentCall({
+    callerSessionId: "settled-tree-child",
+    targetSessionId: "settled-tree-grandchild",
+    abort: () => aborted.push("grandchild"),
+  });
+
+  try {
+    assert.equal(await abortAgentCallsForSession("settled-tree-root"), 1);
+    assert.deepEqual(aborted, ["grandchild"]);
+  } finally {
+    call.unregister();
+    sessions.forEach(([sessionId]) => deleteRuntimeSession(sessionId));
   }
 });
 

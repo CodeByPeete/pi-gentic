@@ -2,7 +2,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { clearLiveCardDetails, renderAgentsResult, setLiveCardDetails } from "../dist/ui.js";
+import {
+  clearLiveCardDetails,
+  renderAgentsResult,
+  setLiveCardDetails,
+  startSessionLiveCardRefresh,
+} from "../dist/ui.js";
+import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const outputDir = path.join(root, "output");
@@ -175,6 +181,55 @@ const cases = [
       completedAt: Date.now(),
     },
   },
+  {
+    name: "expanded-delegation",
+    expanded: true,
+    details: {
+      kind: "delegation",
+      status: "done",
+      sessionId: "019fe6cd-demo",
+      message: "Delegated from session 019fe6cc.",
+      call: {
+        toolCallId: "call_demo",
+        callerEntryId: "entry_demo",
+        parameters: {
+          action: "send",
+          agent: "researcher",
+          message: "Research the requested sources.",
+        },
+        effectiveParameters: {
+          action: "send",
+          agent: "researcher",
+          message: "Research the requested sources.",
+          async: false,
+          fork: false,
+          cwd: "C:\\workspace",
+        },
+      },
+    },
+  },
+  {
+    name: "delegated-provider-error",
+    details: {
+      kind: "send",
+      status: "error",
+      async: true,
+      agentName: "researcher",
+      sessionId: "019fe679-demo",
+      message: "Research the target resources in the background.",
+      error:
+        "Session 019fe679 [researcher] failed while handling your request.\nError: Your input exceeds the context window of this model.\nRequest: Research the target resources in the background.",
+      activities: [
+        {
+          type: "assistant",
+          text: "Your input exceeds the context window of this model.",
+          status: "error",
+        },
+      ],
+      startedAt: Date.now() - 18_000,
+      completedAt: Date.now(),
+    },
+  },
 ];
 
 for (const item of cases) {
@@ -221,6 +276,57 @@ for (const item of cases) {
   } else {
     console.log(pngPath);
   }
+}
+
+const loadCards = Array.from({ length: 48 }, (_, index) => ({
+  cardId: `load-capture-${index}`,
+  kind: "send",
+  status: "running",
+  livePanel: true,
+  callerSessionId: "load-parent",
+  sessionId: `load-session-${String(index).padStart(2, "0")}`,
+  agentName: `worker-${String(index).padStart(2, "0")}`,
+  async: true,
+  message: `Process load task ${index}`,
+  startedAt: Date.now() - 10_000,
+  updatedAt: Date.now(),
+  activities: [{ type: "tool", name: "read", summary: `load-${index}.ts` }],
+}));
+const loadRuntime = createExtensionRuntime();
+let loadPanel;
+const loadStop = startSessionLiveCardRefresh(
+  {
+    mode: "tui",
+    sessionManager: { getSessionId: () => "load-parent", getEntries: () => [] },
+    ui: {
+      setWidget(_key, factory) {
+        loadPanel = factory?.({ terminal: { rows: 54 }, requestRender() {} }, theme);
+      },
+    },
+  },
+  loadRuntime,
+);
+
+try {
+  loadCards.forEach((card) => setLiveCardDetails(card));
+  loadStop.refresh();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const lines = loadPanel.render(width);
+  const svgPath = path.join(outputDir, "live-panel-48-sessions.svg");
+  const pngPath = path.join(outputDir, "live-panel-48-sessions.png");
+
+  writeFileSync(path.join(outputDir, "live-panel-48-sessions.ansi"), `${lines.join("\n")}\n`, "utf8");
+  writeFileSync(svgPath, toSvg(lines), "utf8");
+  const result = spawnSync("magick", [svgPath, pngPath], { timeout: 15_000, encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    console.error(`Could not render ${pngPath}: ${result.error?.message ?? result.stderr}`);
+  } else {
+    console.log(pngPath);
+  }
+} finally {
+  loadStop();
+  loadCards.forEach(clearLiveCardDetails);
+  await loadRuntime.dispose();
 }
 
 function color(name) {

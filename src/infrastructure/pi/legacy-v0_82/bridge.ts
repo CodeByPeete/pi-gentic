@@ -497,6 +497,17 @@ export function setActiveVisibleExtension(api: PiApi, ctx: PiContext) {
   state.activeContext = ctx;
 }
 
+export function clearActiveVisibleExtension(api: PiApi) {
+  const state = getLiveRuntimeState();
+
+  if (state.activeApi !== api) return false;
+  state.activeApi = undefined;
+  state.activeContext = undefined;
+  state.activeSession = undefined;
+
+  return true;
+}
+
 export function activeVisibleExtension() {
   return getLiveRuntimeState().activeApi;
 }

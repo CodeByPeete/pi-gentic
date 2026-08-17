@@ -620,13 +620,30 @@ def capture_completed_card_answer():
         if "callerEntryId: entry-fixture" not in expanded or "repo:" not in expanded:
             raise AssertionError("Expanded historical card omitted exact agent call properties")
         expanded_screenshot = render_png("completed-card-answer-terminal.png")
+        proc.write("\x0f")
+        wait_for(
+            "completed card collapsed before reload",
+            lambda value: "Agent answered." in value and "Call properties" not in value,
+            timeout=10,
+        )
+        proc.write("/reload\r")
+        reloaded = wait_for(
+            "completed card survives extension reload",
+            lambda value: "Reloaded keybindings, extensions, skills, prompts, themes, and context files" in value
+            and "Agent answered." in value,
+            timeout=30,
+        )
+        if "Reload failed:" in reloaded or "This extension ctx is stale" in reloaded:
+            raise AssertionError("Extension reload displayed an orchestration error")
+        reload_screenshot = render_png("completed-card-after-reload-terminal.png")
         evidence = OUTPUT / "completed-card-answer-check.txt"
         evidence.write_text(
-            "collapsed_marker_only=true\nanswer_in_expanded_card=true\nexact_call_properties=true\n",
+            "collapsed_marker_only=true\nanswer_in_expanded_card=true\nexact_call_properties=true\nreload_succeeded_without_orchestration_error=true\n",
             encoding="utf-8",
         )
         print(collapsed_screenshot)
         print(expanded_screenshot)
+        print(reload_screenshot)
         print(evidence)
     finally:
         stop(proc)

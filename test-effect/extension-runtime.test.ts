@@ -1,4 +1,4 @@
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber } from "effect";
 import type { DelegationState } from "../src/domain/delegation.js";
 import { DelegationFibers } from "../src/infrastructure/runtime/DelegationFibers.js";
@@ -11,6 +11,17 @@ describe("ExtensionRuntime", () => {
     assert.isFalse(shouldDisposeExtensionRuntime("fork"));
     assert.isTrue(shouldDisposeExtensionRuntime("quit"));
     assert.isTrue(shouldDisposeExtensionRuntime("reload"));
+  });
+
+  it("defers reload disposal until retained background work settles", async () => {
+    const runtime = createExtensionRuntime();
+    const release = runtime.retain();
+    const disposal = runtime.disposeWhenIdle();
+
+    assert.strictEqual(await runtime.runPromise(Effect.succeed("active")), "active");
+    release();
+    await disposal;
+    await expect(runtime.runPromise(Effect.void)).rejects.toThrow("ManagedRuntime disposed");
   });
 
   it("interrupts owned delegation fibers during disposal", async () => {

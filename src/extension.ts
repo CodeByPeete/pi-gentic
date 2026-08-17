@@ -30,7 +30,12 @@ import {
   normalizeAgentsToolInput,
   type AgentsToolInput,
 } from "./domain/agents-tool.js";
-import { hostCompatibilityDiagnostics, installLiveSessionBridge, setActiveVisibleExtension } from "./pi-host.js";
+import {
+  clearActiveVisibleExtension,
+  hostCompatibilityDiagnostics,
+  installLiveSessionBridge,
+  setActiveVisibleExtension,
+} from "./pi-host.js";
 import { PiGenticOrchestrator } from "./orchestration.js";
 import type { PiApi, PiContext, UnknownRecord } from "./pi-types.js";
 import { createExtensionRuntime, shouldDisposeExtensionRuntime } from "./runtime/ExtensionRuntime.js";
@@ -61,11 +66,18 @@ export default async function piGentic(pi: ExtensionAPI) {
   const completionContext = createCompletionContext(pi);
   const delegationContextBoundaries = new WeakMap<PiContext["sessionManager"], string | null>();
   let runtimeDisposed = false;
+  let stopSessionLiveCardRefresh: (() => void) | undefined;
 
   pi.on("session_shutdown", async (event) => {
+    stopSessionLiveCardRefresh?.();
+    stopSessionLiveCardRefresh = undefined;
+    clearActiveVisibleExtension(pi);
     if (runtimeDisposed || !shouldDisposeExtensionRuntime(event.reason)) return;
     runtimeDisposed = true;
-    await runtime.dispose();
+
+    if (event.reason === "reload")
+      void runtime.disposeWhenIdle().catch((error) => reportRuntimeDiagnostic("extension-runtime-disposal", error));
+    else await runtime.dispose();
   });
 
   pi.registerMessageRenderer<UnknownRecord>("pi-gentic:card", (message, options, theme) => {
@@ -87,8 +99,6 @@ export default async function piGentic(pi: ExtensionAPI) {
     return component;
   });
 
-  let stopSessionLiveCardRefresh: (() => void) | undefined;
-
   pi.on("session_start", async (event, ctx) => {
     setActiveVisibleExtension(pi, ctx);
     stopSessionLiveCardRefresh?.();
@@ -104,11 +114,6 @@ export default async function piGentic(pi: ExtensionAPI) {
     } catch (error) {
       ctx.ui.notify(`pi-gentic: ${getErrorMessage(error)}`, "warning");
     }
-  });
-
-  pi.on("session_shutdown", async () => {
-    stopSessionLiveCardRefresh?.();
-    stopSessionLiveCardRefresh = undefined;
   });
 
   pi.registerShortcut(AGENT_CYCLE_SHORTCUT, {

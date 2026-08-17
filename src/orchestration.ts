@@ -1857,6 +1857,7 @@ export class PiGenticOrchestrator {
       once: true,
     });
     const run = async (operationSignal?: AbortSignal) => {
+      const releaseRuntime = this.runtime.retain();
       const abortFromOperation = () =>
         runAbort("delegation-operation-abort", () => abortAgentCall(activeCall.id, { actor: callerActor }));
       operationSignal?.addEventListener("abort", abortFromOperation, {
@@ -1962,23 +1963,27 @@ export class PiGenticOrchestrator {
 
         return { answer: outcome.text, details: failed };
       } finally {
-        unsubscribe?.();
-        setRuntimeSession(targetSessionId, target);
-        callbacks.signal?.removeEventListener?.("abort", abortFromSignal);
-        operationSignal?.removeEventListener("abort", abortFromOperation);
-        activeCall.unregister();
+        try {
+          unsubscribe?.();
+          setRuntimeSession(targetSessionId, target);
+          callbacks.signal?.removeEventListener?.("abort", abortFromSignal);
+          operationSignal?.removeEventListener("abort", abortFromOperation);
+          activeCall.unregister();
 
-        if (target.session.isStreaming !== true) {
-          unregisterLiveRuntime(targetSessionId);
-          try {
-            await this.runtime.runPromise(
-              Effect.flatMap(RuntimeRegistry, (registry) => registry.remove(runtimeMetadata.sessionId)),
-            );
-          } catch (error) {
-            reportRuntimeDiagnostic("runtime-registry-removal", error);
+          if (target.session.isStreaming !== true) {
+            unregisterLiveRuntime(targetSessionId);
+            try {
+              await this.runtime.runPromise(
+                Effect.flatMap(RuntimeRegistry, (registry) => registry.remove(runtimeMetadata.sessionId)),
+              );
+            } catch (error) {
+              reportRuntimeDiagnostic("runtime-registry-removal", error);
+            }
           }
+          pruneRuntimeSessions();
+        } finally {
+          releaseRuntime();
         }
-        pruneRuntimeSessions();
       }
     };
 

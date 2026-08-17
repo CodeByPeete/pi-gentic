@@ -8,6 +8,7 @@ import {
   abortAgentCallsForSession,
   activeVisibleContext,
   activeVisibleExtension,
+  clearActiveVisibleExtension,
   deleteRuntimeSession,
   getLiveRuntimeState,
   getRuntimeSession,
@@ -542,14 +543,19 @@ test("runtime activity tracking follows session replacement without leaking list
   assert.deepEqual(unsubscribed, ["first", "second"]);
 });
 
-test("the current extension API follows native session replacement", () => {
+test("the current extension API follows replacement and clears its stale reload context", () => {
   const api = { sendMessage() {} };
+  const staleApi = { sendMessage() {} };
   const ctx = { sessionManager: { getSessionId: () => "current-api" } };
 
   setActiveVisibleExtension(api, ctx);
 
+  assert.equal(clearActiveVisibleExtension(staleApi), false);
   assert.equal(activeVisibleExtension(), api);
   assert.equal(activeVisibleContext(), ctx);
+  assert.equal(clearActiveVisibleExtension(api), true);
+  assert.equal(activeVisibleExtension(), undefined);
+  assert.equal(activeVisibleContext(), undefined);
 });
 
 test("active visible context is shared through live runtime state", () => {

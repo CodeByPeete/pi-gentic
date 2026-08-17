@@ -39,6 +39,7 @@ import { resolveSessionPolicy } from "../dist/catalog.js";
 import { PiGenticOrchestrator, prepareWorktree } from "../dist/orchestration.js";
 import { deleteRuntimeSession, loadPiCodingAgentPeer, registerAgentCall, setRuntimeSession } from "../dist/pi-host.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
+import { clearLiveCardDetails, getLiveCardDetails } from "../dist/ui.js";
 
 const effectRuntime = createExtensionRuntime();
 test.after(() => effectRuntime.dispose());
@@ -640,10 +641,15 @@ test("foreground sends complete through the managed delegation runtime", async (
   }
 });
 
-test("background sends deliver successful terminal state to the caller", async () => {
+test("background sends survive extension reload and leave the live panel terminal", async () => {
   const targetSessionId = "background-target";
   const messages = [];
   const deliveries = [];
+  const runtime = createExtensionRuntime();
+  let finishTarget;
+  const targetCanFinish = new Promise((resolve) => {
+    finishTarget = resolve;
+  });
   let settle;
   const settled = new Promise((resolve) => {
     settle = resolve;
@@ -655,6 +661,7 @@ test("background sends deliver successful terminal state to the caller", async (
       isStreaming: false,
       sessionManager: { getSessionId: () => targetSessionId },
       prompt: async () => {
+        await targetCanFinish;
         messages.push({
           role: "assistant",
           content: "Background answer",
@@ -664,7 +671,7 @@ test("background sends deliver successful terminal state to the caller", async (
       abort: async () => {},
     },
   };
-  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [], sendMessage: () => {} }, effectRuntime);
+  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [], sendMessage: () => {} }, runtime);
   orchestrator.load = () => ({});
   orchestrator.resolvePolicy = () => ({ agentsTool: {} });
   orchestrator.resolveTargetSession = async () => target;
@@ -672,9 +679,10 @@ test("background sends deliver successful terminal state to the caller", async (
     deliveries.push(delivery);
     return "background";
   };
+  let pending;
 
   try {
-    const pending = await orchestrator.send(
+    pending = await orchestrator.send(
       {
         cwd: process.cwd(),
         isIdle: () => true,
@@ -687,13 +695,20 @@ test("background sends deliver successful terminal state to the caller", async (
       { message: "Complete this in the background", async: true },
       { onSettled: settle },
     );
+    const disposal = runtime.disposeWhenIdle();
+
+    finishTarget();
     await settled;
+    await disposal;
 
     assert.match(pending.text, /background|builder/i);
     assert.equal(deliveries.length, 1);
     assert.equal(deliveries[0].details.status, "done");
     assert.match(deliveries[0].text, /Background answer/);
+    assert.equal(getLiveCardDetails(pending.details)?.status, "done");
   } finally {
+    if (pending) clearLiveCardDetails(pending.details);
+    await runtime.dispose();
     deleteRuntimeSession(targetSessionId);
   }
 });

@@ -18,7 +18,7 @@ Each session keeps its own conversation history. The main session can send work,
 
 This release requires:
 
-- Pi `0.83.0`
+- Pi `0.84.0`
 - Node.js `22.19.0` or newer
 - Git when you want delegated sessions to use separate work folders
 
@@ -445,7 +445,7 @@ Pi owns conversations, models, tools, trust decisions, prompts, and terminal beh
 
 ```mermaid
 flowchart TD
-    Pi[Pi 0.83.0] --> Boundary[Pi extension boundary]
+    Pi[Pi 0.84.0] --> Boundary[Pi extension boundary]
     Boundary --> Runtime[Managed Effect runtime]
     Runtime --> Coordinator[Delegation coordinator]
     Runtime --> Registry[Live session registry]

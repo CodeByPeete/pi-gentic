@@ -647,14 +647,24 @@ def capture_resume_1000_sessions():
         }
         if child_session:
             header["parentSession"] = str(fixtures[998])
+        message_id = f"fixture-message-{index}"
         entries = [
             header,
-            {"type": "message", "message": {"role": "user", "content": f"Fixture session {index}"}},
+            {
+                "type": "message",
+                "id": message_id,
+                "parentId": None,
+                "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
+                "message": {"role": "user", "content": f"Fixture session {index}"},
+            },
         ]
         if index % 25 == 0 or index >= 998:
             entries.append(
                 {
                     "type": "custom",
+                    "id": f"fixture-history-{index}",
+                    "parentId": message_id,
+                    "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
                     "customType": "fixture-history",
                     "data": {"payload": "history-" + ("x" * 262144)},
                 }
@@ -717,7 +727,13 @@ def capture_resume_1000_sessions():
                 json.dumps(entry)
                 for entry in [
                     {"type": "session", "version": 3, "id": fresh_id, "timestamp": fresh_timestamp.isoformat().replace("+00:00", "Z"), "cwd": str(INTERACTIVE_WORK_DIR)},
-                    {"type": "message", "message": {"role": "user", "content": "Fresh session during runtime"}},
+                    {
+                        "type": "message",
+                        "id": "fresh-runtime-message",
+                        "parentId": None,
+                        "timestamp": fresh_timestamp.isoformat().replace("+00:00", "Z"),
+                        "message": {"role": "user", "content": "Fresh session during runtime"},
+                    },
                 ]
             )
             + "\n",
@@ -747,7 +763,7 @@ def capture_resume_1000_sessions():
         proc.write("\r")
         wait_for(
             "large child opens",
-            lambda text: "Resume Session" not in text and "Resumed session" in text and "child-worktree" in text,
+            lambda text: "Resume Session" not in text and "Resumed session" in text and "Fixture session 999" in text,
             timeout=10,
         )
         targets = [("Fixture session 998", "parent"), ("Fixture session 999", "child")] * 5
@@ -773,9 +789,7 @@ def capture_resume_1000_sessions():
             proc.write("\r")
             wait_for(
                 f"switch to {label} cycle {attempt}",
-                lambda text: "Resume Session" not in text
-                and "Resumed session" in text
-                and (("child-worktree" in text) if label == "child" else ("child-worktree" not in text)),
+                lambda text: "Resume Session" not in text and "Resumed session" in text and target in text,
                 timeout=10,
             )
             switch_elapsed = round((time.monotonic() - switched_at) * 1000, 1)

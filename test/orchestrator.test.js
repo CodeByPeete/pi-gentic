@@ -1886,6 +1886,40 @@ test("activity monitors reset inactivity for lifecycle and reasoning progress", 
   }
 });
 
+test("activity monitors assemble Pi 0.84 JSON and RPC assistant deltas", () => {
+  const published = [];
+  const monitor = createSessionActivityMonitor({ status: "running" }, (details) => {
+    published.push(details);
+    return details;
+  });
+
+  monitor.observe({
+    type: "message_start",
+    message: { role: "assistant", content: [] },
+  });
+  monitor.observe({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_start", contentIndex: 0 },
+  });
+  monitor.observe({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Working" },
+  });
+  monitor.observe({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " now" },
+  });
+
+  assert.equal(published.at(-1).activities.at(-1).text, "Working now");
+
+  monitor.observe({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_end", contentIndex: 0, content: "Work complete" },
+  });
+
+  assert.equal(published.at(-1).activities.at(-1).text, "Work complete");
+});
+
 test("activity monitors normalize every native progress event", () => {
   const published = [];
   const monitor = createSessionActivityMonitor({ status: "running" }, (details) => {

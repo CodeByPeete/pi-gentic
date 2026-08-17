@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TUI } from "@earendil-works/pi-tui";
+import { TuiMainScreen } from "@earendil-works/pi-tui";
 import {
   AGENT_WIDGET_KEY,
   LIVE_REFRESH_WIDGET_KEY,
@@ -400,7 +400,7 @@ test("live card updates stay in the visible panel without clearing terminal scro
     showCursor() {},
     setTitle() {},
   };
-  const tui = new TUI(terminal);
+  const tui = new TuiMainScreen(terminal);
   const theme = { bold: (text) => text, fg: (_name, text) => text };
   const cardId = "scroll-safe-live-card";
   const details = {

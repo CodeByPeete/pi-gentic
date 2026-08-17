@@ -791,6 +791,7 @@ export function createSessionActivityMonitor(
       if (upsertActivity(state.activities, activity, activityIndexes, seenActivities, MAX_PERSISTED_ACTIVITIES))
         state.activityCount += 1;
   };
+  const projectAssistantDelta = createAssistantDeltaProjector();
   const publishState = (status = state.status, updates: UnknownRecord = {}) => {
     Object.assign(state, updates, { status });
     const { activityCount, ...details } = state;
@@ -810,6 +811,7 @@ export function createSessionActivityMonitor(
     },
     observe(event: unknown) {
       if (!isRecord(event) || !isSessionActivityEvent(event)) return;
+      const activity = eventToActivity(event, projectAssistantDelta);
 
       if (state.status === "queued") {
         const message = isRecord(event.message) ? event.message : undefined;
@@ -818,7 +820,6 @@ export function createSessionActivityMonitor(
         publishState("running");
         return;
       }
-      const activity = eventToActivity(event);
 
       touch();
       if (activity) recordActivities([activity]);
@@ -914,8 +915,12 @@ export function formatActivityLine(activity: UnknownRecord | undefined) {
   return `[${activity.name ?? activity.type}] ${truncateInline(activity.summary ?? activity.text ?? "", 160)}${status}`.trim();
 }
 
-function eventToActivity(event: UnknownRecord) {
+function eventToActivity(
+  event: UnknownRecord,
+  projectAssistantDelta: (event: UnknownRecord) => UnknownRecord | undefined = () => undefined,
+) {
   if (!event || typeof event !== "object") return undefined;
+  const assistantDeltaActivity = projectAssistantDelta(event);
 
   if (event.type === "tool_execution_start")
     return {
@@ -948,8 +953,49 @@ function eventToActivity(event: UnknownRecord) {
 
   if (event.type === "message_update" && message?.role === "assistant") return assistantActivity(message);
 
+  if (event.type === "message_update") return assistantDeltaActivity;
+
   if (event.type === "message_end" && message?.role === "assistant") return assistantActivity(message);
   return undefined;
+}
+
+function createAssistantDeltaProjector() {
+  const textBlocks = new Map<number, string>();
+
+  return (event: UnknownRecord) => {
+    if (event.type === "message_start") {
+      textBlocks.clear();
+      return undefined;
+    }
+    if (event.type === "message_end") {
+      textBlocks.clear();
+      return undefined;
+    }
+    if (event.type !== "message_update" || !isRecord(event.assistantMessageEvent)) return undefined;
+    const delta = event.assistantMessageEvent;
+    const contentIndex = delta.contentIndex;
+
+    if (typeof contentIndex !== "number" || !Number.isInteger(contentIndex) || contentIndex < 0 || contentIndex >= 10)
+      return undefined;
+    const index = contentIndex;
+
+    if (delta.type === "text_start") textBlocks.set(index, "");
+    else if (delta.type === "text_delta" && typeof delta.delta === "string")
+      textBlocks.set(index, `${textBlocks.get(index) ?? ""}${delta.delta}`.slice(0, ACTIVITY_PREVIEW_LENGTH * 4));
+    else if (delta.type === "text_end" && typeof delta.content === "string")
+      textBlocks.set(index, delta.content.slice(0, ACTIVITY_PREVIEW_LENGTH * 4));
+    else return undefined;
+
+    const text = truncateInline(
+      [...textBlocks.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([, content]) => content)
+        .join("\n"),
+      ACTIVITY_PREVIEW_LENGTH,
+    );
+
+    return text ? { id: "assistant", type: "assistant", text } : undefined;
+  };
 }
 
 function assistantMessageActivities(message: UnknownRecord) {

@@ -1,11 +1,25 @@
 import { isDeepStrictEqual } from "node:util";
 import type { PiTheme } from "../../infrastructure/pi/types.js";
 import type { UnknownRecord } from "../../shared/types.js";
-import { formatDuration, isRecord, shortestUniqueSessionId, shortSessionId } from "../../shared/value.js";
-import { isActiveCard, normalizeCardDetails, resolveCardDetails, stringField, type CardDetails } from "./state.js";
+import {
+  firstText,
+  formatDuration,
+  isRecord,
+  shortestUniqueSessionId,
+  shortSessionId,
+  stringValue,
+} from "../../shared/value.js";
+import {
+  MAX_CARD_ACTIVITY_LINES,
+  isActiveCard,
+  normalizeCardDetails,
+  resolveCardDetails,
+  type CardDetails,
+} from "./state.js";
 import {
   center,
   fit,
+  foreground,
   formatActivity,
   formatValue,
   joinWithMiddle,
@@ -13,10 +27,9 @@ import {
   normalizeInline,
   renderBordered,
   styleAgentName,
+  timer,
   wrap,
 } from "../presentation/text.js";
-
-const MAX_CARD_ACTIVITY_LINES = 14;
 
 const SESSION_TREE_VISIBLE_ITEMS = 12;
 
@@ -41,7 +54,7 @@ export function renderAgentsCall(argsValue: unknown, theme: PiTheme, contextValu
   const args = isRecord(argsValue) ? argsValue : {};
   const context = isRecord(contextValue) ? contextValue : {};
   const card = new AgentsCard(theme);
-  const toolCallId = stringField(context.toolCallId);
+  const toolCallId = stringValue(context.toolCallId);
 
   card.update(
     {
@@ -122,10 +135,6 @@ export function renderAgentsResult(resultValue: unknown, optionsValue: unknown, 
   return card;
 }
 
-function firstText(content: unknown) {
-  return Array.isArray(content) ? content.find((item) => item.type === "text")?.text : undefined;
-}
-
 class InvisibleComponent {
   invalidate() {}
 
@@ -186,7 +195,7 @@ class AgentsCard {
     };
     const lines = renderBordered(
       width,
-      (text) => this.colorBorder(text),
+      (text) => foreground(this.theme, "dim", text),
       (innerWidth) => this.buildLines(innerWidth),
     );
 
@@ -205,13 +214,15 @@ class AgentsCard {
 
   header(width: number) {
     const icon = this.statusIcon();
-    const async = this.data.async ? `${this.purple("[ASYNC]")} ` : "";
+    const async = this.data.async ? `${foreground(this.theme, "accent", "[ASYNC]")} ` : "";
     const title = this.title();
     const agent =
       this.data.agentName && this.data.agentName !== "agentless" ? ` ${this.agent(this.data.agentName)}` : "";
-    const session = this.data.sessionId ? ` ${this.dim(`(${shortSessionId(this.data.sessionId)})`)}` : "";
+    const session = this.data.sessionId
+      ? ` ${foreground(this.theme, "dim", `(${shortSessionId(this.data.sessionId)})`)}`
+      : "";
 
-    return fit(`${icon} ${async}${this.bold(title)}${agent}${session}`, width);
+    return fit(`${icon} ${async}${this.theme.bold(title)}${agent}${session}`, width);
   }
 
   title() {
@@ -242,7 +253,7 @@ class AgentsCard {
     if (this.data.phase === "call") return this.callLines();
 
     if (this.data.error) {
-      const error = wrap(this.data.error, width).map((line) => this.red(line));
+      const error = wrap(this.data.error, width).map((line) => foreground(this.theme, "error", line));
       return this.expanded && this.data.call ? [...error, "", ...this.callLines()] : error;
     }
 
@@ -262,9 +273,9 @@ class AgentsCard {
     const effectiveParameters = isRecord(call.effectiveParameters) ? call.effectiveParameters : undefined;
     const identity = ["toolCallId", "callerEntryId"]
       .filter((key) => call[key] !== undefined)
-      .map((key) => `${this.muted(`${key}:`)} ${formatValue(call[key])}`);
+      .map((key) => `${foreground(this.theme, "muted", `${key}:`)} ${formatValue(call[key])}`);
     const properties = Object.entries(parameters).map(
-      ([key, value]) => `${this.muted(`${key}:`)} ${formatValue(value)}`,
+      ([key, value]) => `${foreground(this.theme, "muted", `${key}:`)} ${formatValue(value)}`,
     );
     const resolvedProperties = effectiveParameters
       ? Object.entries(effectiveParameters).filter(
@@ -275,12 +286,14 @@ class AgentsCard {
       resolvedProperties.length > 0
         ? [
             "",
-            this.bold("Resolved properties"),
-            ...resolvedProperties.map(([key, value]) => `${this.muted(`${key}:`)} ${formatValue(value)}`),
+            this.theme.bold("Resolved properties"),
+            ...resolvedProperties.map(
+              ([key, value]) => `${foreground(this.theme, "muted", `${key}:`)} ${formatValue(value)}`,
+            ),
           ]
         : [];
 
-    return [this.bold("Call properties"), ...identity, ...properties, ...resolved];
+    return [this.theme.bold("Call properties"), ...identity, ...properties, ...resolved];
   }
 
   bodyText() {
@@ -291,19 +304,24 @@ class AgentsCard {
 
   sessionTreeLines(width: number) {
     const sessions = Array.isArray(this.data.sessions) ? this.data.sessions : [];
-    const title = center(this.bold("Orchestration Tree"), width);
+    const title = center(this.theme.bold("Orchestration Tree"), width);
 
     if (sessions.length === 0)
-      return [title, this.muted("─".repeat(width)), "", this.muted("No related sessions found.")];
+      return [
+        title,
+        foreground(this.theme, "muted", "─".repeat(width)),
+        "",
+        foreground(this.theme, "muted", "No related sessions found."),
+      ];
     const end = Math.min(SESSION_TREE_VISIBLE_ITEMS, sessions.length);
     const scroll =
       sessions.length > SESSION_TREE_VISIBLE_ITEMS
-        ? ["", this.muted(fit(`  Showing 1-${end} of ${sessions.length}`, width))]
+        ? ["", foreground(this.theme, "muted", fit(`  Showing 1-${end} of ${sessions.length}`, width))]
         : [];
 
     return [
       title,
-      this.muted("─".repeat(width)),
+      foreground(this.theme, "muted", "─".repeat(width)),
       "",
       ...sessions.slice(0, end).map((session) => this.sessionTreeLine(session, width)),
       ...scroll,
@@ -312,14 +330,14 @@ class AgentsCard {
 
   sessionTreeLine(session: UnknownRecord, width: number) {
     const connector = sessionTreeConnector(session);
-    const indicator = session.running ? this.green("●") : this.dim("○");
+    const indicator = session.running ? foreground(this.theme, "success", "●") : foreground(this.theme, "dim", "○");
     const agent =
-      typeof session.agentName === "string" && session.agentName ? `${this.agentName(session.agentName)} ` : "";
+      typeof session.agentName === "string" && session.agentName ? `${this.agent(session.agentName, true)} ` : "";
     const message = sessionMessage(session);
-    const id = this.dim(`(${visibleSessionId(session, this.data.sessions ?? [])})`);
-    const left = `${this.dim(connector)}${indicator} ${agent}`;
+    const id = foreground(this.theme, "dim", `(${visibleSessionId(session, this.data.sessions ?? [])})`);
+    const left = `${foreground(this.theme, "dim", connector)}${indicator} ${agent}`;
     const inactive = session.running
-      ? ` ${this.dim("Inactive:")} ${this.timer(formatDuration(Number(session.inactiveMs ?? 0)))}`
+      ? ` ${foreground(this.theme, "dim", "Inactive:")} ${timer(formatDuration(Number(session.inactiveMs ?? 0)))}`
       : "";
     const right = `${id}${inactive}`;
 
@@ -328,17 +346,19 @@ class AgentsCard {
 
   configurationLines(width: number) {
     const configuration = this.data.configuration ?? {};
-    const lines = Object.entries(configuration).map(([key, value]) => `${this.muted(`${key}:`)} ${formatValue(value)}`);
+    const lines = Object.entries(configuration).map(
+      ([key, value]) => `${foreground(this.theme, "muted", `${key}:`)} ${formatValue(value)}`,
+    );
 
     if (this.expanded && this.data.systemPrompt) {
       lines.push(
         "",
-        this.bold("Resolved system prompt"),
+        this.theme.bold("Resolved system prompt"),
         ...wrap(formatSystemPromptForCard(this.data.systemPrompt), width),
       );
     }
 
-    return lines.length ? lines : [this.muted("No configuration changes.")];
+    return lines.length ? lines : [foreground(this.theme, "muted", "No configuration changes.")];
   }
 
   activityLines(width: number, maxLines = this.expanded ? MAX_CARD_ACTIVITY_LINES : 4) {
@@ -354,10 +374,10 @@ class AgentsCard {
     const activityLimit = Math.max(0, maxLines - (activityCount > maxLines ? 1 : 0));
     const visible = activityLimit > 0 ? activities.slice(-activityLimit) : [];
     const hidden = activityCount - visible.length;
-    const lines = hidden > 0 ? [this.muted(`├─ [+${hidden} activities]`)] : [];
+    const lines = hidden > 0 ? [foreground(this.theme, "muted", `├─ [+${hidden} activities]`)] : [];
 
     for (const activity of visible) {
-      lines.push(fit(`${this.muted("├─")} ${formatActivity(activity)}`, width));
+      lines.push(fit(`${foreground(this.theme, "muted", "├─")} ${formatActivity(activity)}`, width));
     }
 
     return lines;
@@ -367,7 +387,7 @@ class AgentsCard {
     const collapse = this.expanded ? "Ctrl+O to collapse" : "Ctrl+O to expand";
     const end = this.totalDurationText();
 
-    return joinWithRight(this.muted(collapse), this.dim(end), width);
+    return joinWithRight(foreground(this.theme, "muted", collapse), foreground(this.theme, "dim", end), width);
   }
 
   totalDurationText() {
@@ -378,68 +398,24 @@ class AgentsCard {
   }
 
   statusIcon() {
-    if (this.data.kind === "load") return this.pink("→");
+    if (this.data.kind === "load") return foreground(this.theme, "warning", "→");
 
-    if (this.data.status === "done") return this.green("✓");
+    if (this.data.status === "done") return foreground(this.theme, "success", "✓");
 
     if (typeof this.data.status === "string" && ["error", "aborted", "stopped"].includes(this.data.status))
-      return this.red("!");
+      return foreground(this.theme, "error", "!");
 
-    if (this.data.status === "queued") return this.pink("○");
+    if (this.data.status === "queued") return foreground(this.theme, "warning", "○");
 
-    if (this.data.status === "running") return this.green("●");
+    if (this.data.status === "running") return foreground(this.theme, "success", "●");
 
-    if (this.data.status === "restored") return this.muted("○");
+    if (this.data.status === "restored") return foreground(this.theme, "muted", "○");
 
-    return this.muted("○");
+    return foreground(this.theme, "muted", "○");
   }
 
-  colorBorder(text: string) {
-    return this.theme.fg("dim", text);
-  }
-
-  bold(text: string) {
-    return this.theme.bold(text);
-  }
-
-  muted(text: string) {
-    return this.theme.fg("muted", text);
-  }
-
-  dim(text: string) {
-    return this.theme.fg("dim", text);
-  }
-
-  green(text: string) {
-    return this.theme.fg("success", text);
-  }
-
-  red(text: string) {
-    return this.theme.fg("error", text);
-  }
-
-  purple(text: string) {
-    return this.theme.fg("accent", text);
-  }
-
-  brightPurple(text: string) {
-    return `\x1b[95m${text}\x1b[39m`;
-  }
-
-  pink(text: string) {
-    return this.theme.fg("warning", text);
-  }
-
-  timer(text: string) {
-    return this.brightPurple(text);
-  }
-
-  agent(text: string) {
-    return this.theme.bold(styleAgentName(text));
-  }
-
-  agentName(text: string) {
-    return this.theme.bold(styleAgentName(text, { bracketed: true }));
+  agent(text: string, bracketed = false) {
+    return this.theme.bold(styleAgentName(text, { bracketed }));
   }
 }
 

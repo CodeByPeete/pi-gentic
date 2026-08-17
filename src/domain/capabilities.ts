@@ -1,9 +1,9 @@
-import { HashSet } from "effect";
-
 export interface ToolPolicyState {
   readonly ambientToolNames: ReadonlyArray<string>;
   readonly appliedToolNames: ReadonlyArray<string>;
 }
+
+type CapabilityPolicy = ReturnType<typeof partitionCapabilityFilters>;
 
 export function reconcileActiveToolSelection({
   registeredToolNames,
@@ -16,8 +16,8 @@ export function reconcileActiveToolSelection({
   readonly filters: ReadonlyArray<string> | undefined;
   readonly previousState?: ToolPolicyState;
 }) {
-  const catalog = HashSet.fromIterable(registeredToolNames);
-  const available = (names: ReadonlyArray<string>) => uniqueNames(names).filter((name) => HashSet.has(catalog, name));
+  const catalog = new Set(registeredToolNames);
+  const available = (names: ReadonlyArray<string>) => uniqueNames(names).filter((name) => catalog.has(name));
   const observed = available(observedToolNames);
   const previousApplied = previousState ? available(previousState.appliedToolNames) : undefined;
   const ambientToolNames =
@@ -43,84 +43,69 @@ function selectActiveTools(
   filters: ReadonlyArray<string> | undefined,
 ) {
   const catalog = uniqueNames(registeredToolNames);
-  const catalogNames = HashSet.fromIterable(catalog);
-  const ambient = uniqueNames(ambientToolNames).filter((name) => HashSet.has(catalogNames, name));
+  const catalogNames = new Set(catalog);
+  const ambient = uniqueNames(ambientToolNames).filter((name) => catalogNames.has(name));
+  const policy = filters && partitionCapabilityFilters(filters);
+  const baseline = !policy || policy.inclusions.length === 0 || policy.inclusions.includes("*") ? ambient : catalog;
 
-  const inclusions = partitionCapabilityFilters(filters ?? []).inclusions;
-  const baseline = inclusions.length === 0 || inclusions.includes("*") ? ambient : catalog;
-
-  return applyCapabilityPolicy(baseline, catalog, filters);
+  return applyCapabilityPolicy(baseline, catalog, policy);
 }
 
 function uniqueNames(names: ReadonlyArray<string>) {
   return [...new Set(names)];
 }
 
-function normalizeName(name: string) {
-  return name.toLowerCase();
-}
-
-function normalizedNames(names: ReadonlyArray<string>) {
-  return HashSet.fromIterable(names.map(normalizeName));
-}
-
 function partitionCapabilityFilters(filters: ReadonlyArray<string>) {
-  const inclusions: Array<string> = [];
-  const exclusions: Array<string> = [];
-  const additions: Array<string> = [];
-  const removals: Array<string> = [];
+  const groups = Map.groupBy(filters.filter(Boolean), (filter) =>
+    ["+", "-", "!"].includes(filter[0] ?? "") ? filter[0] : "",
+  );
+  const values = (prefix: string) => (groups.get(prefix) ?? []).map((filter) => filter.slice(prefix.length));
 
-  for (const filter of filters) {
-    if (filter.length === 0) continue;
-    if (filter.startsWith("+")) additions.push(filter.slice(1));
-    else if (filter.startsWith("-")) removals.push(filter.slice(1));
-    else if (filter.startsWith("!")) exclusions.push(filter.slice(1));
-    else inclusions.push(filter);
-  }
-
-  return { inclusions, exclusions, additions, removals };
+  return {
+    inclusions: values(""),
+    exclusions: values("!"),
+    additions: values("+"),
+    removals: values("-"),
+    empty: filters.length === 0,
+  };
 }
 
 function applyCapabilityPolicy(
   baseline: ReadonlyArray<string>,
   catalog: ReadonlyArray<string>,
-  filters: ReadonlyArray<string> | undefined,
+  policy: CapabilityPolicy | undefined,
 ) {
-  if (filters === undefined) return [...baseline];
-  if (filters.length === 0) return [];
-  const { inclusions, exclusions, additions, removals } = partitionCapabilityFilters(filters);
-  const additionNames = normalizedNames(additions);
-  const removalNames = normalizedNames(removals);
+  if (!policy) return [...baseline];
+  if (policy.empty) return [];
+  const { inclusions, exclusions, additions, removals } = policy;
+  const additionNames = new Set(additions.map(normalizeName));
+  const removalNames = new Set(removals.map(normalizeName));
   const selected = baseline.filter(
     (name) =>
       (inclusions.length === 0 || inclusions.some((pattern) => matchesPattern(name, pattern))) &&
       !exclusions.some((pattern) => matchesPattern(name, pattern)),
   );
-  const selectedNames = HashSet.fromIterable(selected);
+  const selectedNames = new Set(selected);
 
   return [
     ...selected,
-    ...catalog.filter((name) => !HashSet.has(selectedNames, name) && HashSet.has(additionNames, normalizeName(name))),
-  ].filter((name) => !HashSet.has(removalNames, normalizeName(name)));
+    ...catalog.filter((name) => !selectedNames.has(name) && additionNames.has(normalizeName(name))),
+  ].filter((name) => !removalNames.has(normalizeName(name)));
 }
 
 export function applyCapabilityFilter(
   ambientCapabilities: ReadonlyArray<string>,
   filters: ReadonlyArray<string> | undefined,
 ): Array<string> {
-  const selected = HashSet.fromIterable(applyCapabilityPolicy(ambientCapabilities, ambientCapabilities, filters));
+  const selected = new Set(
+    applyCapabilityPolicy(ambientCapabilities, ambientCapabilities, filters && partitionCapabilityFilters(filters)),
+  );
 
-  return ambientCapabilities.filter((name) => HashSet.has(selected, name));
+  return ambientCapabilities.filter((name) => selected.has(name));
 }
 
-export function resolveCapabilitySet(
-  ambientCapabilities: ReadonlyArray<string>,
-  policyLayers: ReadonlyArray<ReadonlyArray<string> | undefined>,
-): Array<string> {
-  return policyLayers.reduce<Array<string>>(
-    (ceiling, filters) => applyCapabilityFilter(ceiling, filters),
-    [...ambientCapabilities],
-  );
+function normalizeName(name: string) {
+  return name.toLowerCase();
 }
 
 function matchesPattern(name: string, pattern: string): boolean {

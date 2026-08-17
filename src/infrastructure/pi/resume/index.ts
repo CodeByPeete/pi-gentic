@@ -1,7 +1,7 @@
 import { reportRuntimeDiagnostic } from "../../../shared/diagnostics.js";
 import type { ExtensionRuntime } from "../../../runtime/ExtensionRuntime.js";
 import { loadPiCodingAgentPeer } from "../peer.js";
-import { getLiveRuntimeState, type HostRecord } from "../state.js";
+import { recordHostDiagnostic, type HostRecord } from "../state.js";
 import { installSessionListCache, visibleSessionMembership } from "./cache.js";
 import { openDecoratedResumeSelector, publishResumeSessionMetadata } from "./selector.js";
 
@@ -58,13 +58,6 @@ export async function installResumeIntegration(runtime: ExtensionRuntime) {
     };
   } catch (error) {
     recordHostDiagnostic(error);
+    reportRuntimeDiagnostic("pi-host-resume-install", error);
   }
-}
-
-function recordHostDiagnostic(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  const diagnostics = getLiveRuntimeState().hostDiagnostics;
-
-  if (!diagnostics.includes(message)) diagnostics.push(message);
-  reportRuntimeDiagnostic("pi-host-resume-install", error);
 }

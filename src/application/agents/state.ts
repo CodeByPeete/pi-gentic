@@ -1,5 +1,5 @@
 import { Exit, Schema } from "effect";
-import type { AgentDefinition } from "../../infrastructure/configuration/agents.js";
+import type { AgentDefinition } from "../../domain/configuration.js";
 import type { PiSessionManager } from "../../infrastructure/pi/types.js";
 import type { UnknownRecord } from "../../shared/types.js";
 import { isRecord } from "../../shared/value.js";

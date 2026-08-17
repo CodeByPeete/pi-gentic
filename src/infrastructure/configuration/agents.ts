@@ -3,35 +3,16 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Schema } from "effect";
-import { ancestorPaths } from "../../shared/path.js";
+import type { AgentDefinition } from "../../domain/configuration.js";
+import { ancestorPaths, uniquePaths } from "../../shared/path.js";
 import type { UnknownRecord } from "../../shared/types.js";
-import { isRecord, omitUndefined as removeUndefined, stringList as toStringArray } from "../../shared/value.js";
-
-export interface AgentDefinition extends UnknownRecord {
-  readonly name: string;
-  readonly description: string;
-  readonly instructions: string;
-  readonly disabled: boolean;
-  readonly agents?: string[];
-  readonly tools?: string[];
-  readonly skills?: string[];
-  readonly model?: string;
-  readonly thinking?: string;
-  readonly theme?: string;
-  readonly systemPromptFiles?: string[];
-  readonly maxSubagentDepth?: number;
-  readonly agentsTool?: UnknownRecord;
-  readonly sourcePath: string;
-}
-
-export interface SkillDefinition extends UnknownRecord {
-  readonly name: string;
-  readonly description: string;
-  readonly location: string;
-  readonly allowedTools?: string[];
-  readonly disableModelInvocation: boolean;
-  readonly instructions: string;
-}
+import {
+  booleanValue,
+  isRecord,
+  omitUndefined as removeUndefined,
+  stringList as toStringArray,
+} from "../../shared/value.js";
+import { configurationDiagnostic, readJsonObject } from "./files.js";
 const EXTENSION_DIR = path.join("extensions", "pi-gentic");
 const JsonObjectSchema = Schema.Record(Schema.String, Schema.Json);
 
@@ -77,8 +58,8 @@ export function loadPiSettings(
     ...(projectTrusted ? ancestorPaths(cwd, ".pi", "settings.json") : []),
   ];
 
-  for (const settingsPath of dedupePaths(paths)) {
-    const source = readJson(settingsPath, diagnostics);
+  for (const settingsPath of uniquePaths(paths)) {
+    const source = readJsonObject(settingsPath, diagnostics);
 
     if (source) mergePiSettings(settings, source);
   }
@@ -104,7 +85,7 @@ export function loadConfiguration(options: UnknownRecord = {}) {
 
   for (const root of roots) {
     const settingsPath = path.join(root, "settings.json");
-    const rootSettings = readJson(settingsPath, diagnostics);
+    const rootSettings = readJsonObject(settingsPath, diagnostics);
 
     if (rootSettings) {
       mergeRootSettings(settings, rootSettings);
@@ -137,24 +118,6 @@ function createDefaultSettings() {
     globalMaxSubagentDepth: 6,
     sessionMessagingScope: "tree",
   };
-}
-
-function readJson(filePath: string, diagnostics: UnknownRecord[]): UnknownRecord | undefined {
-  if (!existsSync(filePath)) return undefined;
-
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(filePath, "utf8"));
-
-    return Schema.decodeUnknownSync(JsonObjectSchema)(parsed);
-  } catch (error) {
-    diagnostics.push({
-      severity: "error",
-      path: filePath,
-      message: `Could not parse JSON: ${error instanceof Error ? error.message : String(error)}`,
-    });
-
-    return undefined;
-  }
 }
 
 function mergeRootSettings(target: UnknownRecord, source: unknown) {
@@ -200,11 +163,7 @@ function loadMarkdownAgents(dir: string, diagnostics: UnknownRecord[]) {
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch (error) {
-    diagnostics.push({
-      severity: "warning",
-      path: dir,
-      message: `Could not read agents directory: ${error instanceof Error ? error.message : String(error)}`,
-    });
+    diagnostics.push(configurationDiagnostic("warning", dir, "Could not read agents directory", error));
 
     return [];
   }
@@ -227,11 +186,7 @@ function loadMarkdownAgent(filePath: string, diagnostics: UnknownRecord[]) {
 
     return definition ? [definition] : [];
   } catch (error) {
-    diagnostics.push({
-      severity: "warning",
-      path: filePath,
-      message: `Could not load agent: ${error instanceof Error ? error.message : String(error)}`,
-    });
+    diagnostics.push(configurationDiagnostic("warning", filePath, "Could not load agent", error));
 
     return [];
   }
@@ -256,11 +211,7 @@ export function normalizeAgentDefinition(
   const name = typeof value.name === "string" ? value.name.trim() : "";
 
   if (!name) {
-    diagnostics.push({
-      severity: "warning",
-      path: sourcePath,
-      message: "Ignored unnamed agent definition.",
-    });
+    diagnostics.push(configurationDiagnostic("warning", sourcePath, "Ignored unnamed agent definition."));
 
     return undefined;
   }
@@ -294,23 +245,19 @@ function normalizeAgentsTool(value: unknown) {
   if (!isRecord(value)) return undefined;
 
   return removeUndefined({
-    async: booleanOrUndefined(value.async),
-    fork: booleanOrUndefined(value.fork),
+    async: booleanValue(value.async),
+    fork: booleanValue(value.fork),
     cwd: typeof value.cwd === "string" ? value.cwd : undefined,
     invokeMeLater: isRecord(value.invokeMeLater)
       ? removeUndefined({
-          async: booleanOrUndefined(value.invokeMeLater.async),
-          withSession: booleanOrUndefined(value.invokeMeLater.withSession),
+          async: booleanValue(value.invokeMeLater.async),
+          withSession: booleanValue(value.invokeMeLater.withSession),
         })
       : undefined,
     rx: numberOrUndefined(value.rx),
     ry: numberOrUndefined(value.ry),
-    open: booleanOrUndefined(value.open),
+    open: booleanValue(value.open),
   });
-}
-
-function booleanOrUndefined(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
 }
 
 function numberOrUndefined(value: unknown) {
@@ -334,8 +281,4 @@ export function parseMarkdownDefinition(content: string): {
 function mergePiSettings(target: UnknownRecord, source: UnknownRecord) {
   for (const [key, value] of Object.entries(source))
     target[key] = isRecord(value) && isRecord(target[key]) ? mergeObjects(target[key], value) : value;
-}
-
-function dedupePaths(paths: string[]) {
-  return [...new Set(paths.filter(Boolean).map((item) => path.resolve(String(item))))];
 }

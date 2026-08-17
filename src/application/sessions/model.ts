@@ -1,4 +1,11 @@
 import { readFileSync, statSync } from "node:fs";
+import {
+  indexSessions,
+  parentSessionKeys,
+  primarySessionKey,
+  sessionIdFromPath,
+  sessionKeys,
+} from "../../domain/session.js";
 import { reportRuntimeDiagnostic } from "../../shared/diagnostics.js";
 import type { UnknownRecord } from "../../shared/types.js";
 import { isRecord, shortSessionId } from "../../shared/value.js";
@@ -34,25 +41,23 @@ export function assertSessionMessagingScope(
 
 function sessionTreeRoot(session: UnknownRecord | undefined, sessions: UnknownRecord[]) {
   if (!session) return undefined;
-  const byKey = sessionKeyMap(sessions);
-  let current = findSessionSummary(sessions, session) ?? session;
+  const graph = indexSessions(sessions);
+  let current = graph.find(session) ?? session;
 
   for (let guard = 0; guard < 100; guard++) {
-    const parentKey = parentKeys(current).find((key) => byKey.has(key));
+    const parent = graph.parent(current);
 
-    if (!parentKey) {
-      const unresolvedParentKey = parentKeys(current)[0];
+    if (!parent) {
+      const unresolvedParentKey = parentSessionKeys(current)[0];
 
       return unresolvedParentKey
         ? {
-            sessionId: idFromPath(unresolvedParentKey),
+            sessionId: sessionIdFromPath(unresolvedParentKey),
             path: unresolvedParentKey,
           }
         : current;
     }
 
-    const parent = byKey.get(parentKey);
-    if (!parent) return current;
     current = parent;
   }
 
@@ -67,7 +72,7 @@ export function resolveSessionReference(sessions: UnknownRecord[], reference: un
       (key) => String(key).toLowerCase() === query || String(key).toLowerCase().includes(query),
     ),
   );
-  const unique = uniqueBy(matches, (session) => session.path ?? session.id);
+  const unique = [...new Map(matches.map((session) => [session.path ?? session.id, session])).values()];
 
   if (unique.length === 0) throw new Error(`No session matches "${reference}".`);
 
@@ -113,12 +118,12 @@ export function enrichSessionSummaries(sessions: UnknownRecord[], limit = sessio
 }
 
 export function orderSessionTree(sessions: UnknownRecord[]) {
-  const byKey = sessionKeyMap(sessions);
+  const graph = indexSessions(sessions);
   const children = new Map<string, UnknownRecord[]>();
   const roots: UnknownRecord[] = [];
 
   for (const session of sessions) {
-    const parent = parentSession(session, byKey);
+    const parent = graph.parent(session);
 
     if (!parent) roots.push(session);
     else {
@@ -179,10 +184,7 @@ export function sessionDiscoveryScope(
   return options.all === true ? sessions : filterSessionNeighborhood(sessions, currentSession, options);
 }
 export function findSessionSummary(sessions: UnknownRecord[], identity: UnknownRecord = {}) {
-  const keys = sessionKeys(identity).filter(Boolean);
-
-  if (keys.length === 0) return undefined;
-  return sessions.find((session) => sessionKeys(session).some((key) => keys.includes(key)));
+  return indexSessions(sessions).find(identity);
 }
 
 export function filterSessionNeighborhood(
@@ -191,14 +193,12 @@ export function filterSessionNeighborhood(
   { rx = 0, ry = 0 } = {},
 ) {
   if (!currentSession) return sessions;
-  const currentKey = primarySessionKey(currentSession);
-  const currentIndex = sessions.findIndex((session) => sessionKeys(session).includes(currentKey));
-  const current = currentIndex === -1 ? undefined : sessions[currentIndex];
+  const graph = indexSessions(sessions);
+  const current = graph.find(currentSession);
 
   if (!current) return sessions;
-  const byKey = sessionKeyMap(sessions);
-  const siblings = siblingGroups(sessions, byKey);
-  const currentParentKey = parentSessionKey(current, byKey);
+  const siblings = siblingGroups(sessions, graph);
+  const currentParentKey = parentSessionKey(current, graph);
   const currentSiblings = siblings.get(siblingGroupKey(current, currentParentKey)) ?? [];
   const currentSiblingIndex = currentSiblings.indexOf(current);
 
@@ -208,8 +208,8 @@ export function filterSessionNeighborhood(
 
     if (verticalDistance > ry) return false;
 
-    if (isAncestorOrDescendant(session, current, byKey)) return true;
-    const parentKey = parentSessionKey(session, byKey);
+    if (graph.isAncestor(session, current) || graph.isAncestor(current, session)) return true;
+    const parentKey = parentSessionKey(session, graph);
 
     if (parentKey !== currentParentKey) return false;
     const group = siblings.get(siblingGroupKey(session, parentKey)) ?? [];
@@ -221,10 +221,10 @@ export function filterSessionNeighborhood(
 
 export function orderSessionCompletions(sessions: UnknownRecord[], currentSession: UnknownRecord | undefined) {
   if (!currentSession) return sortSessions(sessions, modifiedTime);
-  const byKey = sessionKeyMap(sessions);
+  const graph = indexSessions(sessions);
   const currentKeys = sessionKeys(currentSession);
   const rank = (session: UnknownRecord) => {
-    const parentKey = parentSessionKey(session, byKey);
+    const parentKey = parentSessionKey(session, graph);
 
     return parentKey && currentKeys.includes(parentKey) ? 0 : 1;
   };
@@ -327,10 +327,6 @@ function cleanSessionMessage(text: string) {
   return (match?.[1] ?? text).trim();
 }
 
-function isAncestorOrDescendant(a: UnknownRecord, b: UnknownRecord, byKey: Map<string, UnknownRecord>) {
-  return isAncestor(a, b, byKey) || isAncestor(b, a, byKey);
-}
-
 function sameSessionIdentity(a: UnknownRecord | undefined, b: UnknownRecord | undefined) {
   const rightKeys = new Set(sessionKeys(b));
 
@@ -340,41 +336,17 @@ function sameSessionIdentity(a: UnknownRecord | undefined, b: UnknownRecord | un
 function sessionDisplayId(session: UnknownRecord | undefined) {
   return (
     shortSessionId(session?.sessionId ?? session?.id) ||
-    shortSessionId(idFromPath(session?.path)) ||
+    shortSessionId(sessionIdFromPath(session?.path)) ||
     shortSessionId(session?.path) ||
     "unknown"
   );
 }
 
-function isAncestor(ancestor: UnknownRecord, session: UnknownRecord, byKey: Map<string, UnknownRecord>) {
-  const ancestorKeys = new Set(sessionKeys(ancestor));
-  let current = session;
-
-  for (let guard = 0; guard < 100; guard++) {
-    const parent = parentSession(current, byKey);
-
-    if (!parent) return false;
-
-    if (sessionKeys(parent).some((key) => ancestorKeys.has(key))) return true;
-    current = parent;
-  }
-
-  return false;
-}
-
-function sessionKeyMap(sessions: UnknownRecord[]) {
-  const byKey = new Map<string, UnknownRecord>();
-
-  for (const session of sessions) for (const key of sessionKeys(session)) byKey.set(key, session);
-
-  return byKey;
-}
-
-function siblingGroups(sessions: UnknownRecord[], byKey: Map<string, UnknownRecord>) {
+function siblingGroups(sessions: UnknownRecord[], graph: ReturnType<typeof indexSessions>) {
   const groups = new Map<string, UnknownRecord[]>();
 
   for (const session of sessions) {
-    const key = siblingGroupKey(session, parentSessionKey(session, byKey));
+    const key = siblingGroupKey(session, parentSessionKey(session, graph));
     groups.set(key, [...(groups.get(key) ?? []), session]);
   }
 
@@ -385,49 +357,13 @@ function siblingGroupKey(session: UnknownRecord, parentKey: string | undefined) 
   return `${parentKey ?? "root"}:${Number(session.depth ?? 0)}`;
 }
 
-function parentSession(session: UnknownRecord, byKey: Map<string, UnknownRecord>) {
-  const key = parentSessionKey(session, byKey);
-
-  return key ? byKey.get(key) : undefined;
-}
-
-function parentSessionKey(session: UnknownRecord, byKey: Map<string, UnknownRecord>) {
-  return parentKeys(session).find((key) => byKey.has(key));
-}
-
-function primarySessionKey(session: UnknownRecord) {
-  return String(session.path ?? session.sessionId ?? session.id ?? shortSessionId(session.sessionId ?? session.id));
+function parentSessionKey(session: UnknownRecord, graph: ReturnType<typeof indexSessions>) {
+  const parent = graph.parent(session);
+  return parent ? primarySessionKey(parent) : undefined;
 }
 
 function sessionLabel(session: UnknownRecord) {
   return String(session.lastMessage ?? session.firstMessage ?? session.name ?? session.id ?? "");
-}
-
-function sessionKeys(session: UnknownRecord | undefined) {
-  if (!session) return [];
-
-  return [
-    session.path,
-    session.sessionId,
-    session.id,
-    shortSessionId(session.sessionId ?? session.id),
-    idFromPath(session.path),
-  ].filter((key): key is string => typeof key === "string" && key.length > 0);
-}
-
-function parentKeys(session: UnknownRecord) {
-  return [
-    session.parentSessionPath,
-    session.parentSessionId,
-    idFromPath(session.parentSessionPath),
-    shortSessionId(session.parentSessionId),
-  ].filter((key): key is string => typeof key === "string" && key.length > 0);
-}
-
-function idFromPath(value: unknown) {
-  const match = String(value ?? "").match(/([0-9a-f]{8,}(?:-[0-9a-f-]+)?)\.jsonl$/i);
-
-  return match?.[1];
 }
 
 function sortSessions(sessions: UnknownRecord[], score: (session: UnknownRecord) => number = modifiedTime) {
@@ -448,19 +384,4 @@ export function modifiedTime(session: UnknownRecord) {
         ).getTime();
 
   return Number.isFinite(time) ? time : 0;
-}
-
-function uniqueBy<T>(items: T[], keyFn: (item: T) => unknown) {
-  const seen = new Set<unknown>();
-  const result: T[] = [];
-
-  for (const item of items) {
-    const key = keyFn(item);
-
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(item);
-  }
-
-  return result;
 }

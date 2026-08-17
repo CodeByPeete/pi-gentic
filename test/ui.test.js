@@ -3,10 +3,10 @@ import test from "node:test";
 import { renderAgentsCall, renderAgentsResult } from "../dist/interface/cards/render.js";
 import {
   CARD_STATE_ENTRY_TYPE,
-  clearLiveCardDetails,
   restorePersistedCardDetails,
   setLiveCardDetails,
 } from "../dist/interface/cards/state.js";
+import { clearLiveCardDetails } from "./support/cards.js";
 
 const theme = {
   bold: (text) => `\x1b[1m${text}\x1b[22m`,

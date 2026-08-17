@@ -4,11 +4,11 @@ import { Duration, Effect, Fiber, FileSystem, Schedule, Stream } from "effect";
 import { formatDuration, shortestUniqueSessionId, shortSessionId } from "../../../shared/value.js";
 import type { PiTheme } from "../types.js";
 import type { ExtensionRuntime } from "../../../runtime/ExtensionRuntime.js";
-import { enrichSessionSummary, orderSessionTree, summarizeSession } from "../../../application/sessions/model.js";
+import { enrichSessionSummary, summarizeSession, treeSwitchPath } from "../../../application/sessions/model.js";
 import { withRuntimeState } from "../../../application/sessions/runtime-view.js";
-import { styleAgentName } from "../../../interface/presentation/text.js";
+import { styleAgentName, timer } from "../../../interface/presentation/text.js";
 import { listRuntimeSessions, livePath, runtimeSessionIsRunning } from "../sessions/live.js";
-import { getLiveRuntimeState, type HostRecord } from "../state.js";
+import { recordHostDiagnostic, type HostRecord } from "../state.js";
 import { reconcileSessionMembership, sameSessionMembership } from "./cache.js";
 
 const ORIGINAL_SESSION = Symbol("pi-gentic.original-session");
@@ -160,20 +160,10 @@ export function decorateResumeSelector(
   };
 
   list.setSessions = (sessions: HostRecord[], showCwd: boolean) => {
-    const decorated = decorateSessions(sessions ?? []);
-    const query = String(list.searchInput?.getValue?.() ?? "");
-    const result = shouldSetThreadedSessions(list, query)
-      ? setThreadedSessions(list, decorated, showCwd)
-      : nativeSetSessions(decorated, showCwd);
-
-    if (query.trim()) nativeFilterSessions(query);
+    const result = nativeSetSessions(decorateSessions(sessions ?? []), showCwd);
     syncRefreshTimer();
     return result;
   };
-  list.filterSessions = (query: string) =>
-    shouldSetThreadedSessions(list, query)
-      ? setThreadedSessions(list, list.allSessions ?? [], list.showCwd)
-      : nativeFilterSessions(query);
   list.render = (width: number) => {
     refreshVisibleSessions();
     syncRefreshTimer();
@@ -195,9 +185,7 @@ export function decorateResumeSelector(
       (candidate: DecoratedSession) => originalSession(candidate)?.path === sessionPath,
     );
     const presentation = sessionPresentation(session);
-    const switchPath = presentation?.running && presentation.sessionId ? livePath(presentation.sessionId) : sessionPath;
-
-    return nativeOnSelect?.(switchPath);
+    return nativeOnSelect?.(treeSwitchPath({ ...presentation, path: sessionPath }));
   };
 
   const dispose = () => {
@@ -221,41 +209,6 @@ export function decorateResumeSelector(
   return dispose;
 }
 
-function shouldSetThreadedSessions(list: HostRecord, query: string) {
-  return list.sortMode === "threaded" && list.nameFilter === "all" && !query.trim();
-}
-
-function setThreadedSessions(list: HostRecord, sessions: DecoratedSession[], showCwd: boolean) {
-  const nodes = threadedSessionNodes(sessions);
-
-  list.allSessions = sessions;
-  list.showCwd = showCwd;
-  list.filteredSessions = nodes;
-  list.selectedIndex = Math.min(Number(list.selectedIndex ?? 0), Math.max(0, nodes.length - 1));
-}
-
-function threadedSessionNodes(sessions: DecoratedSession[]) {
-  const sessionsByPath = new Map(sessions.map((session) => [session.path, session]));
-  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
-  const ancestors: Array<{ isLast: boolean }> = [];
-
-  return orderSessionTree(sessions).map((orderedSession) => {
-    const depth = Math.max(0, Number(orderedSession.depth ?? 0));
-    const isLast = orderedSession.isLast === true;
-    const session = sessionsByPath.get(orderedSession.path) ?? sessionsById.get(orderedSession.id) ?? orderedSession;
-
-    ancestors.length = depth;
-    const node = {
-      session,
-      depth,
-      isLast,
-      ancestorContinues: ancestors.map((ancestor, index) => index > 0 && !ancestor.isLast),
-    };
-    ancestors[depth] = node;
-    return node;
-  });
-}
-
 function assertDecoratableSessionList(list: HostRecord) {
   const required = ["setSessions", "filterSessions", "render"].filter((method) => typeof list?.[method] !== "function");
 
@@ -269,6 +222,7 @@ function assertDecoratableSessionList(list: HostRecord) {
 
 function decorateSessions(sessions: HostRecord[]) {
   const ids = sessions.map((session) => session.id ?? session.sessionId);
+  const pathsById = new Map(sessions.map((session, index) => [ids[index], session.path]));
   const shortIds = ids.map(shortSessionId);
   const shortIdCounts = new Map<string, number>();
 
@@ -279,7 +233,11 @@ function decorateSessions(sessions: HostRecord[]) {
     const persisted = enrichImmediately ? enrichSessionSummary(session) : summarizeSession(session);
     const sessionId = ids[index];
     const shortId = shortIds[index] ?? shortSessionId(sessionId);
-    const clone: DecoratedSession = { ...session };
+    const parent = session.parentSessionPath ?? session.parentSessionId;
+    const clone: DecoratedSession = {
+      ...session,
+      parentSessionPath: pathsById.get(parent) ?? session.parentSessionPath,
+    };
 
     Object.defineProperties(clone, {
       [ORIGINAL_SESSION]: { value: session },
@@ -321,6 +279,7 @@ function refreshDecoratedSession(session: DecoratedSession, persisted?: HostReco
     agentName: live.agentName ?? persisted.agentName ?? previous.agentName,
     lastMessage: persisted.lastMessage ?? previous.lastMessage,
     running: live.running === true,
+    livePath: live.running ? livePath(previous.sessionId) : undefined,
     inactiveMs: Number(live.inactiveMs ?? 0),
     loading,
   };
@@ -395,7 +354,7 @@ function renderDecoratedRow(list: HostRecord, node: HostRecord, index: number, w
   const id = presentation.shortId ? ` ${theme.fg("dim", `(${presentation.shortId})`)}` : "";
   const timerText = formatDuration(presentation.inactiveMs);
   const inactive = presentation.running
-    ? ` ${theme.fg("dim", "Inactive:")} \x1b[95m${timerText}\x1b[39m${" ".repeat(Math.max(0, 8 - timerText.length))}`
+    ? ` ${theme.fg("dim", "Inactive:")} ${timer(timerText)}${" ".repeat(Math.max(0, 8 - timerText.length))}`
     : "";
   const orchestrationMetadata = `${id}${inactive}`;
   const nativeMetadataWidth = Math.max(0, width - visibleWidth(left) - visibleWidth(orchestrationMetadata) - 12);
@@ -472,11 +431,4 @@ function originalSession(session: DecoratedSession | undefined) {
 
 function sessionPresentation(session: DecoratedSession | undefined): HostRecord | undefined {
   return session?.[SESSION_PRESENTATION];
-}
-
-function recordHostDiagnostic(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  const diagnostics = getLiveRuntimeState().hostDiagnostics;
-
-  if (!diagnostics.includes(message)) diagnostics.push(message);
 }

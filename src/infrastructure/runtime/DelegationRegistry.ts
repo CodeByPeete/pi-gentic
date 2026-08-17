@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { Effect, Schema } from "effect";
-import type { DelegationCompletionMode } from "../../domain/delegation.js";
 import { DelegationAlreadyRegistered } from "../../domain/errors.js";
 import { DelegationId, type DelegationId as DelegationIdValue } from "../../domain/identifiers.js";
 
@@ -24,7 +23,7 @@ type DelegationRegistryState = {
 };
 
 export type RegisterActiveDelegation = Omit<ActiveDelegation, "enclosingDelegationIds" | "settlement"> & {
-  readonly completionMode: DelegationCompletionMode;
+  readonly completionMode: "joined" | "detached";
 };
 
 declare global {

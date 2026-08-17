@@ -4,14 +4,14 @@ import { TuiMainScreen } from "@earendil-works/pi-tui";
 import {
   AGENT_WIDGET_KEY,
   LIVE_REFRESH_WIDGET_KEY,
-  sessionHasVisibleLiveCard,
   setAgentLabel,
   showCard,
   startLiveRefresh,
   startSessionLiveCardRefresh,
 } from "../dist/interface/cards/live.js";
 import { renderAgentsResult } from "../dist/interface/cards/render.js";
-import { clearLiveCardDetails, getLiveCardDetails, setLiveCardDetails } from "../dist/interface/cards/state.js";
+import { getLiveCardDetails, setLiveCardDetails } from "../dist/interface/cards/state.js";
+import { clearLiveCardDetails } from "./support/cards.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
 
 const runtime = createExtensionRuntime();
@@ -170,38 +170,6 @@ test("live timer cadence never catches up with subsecond repaint bursts", async 
   } finally {
     stop();
   }
-});
-
-test("live card lookup contains stale session-manager failures", () => {
-  clearLiveCardDetails();
-  setLiveCardDetails({
-    cardId: "stale-session-card",
-    kind: "send",
-    status: "running",
-  });
-
-  assert.equal(
-    sessionHasVisibleLiveCard({
-      sessionManager: {
-        getSessionId: () => {
-          throw new Error("stale id");
-        },
-      },
-    }),
-    false,
-  );
-  assert.equal(
-    sessionHasVisibleLiveCard({
-      sessionManager: {
-        getSessionId: () => "session",
-        getEntries: () => {
-          throw new Error("stale entries");
-        },
-      },
-    }),
-    false,
-  );
-  clearLiveCardDetails();
 });
 
 test("live refresh contains stale mount and unmount failures", () => {

@@ -25,6 +25,7 @@ export default defineConfig({
         "src/application/delegation/**",
         "src/application/sessions/**",
         "src/domain/session-policy.ts",
+        "src/domain/session.ts",
         "src/infrastructure/configuration/**",
         "src/infrastructure/git/**",
         "src/infrastructure/pi/**",

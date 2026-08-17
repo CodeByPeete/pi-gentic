@@ -3,7 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { AGENT_CYCLE_SHORTCUT } from "./application/agents/state.js";
 import { loadPiSettings } from "./infrastructure/configuration/agents.js";
 import { findAvailableSkill } from "./infrastructure/configuration/skills.js";
-import { errorMessage as getErrorMessage, isRecord, shortSessionId } from "./shared/value.js";
+import { errorMessage as getErrorMessage, firstText, isRecord, shortSessionId } from "./shared/value.js";
 import {
   buildManualSkillMessage,
   parseAgentCommand,
@@ -19,7 +19,7 @@ import type { PiApi, PiContext } from "./infrastructure/pi/types.js";
 import type { UnknownRecord } from "./shared/types.js";
 import { createExtensionRuntime, shouldDisposeExtensionRuntime } from "./runtime/ExtensionRuntime.js";
 import { installResumeIntegration } from "./infrastructure/pi/resume/index.js";
-import { executeAction, trustedConfiguration } from "./interface/agents-tool-handler.js";
+import { executeAction } from "./interface/agents-tool-handler.js";
 import { showCard, startSessionLiveCardRefresh } from "./interface/cards/live.js";
 import { renderAgentsCall, renderAgentsResult } from "./interface/cards/render.js";
 import { restorePersistedCardDetails } from "./interface/cards/state.js";
@@ -145,7 +145,7 @@ export default async function piGentic(pi: ExtensionAPI) {
 
       try {
         if (parsed.sessionId) {
-          const config = trustedConfiguration(ctx);
+          const config = orchestrator.load(ctx);
           const runtime = await orchestrator.getOrOpenSession(ctx, parsed.sessionId);
 
           if (parsed.agent === "clear") {
@@ -267,7 +267,7 @@ export default async function piGentic(pi: ExtensionAPI) {
         const input = await runtime.runPromise(normalizeAgentsToolInput(params));
         const callerEntryId = ctx.sessionManager.getLeafId?.();
         const forkBoundaryEntryId =
-          input._tag === "SendAgentsAction" ? delegationContextBoundaries.get(ctx.sessionManager) : undefined;
+          input.action === "send" ? delegationContextBoundaries.get(ctx.sessionManager) : undefined;
         const call = {
           toolCallId,
           ...(callerEntryId ? { callerEntryId } : {}),
@@ -312,8 +312,4 @@ function skillCommandsEnabled(ctx: PiContext) {
     loadPiSettings(undefined, ctx.cwd ?? process.cwd(), [], ctx.isProjectTrusted?.() === true).enableSkillCommands !==
     false
   );
-}
-
-function firstText(content: unknown) {
-  return Array.isArray(content) ? content.find((item) => item.type === "text")?.text : undefined;
 }

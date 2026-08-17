@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { availableAgentLines } from "../dist/application/agents/prompt.js";
 import {
-  collectSessionActivities,
+  completeSessionActivities,
   createSessionActivityMonitor,
   formatSessionStatus,
   lastRuntimeActivities,
@@ -17,19 +17,15 @@ import {
   abortActor,
   contextStillActive,
   deliverCardToCaller,
-  deliverReturnToCaller,
   deliverSendContextToCaller,
-  deliverToLiveCaller,
-  isTargetSlashCommand,
   persistAgentCardState,
-  persistReturnForCaller,
+  resolveTargetSlashCommand,
   prepareTargetPromptForSend,
   promptSessionAndWaitForTurnEnd,
   resolveReturnDelivery,
   sendConfirmationText,
   sendPendingText,
   sendStatusText,
-  sendUserMessageOptions,
   shouldDeferSendCompletion,
   slashCommandDeliveryText,
 } from "../dist/application/delegation/delivery.js";
@@ -44,9 +40,11 @@ import {
   setRuntimeSession,
 } from "../dist/infrastructure/pi/host.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
-import { clearLiveCardDetails, getLiveCardDetails } from "../dist/interface/cards/state.js";
+import { getLiveCardDetails } from "../dist/interface/cards/state.js";
+import { clearLiveCardDetails } from "./support/cards.js";
 
 const effectRuntime = createExtensionRuntime();
+const staleContextError = "This extension ctx is stale after session replacement or reload.";
 test.after(() => effectRuntime.dispose());
 
 function createGitRepo(prefix = path.join(tmpdir(), "pi-gentic-worktree-repo-")) {
@@ -106,7 +104,7 @@ test("terminal card persistence validates snapshots and copies activities", () =
     longActivities.slice(-14).map(({ id }) => id),
   );
 
-  const assistantActivities = collectSessionActivities({
+  const assistantActivities = completeSessionActivities({
     agent: {
       state: {
         messages: [
@@ -196,38 +194,6 @@ test("send context delivery respects caller liveness and absorbs stale APIs", ()
   );
 });
 
-test("message options and context liveness tolerate stale native contexts", () => {
-  assert.deepEqual(sendUserMessageOptions({ isIdle: () => false }), {
-    deliverAs: "followUp",
-  });
-  assert.equal(sendUserMessageOptions({ isIdle: () => true }), undefined);
-  assert.equal(
-    sendUserMessageOptions({
-      isIdle: () => {
-        throw new Error("stale");
-      },
-    }),
-    undefined,
-  );
-  assert.equal(
-    contextStillActive({ cwd: process.cwd(), sessionManager: { getSessionId: () => "caller" } }, "caller"),
-    true,
-  );
-  assert.equal(
-    contextStillActive({ cwd: process.cwd(), sessionManager: { getSessionId: () => "other" } }, "caller"),
-    false,
-  );
-  assert.equal(
-    contextStillActive({
-      get cwd() {
-        throw new Error("stale");
-      },
-      sessionManager: { getSessionId: () => "caller" },
-    }),
-    false,
-  );
-});
-
 test("prompt skill content stays native while agent descriptions remain policy-scoped", () => {
   const basePrompt = [
     "Base prompt",
@@ -297,72 +263,6 @@ test("runtime session references reject ambiguous shared prefixes", async () => 
   }
 });
 
-test("caller delivery boundaries contain stale and persistence failures", async () => {
-  assert.equal(
-    await deliverCardToCaller({
-      pi: { sendMessage: () => {} },
-      ctx: { sessionManager: { getSessionId: () => "other" } },
-      callerSessionId: "caller",
-      callerSessionManager: {
-        appendCustomMessageEntry: () => {
-          throw new Error("read only");
-        },
-      },
-      text: "Return",
-      details: {},
-      invoke: false,
-    }),
-    "unavailable",
-  );
-
-  assert.deepEqual(
-    await deliverToLiveCaller({
-      pi: {
-        sendMessage: () => {
-          throw new Error("stale api");
-        },
-      },
-      ctx: { sessionManager: { getSessionId: () => "caller" } },
-      callerSessionId: "caller",
-      text: "Return",
-      invoke: false,
-    }),
-    { delivered: false },
-  );
-  assert.deepEqual(
-    await deliverToLiveCaller({
-      pi: { sendMessage: () => {} },
-      ctx: { sessionManager: { getSessionId: () => "caller" } },
-      callerSessionId: "caller",
-      visibleSession: {
-        sessionManager: {
-          getSessionId: () => {
-            throw new Error("stale session");
-          },
-        },
-      },
-      text: "Return",
-      invoke: false,
-    }),
-    { delivered: true, mode: "live" },
-  );
-
-  const appended = [];
-  persistReturnForCaller({
-    callerSessionManager: { appendMessage: (message) => appended.push(message) },
-    text: "Invoke",
-    invoke: true,
-  });
-  persistReturnForCaller({
-    callerSessionManager: {
-      appendCustomMessageEntry: (...args) => appended.push(args),
-    },
-    text: "Persist",
-    invoke: false,
-  });
-  assert.equal(appended.length, 2);
-});
-
 test("target command prompts keep slash commands and attach caller context", async () => {
   const customMessages = [];
   const session = {
@@ -372,11 +272,11 @@ test("target command prompts keep slash commands and attach caller context", asy
     sendCustomMessage: (...args) => customMessages.push(args),
   };
 
-  assert.equal(isTargetSlashCommand("/review staged", session), true);
+  assert.ok(resolveTargetSlashCommand("/review staged", session));
 
-  assert.equal(isTargetSlashCommand("/skill:tdd add coverage", session), true);
+  assert.ok(resolveTargetSlashCommand("/skill:tdd add coverage", session));
 
-  assert.equal(isTargetSlashCommand("/send nested", session), false);
+  assert.equal(resolveTargetSlashCommand("/send nested", session), undefined);
 
   const prompt = await prepareTargetPromptForSend(session, "/review staged", "Message from agent from session caller");
 
@@ -398,7 +298,7 @@ test("extension slash commands are recognized without command-specific code", as
     sendCustomMessage: (...args) => customMessages.push(args),
   };
 
-  assert.equal(isTargetSlashCommand("/goal done", session), true);
+  assert.ok(resolveTargetSlashCommand("/goal done", session));
 
   const prompt = await prepareTargetPromptForSend(session, "/goal done", "Message from agent from session caller");
 
@@ -428,34 +328,6 @@ test("busy target command prompts steer context before queuing slash command", a
   assert.equal(prompt.text, "/review staged");
 
   assert.equal(customMessages[0][1].deliverAs, "steer");
-});
-
-test("send with no invoke returns answer as context without triggering a caller turn", async () => {
-  const sentMessages = [];
-  const pi = {
-    sendMessage: (message, options) => sentMessages.push({ message, options }),
-    sendUserMessage: () => {
-      throw new Error("should not invoke caller");
-    },
-  };
-
-  await deliverReturnToCaller({
-    pi,
-    ctx: {
-      cwd: process.cwd(),
-      sessionManager: { getSessionId: () => "caller" },
-      isIdle: () => true,
-    },
-    callerSessionManager: { appendMessage() {}, appendCustomMessageEntry() {} },
-    text: "Message from [worker] agent from session target:\nWorker answer",
-    invoke: false,
-  });
-
-  assert.equal(sentMessages[0].options.triggerTurn, false);
-
-  assert.equal(sentMessages[0].message.customType, "pi-gentic:return-context");
-
-  assert.match(sentMessages[0].message.content, /Worker answer/);
 });
 
 test("aborted async sends preserve target failures after caller invocation fails", async () => {
@@ -955,232 +827,11 @@ test("deferred completion cards persist bounded activity history in their origin
   assert.equal(persisted, 1);
 });
 
-test("send return uses the active visible session after a session switch", async () => {
-  const sent = [];
-
-  const mode = await deliverReturnToCaller({
-    pi: {
-      sendMessage: () => {
-        throw new Error("stale pi should not be used");
-      },
-    },
-    ctx: {
-      cwd: process.cwd(),
-      sessionManager: { getSessionId: () => "caller" },
-      isIdle: () => true,
-    },
-    callerSessionId: "caller",
-    callerSessionManager: { appendCustomMessageEntry() {} },
-    text: "Visible answer",
-    invoke: false,
-    visibleSession: {
-      sendCustomMessage: (...args) => sent.push(args),
-    },
-  });
-
-  assert.equal(mode, "live");
-
-  assert.equal(sent[0][0].content, "Visible answer");
-
-  assert.deepEqual(sent[0][1], { triggerTurn: false });
-});
-
-test("live user delivery defaults to follow-up without an explicit return policy", async () => {
-  const userMessages = [];
-
-  await deliverReturnToCaller({
-    pi: {
-      sendUserMessage: (text, options) => userMessages.push({ text, options }),
-    },
-    ctx: {
-      cwd: process.cwd(),
-      sessionManager: { getSessionId: () => "caller" },
-      isIdle: () => false,
-    },
-    callerSessionManager: { appendMessage() {} },
-    text: "Queued answer",
-    invoke: true,
-  });
-
-  assert.deepEqual(userMessages[0], {
-    text: "Queued answer",
-    options: { deliverAs: "followUp" },
-  });
-});
-
 test("synchronous return policy stays at the tool result boundary", () => {
   assert.deepEqual(resolveReturnDelivery({ async: false }), {
     kind: "toolResult",
   });
 });
-
-test("async return delivery steers the caller at the next model boundary", async () => {
-  const delivery = resolveReturnDelivery({ async: true });
-  const userMessages = [];
-
-  await deliverReturnToCaller({
-    pi: {
-      sendUserMessage: () => {
-        throw new Error("visible session should be used");
-      },
-    },
-    ctx: {
-      cwd: process.cwd(),
-      sessionManager: { getSessionId: () => "caller" },
-      isIdle: () => false,
-    },
-    callerSessionId: "caller",
-    callerSessionManager: { appendMessage() {} },
-    text: "Async answer",
-    invoke: true,
-    queue: delivery.queue,
-    visibleSession: {
-      sendUserMessage: async (text, options) => userMessages.push({ text, options }),
-    },
-  });
-
-  assert.deepEqual(userMessages[0], {
-    text: "Async answer",
-    options: { deliverAs: "steer" },
-  });
-});
-
-test("send return persists when the captured caller is no longer active", async () => {
-  const appended = [];
-  const mode = await deliverReturnToCaller({
-    pi: {
-      sendMessage: () => {
-        throw new Error("should not deliver to visible session");
-      },
-      sendUserMessage: () => {
-        throw new Error("should not invoke visible session");
-      },
-    },
-    ctx: {
-      cwd: process.cwd(),
-      sessionManager: { getSessionId: () => "visible-other" },
-    },
-    callerSessionId: "caller",
-    callerSessionManager: {
-      appendCustomMessageEntry: (...args) => appended.push(args),
-    },
-    text: "Returned answer",
-    invoke: false,
-  });
-
-  assert.equal(mode, "persisted");
-
-  assert.deepEqual(appended[0], ["pi-gentic:return-context", "Returned answer", true, { kind: "returnContext" }]);
-});
-
-test("no-invoke return steers into a running caller without opening a new run", async () => {
-  const delivered = [];
-  const callerSessionId = "running-caller";
-  setRuntimeSession(callerSessionId, {
-    session: {
-      isStreaming: true,
-      sessionManager: { getSessionId: () => callerSessionId },
-      sendUserMessage: async (...args) => delivered.push(args),
-    },
-  });
-
-  try {
-    const mode = await deliverReturnToCaller({
-      pi: { sendMessage() {}, sendUserMessage() {} },
-      ctx: {
-        cwd: process.cwd(),
-        sessionManager: { getSessionId: () => "visible-other" },
-      },
-      callerSessionId,
-      callerSessionManager: { appendCustomMessageEntry() {} },
-      text: "child answer",
-      invoke: false,
-      persist: () => {
-        throw new Error("should not persist while caller is running");
-      },
-      visibleSession: undefined,
-      queue: "steer",
-    });
-
-    assert.equal(mode, "live");
-
-    assert.deepEqual(delivered, [["child answer", { deliverAs: "steer" }]]);
-  } finally {
-    deleteRuntimeSession(callerSessionId);
-  }
-});
-
-test("send return invokes inactive registered caller sessions through the background delivery hook", async () => {
-  const callerSessionId = "inactive-registered-caller";
-  const sent = [];
-  const invoked = [];
-  setRuntimeSession(callerSessionId, {
-    session: {
-      isStreaming: false,
-      sessionManager: { getSessionId: () => callerSessionId },
-      sendUserMessage: (...args) => sent.push(args),
-    },
-  });
-
-  try {
-    const mode = await deliverReturnToCaller({
-      pi: { sendUserMessage() {}, sendMessage() {} },
-      ctx: {
-        cwd: process.cwd(),
-        sessionManager: { getSessionId: () => "visible-child" },
-      },
-      callerSessionId,
-      callerSessionManager: { appendMessage() {} },
-      text: "Returned answer",
-      invoke: true,
-      queue: "steer",
-      visibleSession: {
-        sessionManager: { getSessionId: () => "visible-child" },
-      },
-      invokeInactiveCaller: async (text) => invoked.push(text),
-    });
-
-    assert.equal(mode, "background");
-    assert.deepEqual(sent, []);
-    assert.deepEqual(invoked, ["Returned answer"]);
-  } finally {
-    deleteRuntimeSession(callerSessionId);
-  }
-});
-
-test("send return invokes stale caller sessions through the background delivery hook", async () => {
-  const appended = [];
-  const invoked = [];
-  const mode = await deliverReturnToCaller({
-    pi: {
-      sendUserMessage: () => {
-        throw new Error("stale");
-      },
-    },
-    ctx: {
-      get cwd() {
-        throw new Error("stale context");
-      },
-      sessionManager: { getSessionId: () => "caller" },
-    },
-    callerSessionId: "caller",
-    callerSessionManager: {
-      appendMessage: (message) => appended.push(message),
-    },
-    text: "Returned answer",
-    invoke: true,
-    queue: "steer",
-    invokeInactiveCaller: async (text) => invoked.push(text),
-  });
-
-  assert.equal(mode, "background");
-
-  assert.deepEqual(invoked, ["Returned answer"]);
-
-  assert.deepEqual(appended, []);
-});
-
-const staleContextError = "This extension ctx is stale after session replacement or reload.";
 
 test("foreground send waits for the native session to settle after recoverable agent runs", async () => {
   let listener;
@@ -1271,46 +922,6 @@ test("foreground prompt tracking preserves failures, aborts, and sessions withou
   controller.abort();
   await assert.rejects(aborted, /Agent call aborted/);
   assert.equal(unsubscribed, 2);
-});
-
-test("send return skips a stale visible session before starting a caller turn", async () => {
-  const invoked = [];
-  let visibleMessages = 0;
-  const mode = await deliverReturnToCaller({
-    pi: {
-      sendUserMessage: () => {
-        throw new Error("stale pi should not be used");
-      },
-    },
-    ctx: {
-      get cwd() {
-        throw new Error(staleContextError);
-      },
-      sessionManager: { getSessionId: () => "caller" },
-    },
-    callerSessionId: "caller",
-    callerSessionManager: { appendMessage() {} },
-    text: "Returned answer",
-    invoke: true,
-    queue: "steer",
-    visibleSession: {
-      sessionManager: { getSessionId: () => "caller" },
-      createReplacedSessionContext: () => ({
-        get cwd() {
-          throw new Error(staleContextError);
-        },
-        sessionManager: { getSessionId: () => "caller" },
-      }),
-      sendUserMessage: () => {
-        visibleMessages += 1;
-      },
-    },
-    invokeInactiveCaller: async (text) => invoked.push(text),
-  });
-
-  assert.equal(mode, "background");
-  assert.equal(visibleMessages, 0);
-  assert.deepEqual(invoked, ["Returned answer"]);
 });
 
 test("prompt append ignores stale extension contexts during session replacement", () => {
@@ -2091,52 +1702,6 @@ test("abort actor is always defined for caller and agent sessions", () => {
   assert.equal(abortActor(staleContext), "caller session");
 });
 
-test("aborted child outcomes are delivered back so parent sessions can continue", async () => {
-  const userMessages = [];
-  const outcome = sessionRunOutcome(
-    {
-      agentName: "worker",
-      session: {
-        sessionManager: { getSessionId: () => "child-session" },
-        agent: {
-          state: {
-            messages: [
-              {
-                role: "assistant",
-                content: "",
-                stopReason: "aborted",
-              },
-            ],
-          },
-        },
-      },
-    },
-    { request: "do work" },
-  );
-
-  assert.equal(outcome.status, "aborted");
-
-  await deliverReturnToCaller({
-    pi: {
-      sendUserMessage: (text, options) => userMessages.push({ text, options }),
-    },
-    ctx: {
-      cwd: process.cwd(),
-      sessionManager: { getSessionId: () => "parent" },
-      isIdle: () => false,
-    },
-    callerSessionId: "parent",
-    callerSessionManager: { appendMessage() {} },
-    text: outcome.text,
-    invoke: true,
-    queue: "steer",
-  });
-
-  assert.match(userMessages[0].text, /was aborted while handling your request/);
-
-  assert.deepEqual(userMessages[0].options, { deliverAs: "steer" });
-});
-
 test("sessions that stop at the output limit report the stop reason and recent model error", () => {
   const outcome = sessionRunOutcome(
     {
@@ -2343,7 +1908,7 @@ test("activity monitors normalize every native progress event", () => {
   assert.equal(monitor.stop("aborted").status, "aborted");
 
   assert.deepEqual(
-    collectSessionActivities({
+    completeSessionActivities({
       agent: {
         state: {
           messages: [
@@ -2646,4 +2211,43 @@ test("named child sessions activate with the current Pi model runtime", async ()
   } finally {
     deleteRuntimeSession(sessionId);
   }
+});
+
+test("context liveness contains stale native contexts", () => {
+  assert.equal(
+    contextStillActive({ cwd: process.cwd(), sessionManager: { getSessionId: () => "caller" } }, "caller"),
+    true,
+  );
+  assert.equal(
+    contextStillActive({ cwd: process.cwd(), sessionManager: { getSessionId: () => "other" } }, "caller"),
+    false,
+  );
+  assert.equal(
+    contextStillActive({
+      get cwd() {
+        throw new Error("stale");
+      },
+      sessionManager: { getSessionId: () => "caller" },
+    }),
+    false,
+  );
+});
+
+test("card delivery contains persistence failures", async () => {
+  assert.equal(
+    await deliverCardToCaller({
+      pi: { sendMessage: () => {} },
+      ctx: { sessionManager: { getSessionId: () => "other" } },
+      callerSessionId: "caller",
+      callerSessionManager: {
+        appendCustomMessageEntry: () => {
+          throw new Error("read only");
+        },
+      },
+      text: "Return",
+      details: {},
+      invoke: false,
+    }),
+    "unavailable",
+  );
 });

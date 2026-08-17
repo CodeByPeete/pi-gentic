@@ -1,5 +1,5 @@
 import { getActiveState } from "../../application/agents/state.js";
-import { reportRuntimeDiagnostic } from "../../shared/diagnostics.js";
+import { recoverDiagnostic } from "../../shared/diagnostics.js";
 import type { PiAgentSession } from "./types.js";
 import { abortAgentCallsForSession, hasCancellableAgentCallsForSession } from "./delegation.js";
 import {
@@ -18,7 +18,7 @@ import {
   renderTransitionSubmissions,
   restoreTransitionSubmissions,
 } from "./sessions/transitions.js";
-import type { HostRecord, LiveRuntimeState } from "./state.js";
+import { callHostMethod, captureHostMethod, type HostRecord, type LiveRuntimeState } from "./state.js";
 
 const NATIVE_INTERACTIVE_SUBMIT = Symbol.for("pi-gentic.native-interactive-submit");
 
@@ -36,9 +36,7 @@ export function installInteractiveInput(state: LiveRuntimeState, peer: PiCodingA
 }
 
 function installSessionAbort(state: LiveRuntimeState, { AgentSession }: Pick<PiCodingAgentPeer, "AgentSession">) {
-  if (state.sessionAbortInstalled) return;
-  state.sessionAbortInstalled = true;
-  state.hostAbortSession = AgentSession.prototype.abort as LiveRuntimeState["hostAbortSession"];
+  if (!captureHostMethod(state, "session.abort", AgentSession.prototype.abort)) return;
 
   AgentSession.prototype.abort = async function abortWithPiGenticTargets(...args: unknown[]) {
     const sessionId = this.sessionManager.getSessionId?.();
@@ -48,30 +46,26 @@ function installSessionAbort(state: LiveRuntimeState, { AgentSession }: Pick<PiC
       skipSessionAbort: sessionId,
     });
 
-    return state.hostAbortSession?.apply(this, args);
+    return callHostMethod(state, "session.abort", this, args);
   };
 }
 
 function installSessionPrompt(state: LiveRuntimeState, { AgentSession }: Pick<PiCodingAgentPeer, "AgentSession">) {
-  if (state.sessionPromptInstalled) return;
-  state.sessionPromptInstalled = true;
-  state.hostPromptSession = AgentSession.prototype.prompt as LiveRuntimeState["hostPromptSession"];
+  if (!captureHostMethod(state, "session.prompt", AgentSession.prototype.prompt)) return;
 
   AgentSession.prototype.prompt = async function promptWithPiGenticRuntime(...args: unknown[]) {
-    return trackSessionPrompt(this, () => state.hostPromptSession?.apply(this, args), args[0]);
+    return trackSessionPrompt(this, () => callHostMethod(state, "session.prompt", this, args), args[0]);
   };
 }
 
 function installSessionDispose(state: LiveRuntimeState, { AgentSession }: Pick<PiCodingAgentPeer, "AgentSession">) {
-  if (state.sessionDisposeInstalled) return;
-  state.sessionDisposeInstalled = true;
-  const dispose = AgentSession.prototype.dispose;
+  if (!captureHostMethod(state, "session.dispose", AgentSession.prototype.dispose)) return;
 
   AgentSession.prototype.dispose = function disposeWithPiGenticRuntimeCleanup(...args: unknown[]) {
     const sessionId = this.sessionManager?.getSessionId?.();
 
     try {
-      return dispose?.apply(this, args);
+      return callHostMethod(state, "session.dispose", this, args);
     } finally {
       if (typeof sessionId === "string" && sessionId) {
         unregisterLiveRuntime(sessionId);
@@ -122,14 +116,18 @@ function installInteractiveSubmit(
   state: LiveRuntimeState,
   { InteractiveMode }: Pick<PiCodingAgentPeer, "InteractiveMode">,
 ) {
-  if (state.interactiveSubmitInstalled || !InteractiveMode?.prototype?.setupEditorSubmitHandler) return;
-  state.interactiveSubmitInstalled = true;
-  state.hostSetupEditorSubmitHandler = InteractiveMode.prototype
-    .setupEditorSubmitHandler as LiveRuntimeState["hostSetupEditorSubmitHandler"];
+  if (
+    !captureHostMethod(
+      state,
+      "interactive.setupEditorSubmitHandler",
+      InteractiveMode.prototype.setupEditorSubmitHandler,
+    )
+  )
+    return;
   InteractiveMode.prototype.setupEditorSubmitHandler = function setupEditorSubmitHandlerWithPiGenticCommands(
     ...args: unknown[]
   ) {
-    const result = state.hostSetupEditorSubmitHandler?.apply(this, args);
+    const result = callHostMethod(state, "interactive.setupEditorSubmitHandler", this, args);
     const nativeSubmit = this.defaultEditor?.onSubmit;
 
     if (typeof nativeSubmit !== "function") return result;
@@ -195,15 +193,14 @@ function installInteractiveFollowUp(
   state: LiveRuntimeState,
   { InteractiveMode }: Pick<PiCodingAgentPeer, "InteractiveMode">,
 ) {
-  if (state.interactiveFollowUpInstalled || !InteractiveMode?.prototype?.handleFollowUp) return;
-  state.interactiveFollowUpInstalled = true;
-  state.hostHandleFollowUp = InteractiveMode.prototype.handleFollowUp as LiveRuntimeState["hostHandleFollowUp"];
+  if (!captureHostMethod(state, "interactive.handleFollowUp", InteractiveMode.prototype.handleFollowUp)) return;
   InteractiveMode.prototype.handleFollowUp = async function handleFollowUpWithSessionTransition() {
     const transition = pendingSessionTransition(state, this.runtimeHost);
     const text = String(this.editor?.getExpandedText?.() ?? readEditorText(this.editor) ?? "").trim();
     const nativeSubmit = Reflect.get(this, NATIVE_INTERACTIVE_SUBMIT);
 
-    if (!transition || !text || typeof nativeSubmit !== "function") return state.hostHandleFollowUp?.call(this);
+    if (!transition || !text || typeof nativeSubmit !== "function")
+      return callHostMethod(state, "interactive.handleFollowUp", this, []);
     return enqueueTransitionSubmission(transition, {
       text,
       mode: this,
@@ -285,14 +282,12 @@ async function promptVisibleSessionNow(mode: HostRecord, text: string, options: 
 
 function isVisibleExtensionCommand(mode: HostRecord, text: string) {
   if (!text.startsWith("/")) return false;
-  if (typeof mode.isExtensionCommand === "function") {
-    try {
-      return mode.isExtensionCommand(text) === true;
-    } catch (error) {
-      reportRuntimeDiagnostic("pi-host-extension-command", error);
-      return false;
-    }
-  }
+  if (typeof mode.isExtensionCommand === "function")
+    return recoverDiagnostic(
+      "pi-host-extension-command",
+      () => mode.isExtensionCommand(text) === true,
+      () => false,
+    );
 
   const commandName = text.slice(1).split(/\s/, 1)[0];
   const extensionRunner = mode.session?.extensionRunner as HostRecord | undefined;
@@ -345,11 +340,9 @@ function installInteractiveEscape(
   state: LiveRuntimeState,
   { InteractiveMode }: Pick<PiCodingAgentPeer, "InteractiveMode">,
 ) {
-  if (state.interactiveEscapeInstalled || !InteractiveMode?.prototype?.setupKeyHandlers) return;
-  state.interactiveEscapeInstalled = true;
-  state.hostSetupKeyHandlers = InteractiveMode.prototype.setupKeyHandlers as LiveRuntimeState["hostSetupKeyHandlers"];
+  if (!captureHostMethod(state, "interactive.setupKeyHandlers", InteractiveMode.prototype.setupKeyHandlers)) return;
   InteractiveMode.prototype.setupKeyHandlers = function setupKeyHandlersWithPiGenticAbort(...args: unknown[]) {
-    const result = state.hostSetupKeyHandlers?.apply(this, args);
+    const result = callHostMethod(state, "interactive.setupKeyHandlers", this, args);
     const nativeEscape = this.defaultEditor?.onEscape;
 
     if (typeof nativeEscape !== "function") return result;
@@ -376,14 +369,18 @@ function installInteractiveLiveSessionHydration(
   state: LiveRuntimeState,
   { InteractiveMode }: Pick<PiCodingAgentPeer, "InteractiveMode">,
 ) {
-  if (state.liveHydrationInstalled || !InteractiveMode?.prototype?.renderCurrentSessionState) return;
-  state.liveHydrationInstalled = true;
-  state.hostRenderCurrentSessionState = InteractiveMode.prototype
-    .renderCurrentSessionState as LiveRuntimeState["hostRenderCurrentSessionState"];
+  if (
+    !captureHostMethod(
+      state,
+      "interactive.renderCurrentSessionState",
+      InteractiveMode.prototype.renderCurrentSessionState,
+    )
+  )
+    return;
   InteractiveMode.prototype.renderCurrentSessionState = function renderCurrentSessionStateWithLiveHydration(
     ...args: unknown[]
   ) {
-    const result = state.hostRenderCurrentSessionState?.apply(this, args);
+    const result = callHostMethod(state, "interactive.renderCurrentSessionState", this, args);
     replayCurrentStreamingMessage(this);
     const transition = pendingSessionTransition(state, this.runtimeHost);
     if (transition) renderTransitionSubmissions(transition);

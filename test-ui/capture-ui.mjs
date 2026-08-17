@@ -4,7 +4,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { startSessionLiveCardRefresh } from "../dist/interface/cards/live.js";
 import { renderAgentsResult } from "../dist/interface/cards/render.js";
-import { clearLiveCardDetails, setLiveCardDetails } from "../dist/interface/cards/state.js";
+import { setLiveCardDetails } from "../dist/interface/cards/state.js";
+import { clearLiveCardDetails } from "../test/support/cards.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));

@@ -1,71 +1,56 @@
 import { Schema } from "effect";
 import { DelegationId } from "./identifiers.js";
 
-const CauseField = Schema.optionalKey(Schema.Defect());
+const Message = { message: Schema.String };
+const Caused = { ...Message, cause: Schema.optionalKey(Schema.Defect()) };
 
 export class PathOutsideAllowedRoot extends Schema.TaggedErrorClass<PathOutsideAllowedRoot>()(
   "PathOutsideAllowedRoot",
   {
-    message: Schema.String,
+    ...Caused,
     path: Schema.String,
     allowedRoots: Schema.Array(Schema.String),
-    cause: CauseField,
   },
 ) {}
 
 export class WorktreeRepositoryInvalid extends Schema.TaggedErrorClass<WorktreeRepositoryInvalid>()(
   "WorktreeRepositoryInvalid",
   {
-    message: Schema.String,
+    ...Caused,
     repositoryPath: Schema.String,
-    cause: CauseField,
   },
 ) {}
 
 export class WorktreePathConflict extends Schema.TaggedErrorClass<WorktreePathConflict>()("WorktreePathConflict", {
-  message: Schema.String,
+  ...Caused,
   worktreePath: Schema.String,
-  cause: CauseField,
 }) {}
 
 export class GitCommandFailed extends Schema.TaggedErrorClass<GitCommandFailed>()("GitCommandFailed", {
-  message: Schema.String,
+  ...Caused,
   cwd: Schema.String,
   args: Schema.Array(Schema.String),
   exitCode: Schema.optionalKey(Schema.Finite),
   stderr: Schema.optionalKey(Schema.String),
-  cause: CauseField,
 }) {}
 
 export class HostCapabilityUnavailable extends Schema.TaggedErrorClass<HostCapabilityUnavailable>()(
   "HostCapabilityUnavailable",
   {
-    message: Schema.String,
+    ...Message,
     capability: Schema.String,
-  },
-) {}
-
-export class InvalidDelegationTransition extends Schema.TaggedErrorClass<InvalidDelegationTransition>()(
-  "InvalidDelegationTransition",
-  {
-    message: Schema.String,
-    from: Schema.String,
-    event: Schema.String,
   },
 ) {}
 
 export class DelegationAlreadyRegistered extends Schema.TaggedErrorClass<DelegationAlreadyRegistered>()(
   "DelegationAlreadyRegistered",
   {
-    message: Schema.String,
+    ...Message,
     delegationId: DelegationId,
   },
 ) {}
 
-export class AgentCallFailed extends Schema.TaggedErrorClass<AgentCallFailed>()("AgentCallFailed", {
-  message: Schema.String,
-  cause: CauseField,
-}) {}
+export class AgentCallFailed extends Schema.TaggedErrorClass<AgentCallFailed>()("AgentCallFailed", Caused) {}
 
 export type WorktreeError =
   | PathOutsideAllowedRoot

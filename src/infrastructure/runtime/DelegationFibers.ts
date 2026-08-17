@@ -1,14 +1,10 @@
 import { Context, Effect, Fiber, FiberMap, Layer, Option, Semaphore } from "effect";
-import type { DelegationState } from "../../domain/delegation.js";
 import type { DelegationId } from "../../domain/identifiers.js";
 
 export class DelegationFibers extends Context.Service<
   DelegationFibers,
   {
-    readonly run: (
-      delegationId: DelegationId,
-      operation: Effect.Effect<DelegationState>,
-    ) => Effect.Effect<Fiber.Fiber<DelegationState>>;
+    readonly run: (delegationId: DelegationId, operation: Effect.Effect<void>) => Effect.Effect<Fiber.Fiber<void>>;
     readonly abort: (delegationId: DelegationId) => Effect.Effect<boolean>;
     readonly size: Effect.Effect<number>;
   }
@@ -17,14 +13,11 @@ export class DelegationFibers extends Context.Service<
 export const DelegationFibersLive = Layer.effect(
   DelegationFibers,
   Effect.gen(function* () {
-    const fibers = yield* FiberMap.make<DelegationId, DelegationState, never>();
+    const fibers = yield* FiberMap.make<DelegationId, void, never>();
     const mutation = yield* Semaphore.make(1);
 
     return {
-      run: Effect.fn("DelegationFibers.run")(function* (
-        delegationId: DelegationId,
-        operation: Effect.Effect<DelegationState>,
-      ) {
+      run: Effect.fn("DelegationFibers.run")(function* (delegationId: DelegationId, operation: Effect.Effect<void>) {
         return yield* mutation.withPermit(
           Effect.gen(function* () {
             const existing = yield* FiberMap.get(fibers, delegationId);

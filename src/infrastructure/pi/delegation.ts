@@ -1,4 +1,5 @@
-import path from "node:path";
+import { indexSessions } from "../../domain/session.js";
+import { normalizedPath } from "../../shared/path.js";
 import { shortSessionId } from "../../shared/value.js";
 import type { DelegationId } from "../../domain/identifiers.js";
 import {
@@ -26,10 +27,6 @@ export function registerAgentCall(call: RegisterAgentCall) {
   const { id = createDelegationId(), completionMode = "detached", ...delegation } = call;
 
   return registerActiveDelegation({ ...delegation, id, completionMode });
-}
-
-export function hasAgentCallsForSession(sessionId: unknown) {
-  return activeCallsForSession(sessionId).length > 0;
 }
 
 export function assertNoAgentCallCycle(callerSessionId: unknown, targetSessionId: unknown) {
@@ -89,50 +86,29 @@ function activeCallsForSession(sessionId: unknown) {
 
 function sessionSubtreeIds(sessionId: unknown) {
   const rootSessionId = String(sessionId ?? "");
-  const subtree = new Set<string>(rootSessionId ? [rootSessionId] : []);
-
-  if (!rootSessionId) return subtree;
-  const children = new Map<string, string[]>();
   const runtimes = [...getLiveRuntimeState().runtimeSessions.values()];
-  const sessionIdsByPath = new Map(
-    runtimes.flatMap((runtime) => {
-      const id = runtime.session.sessionManager.getSessionId?.();
-      const file = normalizeSessionPath(runtime.session.sessionManager.getSessionFile?.());
-
-      return typeof id === "string" && file ? [[file, id]] : [];
-    }),
+  const idsByPath = new Map(
+    runtimes.map((runtime) => [
+      normalizedPath(runtime.session.sessionManager.getSessionFile?.()),
+      runtime.session.sessionManager.getSessionId?.(),
+    ]),
   );
-
-  for (const runtime of runtimes) {
-    const id = runtime.session.sessionManager.getSessionId?.();
+  const sessions = runtimes.map((runtime) => {
     const parentPath = runtime.parentSessionPath ?? runtime.session.sessionManager.getHeader?.()?.parentSession;
-    const parentId = runtime.parentSessionId ?? sessionIdsByPath.get(normalizeSessionPath(parentPath) ?? "");
+    return {
+      sessionId: runtime.session.sessionManager.getSessionId?.(),
+      path: normalizedPath(runtime.session.sessionManager.getSessionFile?.()),
+      parentSessionId: runtime.parentSessionId ?? idsByPath.get(normalizedPath(parentPath)),
+      parentSessionPath: normalizedPath(parentPath),
+    };
+  });
 
-    if (typeof id !== "string" || typeof parentId !== "string") continue;
-    children.set(parentId, [...(children.get(parentId) ?? []), id]);
-  }
-
-  const pending = [rootSessionId];
-
-  while (pending.length > 0) {
-    const parentId = pending.pop();
-
-    if (!parentId) continue;
-    for (const childId of children.get(parentId) ?? []) {
-      if (subtree.has(childId)) continue;
-      subtree.add(childId);
-      pending.push(childId);
-    }
-  }
-
-  return subtree;
-}
-
-function normalizeSessionPath(value: unknown) {
-  if (typeof value !== "string" || !value) return undefined;
-  const normalized = path.resolve(value);
-
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  return new Set([
+    ...(rootSessionId ? [rootSessionId] : []),
+    ...indexSessions(sessions)
+      .descendants({ sessionId: rootSessionId })
+      .map((session) => String(session.sessionId)),
+  ]);
 }
 
 async function abortCalls(calls: ReadonlyArray<ActiveDelegation>, options: HostRecord = {}) {

@@ -2,11 +2,22 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { installPiHost } from "../../dist/infrastructure/pi/host.js";
 
-export async function installPiHostForTest(state, flag) {
+export async function installPiHostForTest(state, methodKey) {
   process.env.PI_CLI = path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
   await installPiHost();
 
-  assert.equal(state[flag], true);
+  assert.equal(state.hostMethods.has(methodKey), true);
+}
+
+export function hostMethodSlot(state, key) {
+  return {
+    get value() {
+      return state.hostMethods.get(key);
+    },
+    set value(method) {
+      state.hostMethods.set(key, method);
+    },
+  };
 }
 
 export function createTransitionMode(peer, runtimeHost) {

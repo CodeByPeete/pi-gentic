@@ -23,15 +23,11 @@ export const WorktreeManagerLive = Layer.effect(
         cause,
       });
 
-    const gitResult = Effect.fn("WorktreeManager.gitResult")(function* (cwd: string, args: ReadonlyArray<string>) {
-      return yield* git.run(cwd, args);
-    });
-
     const requireGitSuccess = Effect.fn("WorktreeManager.requireGitSuccess")(function* (
       cwd: string,
       args: ReadonlyArray<string>,
     ) {
-      const result = yield* gitResult(cwd, args);
+      const result = yield* git.run(cwd, args);
 
       if (result.exitCode !== 0) {
         return yield* GitCommandFailed.make({
@@ -50,34 +46,18 @@ export const WorktreeManagerLive = Layer.effect(
       const base = nonEmptyString(repoCwd) ?? process.cwd();
       const source = nonEmptyString(repo);
       const repositoryPath = source ? path.resolve(base, source) : path.resolve(base);
-      const result = yield* gitResult(repositoryPath, ["rev-parse", "--show-cdup"]).pipe(
-        Effect.catchTag("GitCommandFailed", (cause) =>
-          WorktreeRepositoryInvalid.make({
-            message: `Worktree repository must be a git repository: ${repositoryPath}`,
-            repositoryPath,
-            cause,
-          }),
-        ),
-      );
-
-      if (result.exitCode !== 0) {
-        return yield* WorktreeRepositoryInvalid.make({
+      const invalid = (cause: unknown) =>
+        WorktreeRepositoryInvalid.make({
           message: `Worktree repository must be a git repository: ${repositoryPath}`,
           repositoryPath,
-          cause: result.stderr,
+          cause,
         });
-      }
+      const result = yield* git.run(repositoryPath, ["rev-parse", "--show-cdup"]).pipe(Effect.mapError(invalid));
+
+      if (result.exitCode !== 0) return yield* invalid(result.stderr);
 
       const root = path.resolve(repositoryPath, result.stdout || ".");
-      yield* fileSystem.realPath(root).pipe(
-        Effect.mapError((cause) =>
-          WorktreeRepositoryInvalid.make({
-            message: `Worktree repository must be a git repository: ${repositoryPath}`,
-            repositoryPath,
-            cause,
-          }),
-        ),
-      );
+      yield* fileSystem.realPath(root).pipe(Effect.mapError(invalid));
 
       return root;
     });
@@ -146,7 +126,7 @@ export const WorktreeManagerLive = Layer.effect(
       candidate: string,
       registered: ReadonlyArray<string>,
     ) {
-      const result = yield* gitResult(candidate, ["rev-parse", "--show-toplevel"]);
+      const result = yield* git.run(candidate, ["rev-parse", "--show-toplevel"]);
 
       return result.exitCode === 0 && registered.some((entry) => isSamePath(path, entry, result.stdout));
     });
@@ -216,7 +196,7 @@ export const WorktreeManagerLive = Layer.effect(
           }
 
           const branch = branchInput ?? gitBranchName(path.basename(worktreePath) || fallbackName);
-          const branchCheck = yield* gitResult(repoRoot, ["check-ref-format", "--branch", branch]);
+          const branchCheck = yield* git.run(repoRoot, ["check-ref-format", "--branch", branch]);
 
           if (branchCheck.exitCode !== 0) {
             return yield* WorktreePathConflict.make({
@@ -226,7 +206,7 @@ export const WorktreeManagerLive = Layer.effect(
             });
           }
 
-          const branchLookup = yield* gitResult(repoRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+          const branchLookup = yield* git.run(repoRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
           const addArgs =
             branchLookup.exitCode === 0
               ? ["worktree", "add", worktreePath, branch]

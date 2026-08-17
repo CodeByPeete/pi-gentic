@@ -1,34 +1,28 @@
+import type { AgentDefinition } from "./configuration.js";
 import { applyCapabilityFilter } from "./capabilities.js";
-import type { AgentDefinition } from "../infrastructure/configuration/agents.js";
 import type { UnknownRecord } from "../shared/types.js";
-import { isRecord } from "../shared/value.js";
+import { isRecord, stringValue } from "../shared/value.js";
 
-const FILTER_ALL = ["*"];
 const DEFAULT_ACCESS = ["*"];
 
-export function applyFilterList(allNames: string[], filters: unknown = FILTER_ALL) {
-  if (!Array.isArray(filters)) return [...allNames];
+type ResourceKey = "agents" | "tools" | "skills";
 
-  return applyCapabilityFilter(
-    allNames,
-    filters.filter((filter): filter is string => typeof filter === "string"),
-  );
+export function applyFilterList(allNames: string[], filters: unknown = DEFAULT_ACCESS) {
+  return Array.isArray(filters)
+    ? applyCapabilityFilter(
+        allNames,
+        filters.filter((filter): filter is string => typeof filter === "string"),
+      )
+    : [...allNames];
 }
 
 export function mergeFilterLayers(...layers: unknown[]) {
-  const result: string[] = [];
+  const filters = layers.filter(Array.isArray);
 
-  for (const layer of layers) {
-    if (layer === undefined) continue;
-
-    if (!Array.isArray(layer)) continue;
-
-    if (layer.length === 0) return [];
-    result.push(...layer);
-  }
-
-  return result.length === 0 ? undefined : result;
+  if (filters.length === 0) return undefined;
+  return filters.some((layer) => layer.length === 0) ? [] : filters.flatMap((layer) => layer);
 }
+
 export function resolveSessionPolicy({
   settings,
   activeAgent,
@@ -44,66 +38,43 @@ export function resolveSessionPolicy({
   allTools: string[];
   allSkills: string[];
 }) {
-  const defaults = isRecord(settings.agentDefaults) ? settings.agentDefaults : {};
-  const agentless = isRecord(settings.agentlessSession) ? settings.agentlessSession : {};
-  const base = activeAgent ? defaults : agentless;
-  const merged = mergePolicyObjects(base, activeAgent ?? {});
-  const resolved = mergePolicyObjects(merged, overrides ?? {});
-  const agentsFilter =
-    (activeAgent
-      ? mergeFilterLayers(defaults.agents, activeAgent.agents, overrides?.agents)
-      : mergeFilterLayers(agentless.agents, overrides?.agents)) ?? DEFAULT_ACCESS;
-  const toolsFilter =
-    (activeAgent
-      ? mergeFilterLayers(defaults.tools, activeAgent.tools, overrides?.tools)
-      : mergeFilterLayers(agentless.tools, overrides?.tools)) ?? DEFAULT_ACCESS;
-  const skillsFilter =
-    (activeAgent
-      ? mergeFilterLayers(defaults.skills, activeAgent.skills, overrides?.skills)
-      : mergeFilterLayers(agentless.skills, overrides?.skills)) ?? DEFAULT_ACCESS;
-  const systemPromptFilesFilter = activeAgent
-    ? mergeFilterLayers(defaults.systemPromptFiles, activeAgent.systemPromptFiles, overrides?.systemPromptFiles)
-    : mergeFilterLayers(agentless.systemPromptFiles, overrides?.systemPromptFiles);
+  const defaults = record(settings.agentDefaults);
+  const agentless = record(settings.agentlessSession);
+  const layers = activeAgent ? [defaults, activeAgent, overrides] : [agentless, overrides];
+  const resolved = mergePolicyObjects(...layers);
+  const filter = (key: ResourceKey) => mergeFilterLayers(...layers.map((layer) => layer?.[key])) ?? DEFAULT_ACCESS;
+  const agentsFilter = filter("agents");
+  const toolsFilter = filter("tools");
+  const skillsFilter = filter("skills");
 
   return {
     agentName: activeAgent?.name,
-    description: typeof resolved.description === "string" ? resolved.description : undefined,
-    instructions: typeof resolved.instructions === "string" ? resolved.instructions : undefined,
-    model: typeof resolved.model === "string" ? resolved.model : undefined,
-    thinking: typeof resolved.thinking === "string" ? resolved.thinking : undefined,
-    theme: typeof resolved.theme === "string" ? resolved.theme : undefined,
+    description: stringValue(resolved.description),
+    instructions: stringValue(resolved.instructions),
+    model: stringValue(resolved.model),
+    thinking: stringValue(resolved.thinking),
+    theme: stringValue(resolved.theme),
     maxSubagentDepth: typeof resolved.maxSubagentDepth === "number" ? resolved.maxSubagentDepth : 1,
-    agentsTool: mergePolicyObjects(
-      isRecord(defaults.agentsTool) ? defaults.agentsTool : {},
-      mergePolicyObjects(
-        isRecord(activeAgent?.agentsTool) ? activeAgent.agentsTool : {},
-        isRecord(overrides?.agentsTool) ? overrides.agentsTool : {},
-      ),
-    ),
-    systemPromptFiles: systemPromptFilesFilter,
+    agentsTool: mergePolicyObjects(...layers.map((layer) => record(layer?.agentsTool))),
+    systemPromptFiles: mergeFilterLayers(...layers.map((layer) => layer?.systemPromptFiles)),
     resources: {
       agents: applyFilterList(allAgents, agentsFilter),
       tools: applyFilterList(allTools, toolsFilter),
       skills: applyFilterList(allSkills, skillsFilter),
     },
     toolFilters: [...toolsFilter],
-    recipe: {
-      agentReference: activeAgent?.name,
-      overrides: overrides ?? undefined,
-    },
+    recipe: { agentReference: activeAgent?.name, overrides },
   };
 }
 
-function mergePolicyObjects(base: UnknownRecord | undefined, patch: UnknownRecord | undefined) {
-  const result = { ...base };
-
-  for (const [key, value] of Object.entries(patch ?? {})) {
-    result[key] = isPlainObject(value) && isPlainObject(result[key]) ? mergePolicyObjects(result[key], value) : value;
-  }
-
-  return result;
+function mergePolicyObjects(...sources: unknown[]): UnknownRecord {
+  return sources.filter(isRecord).reduce<UnknownRecord>((result, source) => {
+    for (const [key, value] of Object.entries(source))
+      result[key] = isRecord(value) && isRecord(result[key]) ? mergePolicyObjects(result[key], value) : value;
+    return result;
+  }, {});
 }
 
-function isPlainObject(value: unknown): value is UnknownRecord {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+function record(value: unknown): UnknownRecord {
+  return isRecord(value) ? value : {};
 }

@@ -1,6 +1,15 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { PiTheme } from "../../infrastructure/pi/types.js";
 import type { UnknownRecord } from "../../shared/types.js";
 import { isRecord } from "../../shared/value.js";
+
+export function foreground(theme: PiTheme, color: Parameters<PiTheme["fg"]>[0], text: string) {
+  return theme.fg(color, text);
+}
+
+export function timer(text: string) {
+  return `\x1b[95m${text}\x1b[39m`;
+}
 
 export function center(text: string, width: number) {
   const padding = Math.max(0, Math.floor((width - visibleLength(text)) / 2));

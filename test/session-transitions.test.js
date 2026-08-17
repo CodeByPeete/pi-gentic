@@ -8,6 +8,7 @@ import {
 } from "../dist/infrastructure/pi/host.js";
 import {
   createTransitionMode,
+  hostMethodSlot,
   installPiHostForTest,
   settlesBeforeNextTurn,
   waitForCondition,
@@ -16,9 +17,9 @@ import {
 test("submissions during /new appear immediately and enter the new session when it is ready", async () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();
-  await installPiHostForTest(state, "interactiveSubmitInstalled");
+  await installPiHostForTest(state, "interactive.setupEditorSubmitHandler");
   const peer = await loadPiCodingAgentPeer();
-  const originalNewSession = state.hostNewSession;
+  const originalNewSession = hostMethodSlot(state, "runtime.newSession").value;
   const oldPrompts = [];
   const newPrompts = [];
   const ready = Promise.withResolvers();
@@ -39,7 +40,7 @@ test("submissions during /new appear immediately and enter the new session when 
   const runtimeHost = { session: oldSession };
   const { history, mode, statuses } = createTransitionMode(peer, runtimeHost);
 
-  state.hostNewSession = async (_options) => {
+  hostMethodSlot(state, "runtime.newSession").value = async (_options) => {
     await ready.promise;
     runtimeHost.session = newSession;
     await _options.withSession({ marker: "new context" });
@@ -88,7 +89,7 @@ test("submissions during /new appear immediately and enter the new session when 
   } finally {
     ready.resolve();
     finishOperation.resolve();
-    state.hostNewSession = originalNewSession;
+    hostMethodSlot(state, "runtime.newSession").value = originalNewSession;
     deleteRuntimeSession("transition-old-session");
     deleteRuntimeSession("transition-new-session");
     state.liveRuntimes.clear();
@@ -98,9 +99,9 @@ test("submissions during /new appear immediately and enter the new session when 
 test("rapid chained session changes preserve input order in the final destination", async () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();
-  await installPiHostForTest(state, "interactiveSubmitInstalled");
+  await installPiHostForTest(state, "interactive.setupEditorSubmitHandler");
   const peer = await loadPiCodingAgentPeer();
-  const originalNewSession = state.hostNewSession;
+  const originalNewSession = hostMethodSlot(state, "runtime.newSession").value;
   const ready = [Promise.withResolvers(), Promise.withResolvers()];
   const oldPrompts = [];
   const firstPrompts = [];
@@ -129,7 +130,7 @@ test("rapid chained session changes preserve input order in the final destinatio
   const { mode } = createTransitionMode(peer, runtimeHost);
   let replacementCount = 0;
 
-  state.hostNewSession = async (options) => {
+  hostMethodSlot(state, "runtime.newSession").value = async (options) => {
     const index = replacementCount++;
     await ready[index].promise;
     runtimeHost.session = sessions[index];
@@ -160,7 +161,7 @@ test("rapid chained session changes preserve input order in the final destinatio
   } finally {
     ready[0].resolve();
     ready[1].resolve();
-    state.hostNewSession = originalNewSession;
+    hostMethodSlot(state, "runtime.newSession").value = originalNewSession;
     deleteRuntimeSession("chain-old-session");
     state.liveRuntimes.clear();
   }
@@ -169,9 +170,9 @@ test("rapid chained session changes preserve input order in the final destinatio
 test("a cancelled session change restores queued input without sending it to the old session", async () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();
-  await installPiHostForTest(state, "interactiveSubmitInstalled");
+  await installPiHostForTest(state, "interactive.setupEditorSubmitHandler");
   const peer = await loadPiCodingAgentPeer();
-  const originalNewSession = state.hostNewSession;
+  const originalNewSession = hostMethodSlot(state, "runtime.newSession").value;
   const finishCancellation = Promise.withResolvers();
   const oldPrompts = [];
   const oldSession = {
@@ -182,7 +183,7 @@ test("a cancelled session change restores queued input without sending it to the
   const runtimeHost = { session: oldSession };
   const { mode, statuses } = createTransitionMode(peer, runtimeHost);
 
-  state.hostNewSession = async () => {
+  hostMethodSlot(state, "runtime.newSession").value = async () => {
     await finishCancellation.promise;
     return { cancelled: true };
   };
@@ -204,7 +205,7 @@ test("a cancelled session change restores queued input without sending it to the
     assert.match(statuses.at(-1), /restored 1 queued message/i);
   } finally {
     finishCancellation.resolve();
-    state.hostNewSession = originalNewSession;
+    hostMethodSlot(state, "runtime.newSession").value = originalNewSession;
     state.liveRuntimes.clear();
   }
 });
@@ -212,10 +213,10 @@ test("a cancelled session change restores queued input without sending it to the
 test("Escape restores queued input without cancelling the destination session", async () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();
-  await installPiHostForTest(state, "interactiveEscapeInstalled");
+  await installPiHostForTest(state, "interactive.setupKeyHandlers");
   const peer = await loadPiCodingAgentPeer();
-  const originalNewSession = state.hostNewSession;
-  const originalSetupKeyHandlers = state.hostSetupKeyHandlers;
+  const originalNewSession = hostMethodSlot(state, "runtime.newSession").value;
+  const originalSetupKeyHandlers = hostMethodSlot(state, "interactive.setupKeyHandlers").value;
   const ready = Promise.withResolvers();
   const oldPrompts = [];
   const newPrompts = [];
@@ -233,12 +234,12 @@ test("Escape restores queued input without cancelling the destination session", 
   const runtimeHost = { session: oldSession };
   const { mode, statuses } = createTransitionMode(peer, runtimeHost);
 
-  state.hostSetupKeyHandlers = function () {
+  hostMethodSlot(state, "interactive.setupKeyHandlers").value = function () {
     this.defaultEditor.onEscape = () => {
       nativeEscapes += 1;
     };
   };
-  state.hostNewSession = async (options) => {
+  hostMethodSlot(state, "runtime.newSession").value = async (options) => {
     await ready.promise;
     runtimeHost.session = newSession;
     await options.withSession({});
@@ -265,8 +266,8 @@ test("Escape restores queued input without cancelling the destination session", 
     assert.deepEqual(newPrompts, []);
   } finally {
     ready.resolve();
-    state.hostNewSession = originalNewSession;
-    state.hostSetupKeyHandlers = originalSetupKeyHandlers;
+    hostMethodSlot(state, "runtime.newSession").value = originalNewSession;
+    hostMethodSlot(state, "interactive.setupKeyHandlers").value = originalSetupKeyHandlers;
     state.liveRuntimes.clear();
   }
 });
@@ -274,9 +275,9 @@ test("Escape restores queued input without cancelling the destination session", 
 test("a failed session change restores every unsent message", async () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();
-  await installPiHostForTest(state, "interactiveSubmitInstalled");
+  await installPiHostForTest(state, "interactive.setupEditorSubmitHandler");
   const peer = await loadPiCodingAgentPeer();
-  const originalNewSession = state.hostNewSession;
+  const originalNewSession = hostMethodSlot(state, "runtime.newSession").value;
   const finishFailure = Promise.withResolvers();
   const oldPrompts = [];
   const oldSession = {
@@ -287,7 +288,7 @@ test("a failed session change restores every unsent message", async () => {
   const runtimeHost = { session: oldSession };
   const { mode, statuses } = createTransitionMode(peer, runtimeHost);
 
-  state.hostNewSession = async () => {
+  hostMethodSlot(state, "runtime.newSession").value = async () => {
     await finishFailure.promise;
     throw new Error("replacement failed");
   };
@@ -307,7 +308,7 @@ test("a failed session change restores every unsent message", async () => {
     assert.match(statuses.at(-1), /restored 2 queued messages/i);
   } finally {
     finishFailure.resolve();
-    state.hostNewSession = originalNewSession;
+    hostMethodSlot(state, "runtime.newSession").value = originalNewSession;
     state.liveRuntimes.clear();
   }
 });
@@ -315,9 +316,9 @@ test("a failed session change restores every unsent message", async () => {
 test("Alt+Enter during a session change preserves follow-up delivery", async () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();
-  await installPiHostForTest(state, "interactiveFollowUpInstalled");
+  await installPiHostForTest(state, "interactive.handleFollowUp");
   const peer = await loadPiCodingAgentPeer();
-  const originalNewSession = state.hostNewSession;
+  const originalNewSession = hostMethodSlot(state, "runtime.newSession").value;
   const ready = Promise.withResolvers();
   const oldPrompts = [];
   const newPrompts = [];
@@ -334,7 +335,7 @@ test("Alt+Enter during a session change preserves follow-up delivery", async () 
   const runtimeHost = { session: oldSession };
   const { history, mode } = createTransitionMode(peer, runtimeHost);
 
-  state.hostNewSession = async (options) => {
+  hostMethodSlot(state, "runtime.newSession").value = async (options) => {
     await ready.promise;
     runtimeHost.session = newSession;
     await options.withSession({});
@@ -358,7 +359,7 @@ test("Alt+Enter during a session change preserves follow-up delivery", async () 
     assert.deepEqual(history, ["follow up in the new session"]);
   } finally {
     ready.resolve();
-    state.hostNewSession = originalNewSession;
+    hostMethodSlot(state, "runtime.newSession").value = originalNewSession;
     deleteRuntimeSession("follow-up-old-session");
     state.liveRuntimes.clear();
   }
@@ -367,21 +368,21 @@ test("Alt+Enter during a session change preserves follow-up delivery", async () 
 for (const replacement of [
   {
     destination: "selected session",
-    field: "hostSwitchSession",
-    flag: "switchSessionInstalled",
+    field: "runtime.switchSession",
+    flag: "runtime.switchSession",
     invoke: (peer, runtimeHost) =>
       peer.AgentSessionRuntime.prototype.switchSession.call(runtimeHost, "persisted-session.jsonl"),
   },
   {
     destination: "forked session",
-    field: "hostForkSession",
-    flag: "forkSessionInstalled",
+    field: "runtime.fork",
+    flag: "runtime.fork",
     invoke: (peer, runtimeHost) => peer.AgentSessionRuntime.prototype.fork.call(runtimeHost, "entry-id"),
   },
   {
     destination: "imported session",
-    field: "hostImportSession",
-    flag: "importSessionInstalled",
+    field: "runtime.importFromJsonl",
+    flag: "runtime.importFromJsonl",
     invoke: (peer, runtimeHost) =>
       peer.AgentSessionRuntime.prototype.importFromJsonl.call(runtimeHost, "session.jsonl"),
   },
@@ -391,7 +392,7 @@ for (const replacement of [
     state.liveRuntimes.clear();
     await installPiHostForTest(state, replacement.flag);
     const peer = await loadPiCodingAgentPeer();
-    const originalReplacement = state[replacement.field];
+    const originalReplacement = hostMethodSlot(state, replacement.field).value;
     const ready = Promise.withResolvers();
     const oldPrompts = [];
     const newPrompts = [];
@@ -408,7 +409,7 @@ for (const replacement of [
     const runtimeHost = { session: oldSession };
     const { mode, statuses } = createTransitionMode(peer, runtimeHost);
 
-    state[replacement.field] = async (...args) => {
+    hostMethodSlot(state, replacement.field).value = async (...args) => {
       await ready.promise;
       runtimeHost.session = newSession;
       const options = args.find((value) => value && typeof value === "object" && "withSession" in value);
@@ -432,7 +433,7 @@ for (const replacement of [
       assert.deepEqual(newPrompts, [[`message for the ${replacement.destination}`]]);
     } finally {
       ready.resolve();
-      state[replacement.field] = originalReplacement;
+      hostMethodSlot(state, replacement.field).value = originalReplacement;
       deleteRuntimeSession(`${replacement.field}-old`);
       state.liveRuntimes.clear();
     }

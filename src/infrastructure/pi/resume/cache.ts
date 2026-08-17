@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Cache, Data, Duration, Effect, Schedule, Schema, Stream } from "effect";
 import { defaultAgentDir } from "../../configuration/agents.js";
 import { reportRuntimeDiagnostic } from "../../../shared/diagnostics.js";
+import { isRecord } from "../../../shared/value.js";
 import type { ExtensionRuntime } from "../../../runtime/ExtensionRuntime.js";
 import {
   enrichSessionTreeSkeletonEffect,
@@ -15,12 +16,16 @@ import {
 } from "../../../application/sessions/directory.js";
 import { enrichSessionSummary } from "../../../application/sessions/model.js";
 import { runProcess } from "../../process/ProcessRunner.js";
-import { getLiveRuntimeState, type HostRecord } from "../state.js";
+import { recordHostDiagnostic, type HostRecord } from "../state.js";
 
 const FAST_RESUME_THRESHOLD = 100;
 const RESUME_CACHE_CAPACITY = 4;
-const PERSISTED_RESUME_CACHE_VERSION = 1;
 const SessionListSchema = Schema.Array(Schema.Record(Schema.String, Schema.Json));
+const PersistedResumeEntrySchema = Schema.Struct({
+  key: Schema.String,
+  sessions: SessionListSchema,
+  snapshot: Schema.Array(Schema.Tuple([Schema.String, Schema.String])),
+});
 const sessionListWorker = fileURLToPath(new URL("./worker.js", import.meta.url));
 
 type SessionFileSnapshot = Map<string, string>;
@@ -226,22 +231,19 @@ export function visibleSessionMembership(mode: HostRecord) {
         catch: (cause) =>
           new ResumeSessionListFailed({ message: "Could not resolve the visible session scope.", cause }),
       });
-      let knownPaths = new Set<string>();
-      const initialMembership = listFastSessionSkeletonsEffect(sessionDir, cwd).pipe(
-        Effect.tap((sessions) =>
-          Effect.sync(() => {
-            knownPaths = new Set(sessions.map((session) => String(session.path)));
-          }),
-        ),
-      );
+      let knownPaths: Set<string> | undefined;
       const membership = listFastSessionSkeletonsEffect(sessionDir, cwd).pipe(
         Effect.flatMap((sessions) =>
-          Effect.forEach(
-            sessions,
-            (session) =>
-              knownPaths.has(String(session.path)) ? Effect.succeed(session) : enrichSessionTreeSkeletonEffect(session),
-            { concurrency: "unbounded" },
-          ),
+          knownPaths
+            ? Effect.forEach(
+                sessions,
+                (session) =>
+                  knownPaths?.has(String(session.path))
+                    ? Effect.succeed(session)
+                    : enrichSessionTreeSkeletonEffect(session),
+                { concurrency: "unbounded" },
+              )
+            : Effect.succeed(sessions),
         ),
         Effect.tap((sessions) =>
           Effect.sync(() => {
@@ -249,13 +251,16 @@ export function visibleSessionMembership(mode: HostRecord) {
           }),
         ),
       );
-      const fallback = Stream.fromEffectSchedule(
-        Effect.delay(membership, Duration.millis(250)),
-        Schedule.spaced(Duration.millis(250)),
-      );
 
-      if (!sessionDir) return Stream.fromEffect(initialMembership);
-      return Stream.fromEffect(initialMembership).pipe(Stream.concat(fallback));
+      if (!sessionDir) return Stream.fromEffect(membership);
+      return Stream.fromEffect(membership).pipe(
+        Stream.concat(
+          Stream.fromEffectSchedule(
+            Effect.delay(membership, Duration.millis(250)),
+            Schedule.spaced(Duration.millis(250)),
+          ),
+        ),
+      );
     }).pipe(
       Effect.catch((error) =>
         Effect.succeed(
@@ -311,15 +316,12 @@ async function readPersistedResumeEntry(key: string) {
   const file = persistedResumeCachePath(key);
 
   try {
-    const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
-    if (!isPersistedResumeEntry(parsed, key)) throw new Error("Persisted resume cache has an invalid structure.");
+    const entry = Schema.decodeUnknownSync(PersistedResumeEntrySchema)(JSON.parse(await readFile(file, "utf8")));
+    if (entry.key !== key) throw new Error("Persisted resume cache belongs to another request.");
 
-    return {
-      sessions: cloneSessions(parsed.sessions),
-      snapshot: new Map(parsed.snapshot),
-    };
+    return { sessions: cloneSessions(entry.sessions), snapshot: new Map(entry.snapshot) };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+    if (isRecord(error) && error.code === "ENOENT") return undefined;
     reportRuntimeDiagnostic("pi-host-resume-cache-read", error);
     await rm(file, { force: true }).catch(() => undefined);
     return undefined;
@@ -334,43 +336,14 @@ async function writePersistedResumeEntry(
   const file = persistedResumeCachePath(key);
   const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(
-    temporary,
-    JSON.stringify({
-      version: PERSISTED_RESUME_CACHE_VERSION,
-      key,
-      sessions: entry.sessions,
-      snapshot: [...entry.snapshot],
-    }),
-    "utf8",
-  );
+  await writeFile(temporary, JSON.stringify({ key, sessions: entry.sessions, snapshot: [...entry.snapshot] }), "utf8");
   await rename(temporary, file).catch(async (error) => {
     await rm(temporary, { force: true }).catch(() => undefined);
     throw error;
   });
 }
 
-function isPersistedResumeEntry(
-  value: unknown,
-  key: string,
-): value is { version: number; key: string; sessions: HostRecord[]; snapshot: [string, string][] } {
-  if (!value || typeof value !== "object") return false;
-  const record = value as HostRecord;
-
-  return (
-    record.version === PERSISTED_RESUME_CACHE_VERSION &&
-    record.key === key &&
-    Array.isArray(record.sessions) &&
-    record.sessions.every((session: unknown) => session !== null && typeof session === "object") &&
-    Array.isArray(record.snapshot) &&
-    record.snapshot.every(
-      (item: unknown) =>
-        Array.isArray(item) && item.length === 2 && typeof item[0] === "string" && typeof item[1] === "string",
-    )
-  );
-}
-
-function cloneSessions(sessions: HostRecord[]): HostRecord[] {
+function cloneSessions(sessions: ReadonlyArray<HostRecord>): HostRecord[] {
   return sessions.map((session) => ({
     ...session,
     created: new Date(session.created),
@@ -441,11 +414,4 @@ function recordSessionListDiagnostic(error: unknown) {
     "pi-host-resume-session-list",
     error instanceof ResumeSessionListFailed ? error.cause : error,
   );
-}
-
-function recordHostDiagnostic(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  const diagnostics = getLiveRuntimeState().hostDiagnostics;
-
-  if (!diagnostics.includes(message)) diagnostics.push(message);
 }

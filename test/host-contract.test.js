@@ -7,6 +7,7 @@ import {
   loadPiCodingAgentPeer,
   piHostDiagnostics,
 } from "../dist/infrastructure/pi/host.js";
+import { callHostMethod, captureHostMethod, recordHostDiagnostic } from "../dist/infrastructure/pi/state.js";
 
 function requiredHostPeer() {
   return {
@@ -53,6 +54,31 @@ test("the installed Pi host satisfies the required contract", async () => {
   const peer = await loadPiCodingAgentPeer();
 
   assert.doesNotThrow(() => assertPiHostCapabilities(peer));
+});
+
+test("host method state preserves the first native method and unique diagnostics", () => {
+  const state = getLiveRuntimeState();
+  const key = Symbol("host-method-test");
+  const receiver = { value: 2 };
+
+  assert.equal(
+    captureHostMethod(state, key, function (increment) {
+      return this.value + increment;
+    }),
+    true,
+  );
+  assert.equal(
+    captureHostMethod(state, key, () => 0),
+    false,
+  );
+  assert.equal(captureHostMethod(state, Symbol("missing"), undefined), false);
+  assert.equal(callHostMethod(state, key, receiver, [3]), 5);
+
+  const before = state.hostDiagnostics.length;
+  recordHostDiagnostic(new Error("host state test"));
+  recordHostDiagnostic("host state test");
+  assert.equal(state.hostDiagnostics.length, before + 1);
+  state.hostDiagnostics.splice(before);
 });
 
 test("host installation removes errors that the current host no longer produces", async () => {

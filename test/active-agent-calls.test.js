@@ -4,10 +4,16 @@ import {
   abortAgentCall,
   abortAgentCallsForSession,
   assertNoAgentCallCycle,
+  getLiveRuntimeState,
   handleInteractiveEscape,
-  hasAgentCallsForSession,
   registerAgentCall,
 } from "../dist/infrastructure/pi/host.js";
+
+function hasAgentCallsForSession(sessionId) {
+  return [...getLiveRuntimeState().activeCalls.values()].some(
+    (call) => call.callerSessionId === sessionId || call.targetSessionId === sessionId,
+  );
+}
 
 test("aborting a session aborts targeted agent calls recursively", async () => {
   const aborted = [];

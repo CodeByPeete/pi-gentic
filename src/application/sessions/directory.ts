@@ -2,18 +2,12 @@ import { open, stat } from "node:fs/promises";
 import path from "node:path";
 import { Effect, FileSystem } from "effect";
 import { reportRuntimeDiagnostic } from "../../shared/diagnostics.js";
+import { normalizedPath } from "../../shared/path.js";
 import type { UnknownRecord } from "../../shared/types.js";
 import { isRecord, shortSessionId } from "../../shared/value.js";
 import { modifiedTime } from "./model.js";
 
 const SESSION_SKELETON_CONCURRENCY = 64;
-
-function sessionPathKey(value: unknown) {
-  if (typeof value !== "string" || !value) return undefined;
-  const resolved = path.resolve(value);
-
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
 
 export const listFastSessionSkeletonsEffect = Effect.fn("SessionDirectory.listFastSkeletons")(function* (
   sessionDir: string | undefined,
@@ -63,14 +57,14 @@ export const enrichSessionTreeWindowEffect = Effect.fn("SessionDirectory.enrichT
 ) {
   const skeletonsByPath = new Map<string, UnknownRecord>();
   for (const skeleton of skeletons) {
-    const key = sessionPathKey(skeleton.path);
+    const key = normalizedPath(skeleton.path);
     if (key) skeletonsByPath.set(key, skeleton);
   }
   const enrichedByPath = new Map<string, UnknownRecord>();
   let pending = skeletons.slice(0, Math.max(0, Math.floor(windowSize)));
   const scheduledPaths = new Set<string>();
   for (const skeleton of pending) {
-    const key = sessionPathKey(skeleton.path);
+    const key = normalizedPath(skeleton.path);
     if (key) scheduledPaths.add(key);
   }
 
@@ -85,10 +79,10 @@ export const enrichSessionTreeWindowEffect = Effect.fn("SessionDirectory.enrichT
       const source = batch[index];
 
       if (!source) continue;
-      const key = sessionPathKey(source.path);
+      const key = normalizedPath(source.path);
 
       if (key) enrichedByPath.set(key, session);
-      const parentKey = sessionPathKey(session.parentSessionPath);
+      const parentKey = normalizedPath(session.parentSessionPath);
       const parent = parentKey ? skeletonsByPath.get(parentKey) : undefined;
 
       if (parent && parentKey && !scheduledPaths.has(parentKey)) {
@@ -98,32 +92,27 @@ export const enrichSessionTreeWindowEffect = Effect.fn("SessionDirectory.enrichT
     }
   }
 
-  return skeletons.map((skeleton) => enrichedByPath.get(sessionPathKey(skeleton.path) ?? "") ?? skeleton);
+  return skeletons.map((skeleton) => enrichedByPath.get(normalizedPath(skeleton.path) ?? "") ?? skeleton);
 });
 
 async function treeSessionSkeleton(filePath: string, fallbackCwd: string) {
   const fallback = basicSessionSkeleton(filePath, fallbackCwd);
 
   try {
-    const file = await open(filePath, "r");
+    await using file = await open(filePath, "r");
+    const buffer = Buffer.allocUnsafe(4 * 1024);
+    const [{ bytesRead }, fileStat] = await Promise.all([file.read(buffer, 0, buffer.length, 0), stat(filePath)]);
+    const header = parseJsonLine(buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/, 1)[0]);
 
-    try {
-      const buffer = Buffer.allocUnsafe(4 * 1024);
-      const [{ bytesRead }, fileStat] = await Promise.all([file.read(buffer, 0, buffer.length, 0), stat(filePath)]);
-      const header = parseJsonLine(buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/, 1)[0]);
-
-      if (header?.type !== "session") return fallback;
-      return {
-        ...fallback,
-        id: typeof header.id === "string" ? header.id : fallback.id,
-        cwd: typeof header.cwd === "string" ? header.cwd : fallback.cwd,
-        created: typeof header.timestamp === "string" ? new Date(header.timestamp) : fallback.created,
-        modified: fileStat.mtime,
-        ...(typeof header.parentSession === "string" ? { parentSessionPath: header.parentSession } : {}),
-      };
-    } finally {
-      await file.close();
-    }
+    if (header?.type !== "session") return fallback;
+    return {
+      ...fallback,
+      id: typeof header.id === "string" ? header.id : fallback.id,
+      cwd: typeof header.cwd === "string" ? header.cwd : fallback.cwd,
+      created: typeof header.timestamp === "string" ? new Date(header.timestamp) : fallback.created,
+      modified: fileStat.mtime,
+      ...(typeof header.parentSession === "string" ? { parentSessionPath: header.parentSession } : {}),
+    };
   } catch (error) {
     reportRuntimeDiagnostic("session-skeleton", error);
     return fallback;

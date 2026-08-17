@@ -4,9 +4,9 @@ import { buildSessionTree, sessionCompletionScope } from "../application/session
 import type { PiApi, PiContext } from "../infrastructure/pi/types.js";
 import { enabledModelPatterns, loadConfiguration } from "../infrastructure/configuration/agents.js";
 import { loadAvailableSkills, systemPromptSkillEntries } from "../infrastructure/configuration/skills.js";
-import { reportRuntimeDiagnostic } from "../shared/diagnostics.js";
+import { recoverDiagnostic, reportRuntimeDiagnostic } from "../shared/diagnostics.js";
 import type { UnknownRecord } from "../shared/types.js";
-import { isRecord } from "../shared/value.js";
+import { isRecord, recordArray, recordValue, stringArray } from "../shared/value.js";
 
 type CompletionSnapshot = {
   cwd: string;
@@ -128,41 +128,30 @@ function scopedModelSuggestions(ctx: PiContext | undefined) {
 }
 
 function safeAvailableModels(modelRegistry: unknown): UnknownRecord[] {
-  try {
-    if (!isRecord(modelRegistry) || typeof modelRegistry.getAvailable !== "function") return [];
-    const models = modelRegistry.getAvailable();
-
-    return Array.isArray(models) ? models.filter(isRecord) : [];
-  } catch (error) {
-    reportRuntimeDiagnostic("available-models", error);
-    return [];
-  }
+  return recoverDiagnostic(
+    "available-models",
+    () =>
+      isRecord(modelRegistry) && typeof modelRegistry.getAvailable === "function"
+        ? recordArray(modelRegistry.getAvailable())
+        : [],
+    () => [],
+  );
 }
 
 function safeToolNames(pi: PiApi) {
-  try {
-    return pi
-      .getAllTools()
-      .map((tool) => tool.name)
-      .filter(Boolean);
-  } catch (error) {
-    reportRuntimeDiagnostic("available-tools", error);
-    return [];
-  }
+  return recoverDiagnostic(
+    "available-tools",
+    () => pi.getAllTools().map((tool) => tool.name),
+    () => [],
+  );
 }
 
 function safeCommands(pi: PiApi): UnknownRecord[] {
-  try {
-    return (pi.getCommands?.() ?? []).map((command) =>
-      recordValue({
-        name: command.name,
-        description: command.description,
-      }),
-    );
-  } catch (error) {
-    reportRuntimeDiagnostic("available-commands", error);
-    return [];
-  }
+  return recoverDiagnostic(
+    "available-commands",
+    () => (pi.getCommands?.() ?? []).map(({ name, description }) => ({ name, description })),
+    () => [],
+  );
 }
 
 function systemPromptFileSuggestions(config: ReturnType<typeof loadConfiguration>) {
@@ -170,20 +159,12 @@ function systemPromptFileSuggestions(config: ReturnType<typeof loadConfiguration
   const agentless = recordValue(settings.agentlessSession);
   const defaults = recordValue(settings.agentDefaults);
   const files = [
-    ...toStringArray(agentless.systemPromptFiles),
-    ...toStringArray(defaults.systemPromptFiles),
-    ...config.agents.flatMap((agent: UnknownRecord) => toStringArray(agent.systemPromptFiles)),
+    ...stringArray(agentless.systemPromptFiles),
+    ...stringArray(defaults.systemPromptFiles),
+    ...config.agents.flatMap((agent: UnknownRecord) => stringArray(agent.systemPromptFiles)),
   ];
 
   return files.filter((file, index) => files.indexOf(file) === index);
-}
-
-function recordValue(value: unknown): UnknownRecord {
-  return isRecord(value) ? value : {};
-}
-
-function toStringArray(value: unknown) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function themeSuggestions(config: ReturnType<typeof loadConfiguration>) {

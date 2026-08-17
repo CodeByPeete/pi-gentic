@@ -4,14 +4,34 @@ export function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function stringList(value: unknown): string[] | undefined {
-  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
-  if (typeof value !== "string") return undefined;
+export function stringValue(value: unknown) {
+  return typeof value === "string" ? value : undefined;
+}
 
-  return value
-    .split(",")
+export function stringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+export function recordValue(value: unknown): UnknownRecord {
+  return isRecord(value) ? value : {};
+}
+
+export function recordArray(value: unknown) {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+export function stringList(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) return stringArray(value);
+  const text = stringValue(value);
+
+  return text
+    ?.split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+export function firstText(content: unknown) {
+  return Array.isArray(content) ? content.find((item) => item?.type === "text")?.text : undefined;
 }
 
 export function errorMessage(error: unknown) {
@@ -24,6 +44,10 @@ export function nonNegativeInteger(value: unknown, fieldName: string, fallback =
 
   if (!Number.isFinite(number) || number < 0) throw new Error(`${fieldName} must be a non-negative number.`);
   return Math.floor(number);
+}
+
+export function booleanValue(value: unknown) {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 export function booleanOr(value: unknown, fallback: boolean) {

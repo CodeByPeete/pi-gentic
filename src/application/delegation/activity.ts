@@ -8,6 +8,11 @@ import type { SendCardDetails } from "./contracts.js";
 const MAX_PERSISTED_ACTIVITIES = 100;
 const ACTIVITY_PREVIEW_LENGTH = 240;
 const ACTIVITY_INSPECT_OPTIONS = { depth: 2, maxArrayLength: 10, maxStringLength: ACTIVITY_PREVIEW_LENGTH } as const;
+const TOOL_ACTIVITY_EVENTS: Record<string, { summary: string; status?: string }> = {
+  tool_execution_start: { summary: "args", status: "running" },
+  tool_execution_update: { summary: "partialResult", status: "running" },
+  tool_execution_end: { summary: "result" },
+};
 
 export function createSessionActivityMonitor(
   baseDetails: UnknownRecord,
@@ -106,10 +111,6 @@ export function recordRunResult(runtime: PiRuntimeSession, details: UnknownRecor
 }
 
 export function completeSessionActivities(session: PiAgentSession) {
-  return collectSessionActivities(session);
-}
-
-export function collectSessionActivities(session: PiAgentSession) {
   const messages = session.agent.state.messages;
 
   if (!Array.isArray(messages)) return [];
@@ -142,7 +143,7 @@ function mergeActivities(...activityLists: unknown[][]) {
 }
 
 export function lastRuntimeActivities(runtime: PiRuntimeSession) {
-  return mergeActivities(collectSessionActivities(runtime.session), runtime.lastActivities ?? []);
+  return mergeActivities(completeSessionActivities(runtime.session), runtime.lastActivities ?? []);
 }
 
 function latestActivityLines(runtime: PiRuntimeSession, count = 3) {
@@ -162,34 +163,16 @@ function eventToActivity(
   event: UnknownRecord,
   projectAssistantDelta: (event: UnknownRecord) => UnknownRecord | undefined = () => undefined,
 ) {
-  if (!event || typeof event !== "object") return undefined;
   const assistantDeltaActivity = projectAssistantDelta(event);
+  const tool = typeof event.type === "string" ? TOOL_ACTIVITY_EVENTS[event.type] : undefined;
 
-  if (event.type === "tool_execution_start")
+  if (tool)
     return {
       id: event.toolCallId,
       type: "tool",
       name: event.toolName,
-      summary: summarizeValue(event.args),
-      status: "running",
-    };
-
-  if (event.type === "tool_execution_update")
-    return {
-      id: event.toolCallId,
-      type: "tool",
-      name: event.toolName,
-      summary: summarizeValue(event.partialResult ?? event.args),
-      status: "running",
-    };
-
-  if (event.type === "tool_execution_end")
-    return {
-      id: event.toolCallId,
-      type: "tool",
-      name: event.toolName,
-      summary: summarizeValue(event.result),
-      status: event.isError ? "error" : "done",
+      summary: summarizeValue(event[tool.summary] ?? event.args),
+      status: tool.status ?? (event.isError ? "error" : "done"),
     };
 
   const message = isRecord(event.message) ? event.message : undefined;
@@ -341,15 +324,13 @@ function summarizeValue(value: unknown) {
 }
 
 function activityMessageText(message: UnknownRecord) {
-  if (typeof message.content === "string") return truncateInline(message.content, ACTIVITY_PREVIEW_LENGTH);
-  if (!Array.isArray(message.content)) return "";
-  const text = message.content
-    .filter((part: UnknownRecord) => part.type === "text" && typeof part.text === "string")
-    .slice(0, 10)
-    .map((part: UnknownRecord) => String(part.text).slice(0, ACTIVITY_PREVIEW_LENGTH * 4))
-    .join("\n");
-
-  return truncateInline(text, ACTIVITY_PREVIEW_LENGTH);
+  return truncateInline(
+    messageTextParts(message)
+      .slice(0, 10)
+      .map((text) => text.slice(0, ACTIVITY_PREVIEW_LENGTH * 4))
+      .join("\n"),
+    ACTIVITY_PREVIEW_LENGTH,
+  );
 }
 
 function truncateInline(text: unknown, length: number) {
@@ -479,15 +460,16 @@ function lastAssistantMessage(messages: unknown[]) {
 }
 
 function assistantText(message: UnknownRecord | undefined) {
-  if (!message) return "";
-  const text = Array.isArray(message.content)
-    ? message.content
-        .filter((part: UnknownRecord) => part.type === "text")
-        .map((part: UnknownRecord) => part.text)
-        .join("\n")
-    : message.content;
+  return messageTextParts(message).join("\n").trim();
+}
 
-  return String(text ?? "").trim();
+function messageTextParts(message: UnknownRecord | undefined) {
+  if (typeof message?.content === "string") return [message.content];
+  return Array.isArray(message?.content)
+    ? message.content.flatMap((part) =>
+        isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : [],
+      )
+    : [];
 }
 
 export function sessionStatus(runtime: PiRuntimeSession) {

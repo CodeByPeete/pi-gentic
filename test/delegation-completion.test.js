@@ -3,7 +3,7 @@ import test from "node:test";
 import { PiGenticOrchestrator } from "../dist/application/delegation/orchestrator.js";
 import { deleteRuntimeSession } from "../dist/infrastructure/pi/host.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
-import { clearLiveCardDetails } from "../dist/interface/cards/state.js";
+import { clearLiveCardDetails } from "./support/cards.js";
 
 const effectRuntime = createExtensionRuntime();
 test.after(() => effectRuntime.dispose());

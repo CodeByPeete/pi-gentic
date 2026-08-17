@@ -1,22 +1,44 @@
-import { agentsActionName, normalizeAgentsToolInputSync } from "../domain/agents-tool.js";
 import type { UnknownRecord } from "../shared/types.js";
-import { isRecord } from "../shared/value.js";
+import { isRecord, stringList } from "../shared/value.js";
 
-const SEND_VALUE_FLAGS = new Set([
-  "agent",
-  "session",
-  "cwd",
-  "worktree",
-  "repo",
-  "model",
-  "thinking",
-  "theme",
-  "tools",
-  "agents",
-  "skills",
-  "system-prompt-files",
-  "max-subagent-depth",
-]);
+type SendFlag = (result: UnknownRecord, value?: string) => void;
+
+const field =
+  (name: string): SendFlag =>
+  (result, value) => {
+    if (value) result[name] = value;
+  };
+const override =
+  (name: string, transform: (value: string) => unknown = (value) => value): SendFlag =>
+  (result, value) => {
+    if (value) setOverride(result, name, transform(value));
+  };
+const SEND_VALUE_FLAGS: Record<string, SendFlag> = {
+  agent: field("agent"),
+  session: field("sessionId"),
+  cwd: field("cwd"),
+  repo: field("repo"),
+  worktree: (result, value) => {
+    result.worktree = value ?? "";
+  },
+  model: override("model"),
+  thinking: override("thinking"),
+  theme: override("theme"),
+  tools: override("tools", stringList),
+  agents: override("agents", stringList),
+  skills: override("skills", stringList),
+  "system-prompt-files": override("systemPromptFiles", stringList),
+  "max-subagent-depth": (result, value) => {
+    const number = Number(value);
+    if (value && Number.isFinite(number)) setOverride(result, "maxSubagentDepth", Math.floor(number));
+  },
+};
+const SEND_SWITCH_FLAGS: Record<string, [string, boolean]> = {
+  fork: ["fork", true],
+  bg: ["async", true],
+  fg: ["async", false],
+  "no-invoke": ["invokeMeLater", false],
+};
 
 export function tokenizeCommandLine(input: string) {
   const tokens: string[] = [];
@@ -163,31 +185,16 @@ export function parseSendCommand(input: string) {
       continue;
     }
 
-    if (SEND_VALUE_FLAGS.has(key)) {
-      const value = readFlagValue(tokens, index, inlineValue);
-
-      applySendFlagValue(result, key, value.value);
-      index = value.nextIndex;
+    const valueFlag = SEND_VALUE_FLAGS[key];
+    if (valueFlag) {
+      const { value, nextIndex } = readFlagValue(tokens, index, inlineValue);
+      valueFlag(result, value);
+      index = nextIndex;
       continue;
     }
-
-    if (key === "fork") {
-      result.fork = true;
-      continue;
-    }
-
-    if (key === "bg") {
-      result.async = true;
-      continue;
-    }
-
-    if (key === "fg") {
-      result.async = false;
-      continue;
-    }
-
-    if (key === "no-invoke") {
-      result.invokeMeLater = false;
+    const switchFlag = SEND_SWITCH_FLAGS[key];
+    if (switchFlag) {
+      result[switchFlag[0]] = switchFlag[1];
       continue;
     }
     messageTokens.push(token);
@@ -198,28 +205,6 @@ export function parseSendCommand(input: string) {
   return result;
 }
 
-function applySendFlagValue(result: UnknownRecord, key: string, value: unknown) {
-  const text = typeof value === "string" ? value : undefined;
-
-  if (key === "agent" && text) result.agent = text;
-  else if (key === "session" && text) result.sessionId = text;
-  else if (key === "cwd" && text) result.cwd = text;
-  else if (key === "worktree") result.worktree = text ?? "";
-  else if (key === "repo" && text) result.repo = text;
-  else if (key === "model" && text) setOverride(result, "model", text);
-  else if (key === "thinking" && text) setOverride(result, "thinking", text);
-  else if (key === "theme" && text) setOverride(result, "theme", text);
-  else if (key === "tools" && text) setOverride(result, "tools", splitList(text));
-  else if (key === "agents" && text) setOverride(result, "agents", splitList(text));
-  else if (key === "skills" && text) setOverride(result, "skills", splitList(text));
-  else if (key === "system-prompt-files" && text) setOverride(result, "systemPromptFiles", splitList(text));
-  else if (key === "max-subagent-depth" && text) {
-    const number = Number(text);
-
-    if (Number.isFinite(number)) setOverride(result, "maxSubagentDepth", Math.floor(number));
-  }
-}
-
 function setOverride(result: UnknownRecord, key: string, value: unknown) {
   const overrides = {
     ...(isRecord(result.overrides) ? result.overrides : {}),
@@ -227,17 +212,4 @@ function setOverride(result: UnknownRecord, key: string, value: unknown) {
   };
 
   result.overrides = overrides;
-}
-
-function splitList(value: string) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-export function normalizeToolInput(input: unknown) {
-  const normalized = normalizeAgentsToolInputSync(input);
-
-  return { ...normalized, action: agentsActionName(normalized) };
 }

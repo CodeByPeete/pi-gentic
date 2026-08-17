@@ -1,5 +1,5 @@
 import { isRecord } from "../../../shared/value.js";
-import { reportRuntimeDiagnostic } from "../../../shared/diagnostics.js";
+import { recoverDiagnostic, reportRuntimeDiagnostic } from "../../../shared/diagnostics.js";
 import type { HostRecord } from "../state.js";
 
 type SessionTransitionSubmission = {
@@ -199,10 +199,9 @@ function clearTransitionPreview(transition: SessionTransition, mode: HostRecord)
 }
 
 export function readEditorText(editor: HostRecord) {
-  try {
-    return typeof editor?.getText === "function" ? editor.getText() : undefined;
-  } catch (error) {
-    reportRuntimeDiagnostic("pi-host-editor-text", error);
-    return undefined;
-  }
+  return recoverDiagnostic(
+    "pi-host-editor-text",
+    () => editor?.getText?.(),
+    () => undefined,
+  );
 }

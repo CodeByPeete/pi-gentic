@@ -1,14 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
-import {
-  agentsActionName,
-  decodeAgentsToolInput,
-  normalizeAgentsToolInput,
-  normalizeAgentsToolInputSync,
-} from "../src/domain/agents-tool.js";
+import { decodeAgentsToolInput, normalizeAgentsToolInput } from "../src/domain/agents-tool.js";
 
 describe("Agents tool contract", () => {
-  it.effect("decodes action-specific fields into a tagged request", () =>
+  it.effect("decodes action-specific fields into a discriminated request", () =>
     Effect.gen(function* () {
       const input = yield* decodeAgentsToolInput({
         action: "send",
@@ -17,8 +12,8 @@ describe("Agents tool contract", () => {
         overrides: { tools: ["read"] },
       });
 
-      assert.strictEqual(input._tag, "SendAgentsAction");
-      if (input._tag === "SendAgentsAction") {
+      assert.strictEqual(input.action, "send");
+      if (input.action === "send") {
         assert.strictEqual(input.message, "delegate this");
         assert.isTrue(input.async);
       }
@@ -38,7 +33,7 @@ describe("Agents tool contract", () => {
     Effect.gen(function* () {
       const input = yield* normalizeAgentsToolInput({ action: " list " });
 
-      assert.strictEqual(input._tag, "ListAgentsAction");
+      assert.strictEqual(input.action, "list");
     }),
   );
 
@@ -67,15 +62,10 @@ describe("Agents tool contract", () => {
       ] as const;
       const actions = yield* Effect.all(inputs.map((input) => decodeAgentsToolInput(input)));
 
-      assert.deepEqual(actions.map(agentsActionName), [
-        "list",
-        "get",
-        "status",
-        "load",
-        "send",
-        "abort",
-        "discoverSessions",
-      ]);
+      assert.deepEqual(
+        actions.map((action) => action.action),
+        ["list", "get", "status", "load", "send", "abort", "discoverSessions"],
+      );
       assert.deepInclude(actions[3], { overrides: { tools: ["read"] } });
       assert.deepInclude(actions[4], {
         async: false,
@@ -104,10 +94,4 @@ describe("Agents tool contract", () => {
       assert.notProperty(actions[3], "ry");
     }),
   );
-
-  it("keeps synchronous compatibility decoding strict", () => {
-    assert.throws(() => normalizeAgentsToolInputSync(null), /JSON object/i);
-    assert.throws(() => normalizeAgentsToolInputSync({ action: " " }), /required field/i);
-    assert.strictEqual(agentsActionName(normalizeAgentsToolInputSync({ action: " abort " })), "abort");
-  });
 });

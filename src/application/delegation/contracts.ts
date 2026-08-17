@@ -1,4 +1,5 @@
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-coding-agent";
+import type { AgentsToolInput } from "../../domain/agents-tool.js";
 import type { loadConfiguration } from "../../infrastructure/configuration/agents.js";
 import type { PiAgentSession, PiApi, PiContext, PiSessionManager } from "../../infrastructure/pi/types.js";
 import type { UnknownRecord } from "../../shared/types.js";
@@ -18,18 +19,7 @@ export interface SendCardDetails extends UnknownRecord {
   error?: string;
 }
 
-export interface SendInput extends UnknownRecord {
-  message: string;
-  agent?: string;
-  sessionId?: string;
-  async?: boolean;
-  fork?: boolean;
-  cwd?: string;
-  worktree?: string | true;
-  repo?: string;
-  invokeMeLater?: boolean;
-  overrides?: UnknownRecord;
-}
+export type SendInput = Omit<Extract<AgentsToolInput, { action: "send" }>, "action">;
 
 export interface SendCallbacks extends UnknownRecord {
   awaitCompletion?: boolean;
@@ -49,21 +39,18 @@ export type SessionController = Pick<
   createReplacedSessionContext?: () => PiContext;
 };
 
-export interface ReturnDeliveryParameters {
+export interface CardDeliveryParameters {
   pi: PiApi;
   ctx: PiContext;
   callerSessionId?: string;
   callerSessionManager: PiSessionManager;
   text: string;
+  details: UnknownRecord;
   invoke: boolean;
   persist?: (sessionManager: PiSessionManager) => unknown;
   invokeInactiveCaller?: (message: unknown) => Promise<unknown>;
   visibleSession?: SessionController;
   queue?: DeliveryQueue;
-}
-
-export interface CardDeliveryParameters extends ReturnDeliveryParameters {
-  details: UnknownRecord;
 }
 
 export interface CallerCardParameters {

@@ -16,12 +16,7 @@ import {
   shortSessionId,
   stringList as toStringArray,
 } from "../dist/shared/value.js";
-import {
-  normalizeToolInput,
-  parseAgentCommand,
-  parseSendCommand,
-  tokenizeCommandLine,
-} from "../dist/interface/commands.js";
+import { parseAgentCommand, parseSendCommand, tokenizeCommandLine } from "../dist/interface/commands.js";
 
 const names = ["read", "write", "bash", "agents", "ask_question", "reviewer"];
 
@@ -153,18 +148,6 @@ test("send worktree flag can omit the branch value", () => {
     },
     { worktree: "", cwd: "../trees/task" },
   );
-});
-
-test("tool input requires object", () => {
-  assert.throws(() => normalizeToolInput(null), /object/);
-});
-
-test("tool input requires action", () => {
-  assert.throws(() => normalizeToolInput({}), /action/);
-});
-
-test("tool input trims action", () => {
-  assert.equal(normalizeToolInput({ action: " send ", message: "delegate" }).action, "send");
 });
 
 test("radius floors decimals", () => {

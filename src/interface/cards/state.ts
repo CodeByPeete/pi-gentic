@@ -3,14 +3,14 @@ import { reportRuntimeDiagnostic } from "../../shared/diagnostics.js";
 import type { PiSessionManager } from "../../infrastructure/pi/types.js";
 import type { ExtensionRuntime } from "../../runtime/ExtensionRuntime.js";
 import type { UnknownRecord } from "../../shared/types.js";
-import { isRecord } from "../../shared/value.js";
+import { booleanValue, isRecord, stringValue } from "../../shared/value.js";
 
 export const CARD_MESSAGE_TYPE = "pi-gentic:card";
 export const CARD_STATE_ENTRY_TYPE = "pi-gentic:card-state";
 
 const COMPLETED_CARD_TTL_MS = 60_000;
 export const PersistedCardDetailsSchema = Schema.Record(Schema.String, Schema.UndefinedOr(Schema.Json));
-const MAX_CARD_ACTIVITY_LINES = 14;
+export const MAX_CARD_ACTIVITY_LINES = 14;
 
 const ACTIVE_CARD_STATUSES = new Set(["queued", "running"]);
 const TERMINAL_CARD_STATUSES = new Set(["done", "error", "aborted", "stopped"]);
@@ -44,16 +44,16 @@ export function normalizeCardDetails(value: unknown): CardDetails {
 
   return {
     ...value,
-    status: stringField(value.status),
-    kind: stringField(value.kind),
-    cardId: stringField(value.cardId),
-    sessionId: stringField(value.sessionId),
-    agentName: stringField(value.agentName),
-    message: stringField(value.message),
-    answer: stringField(value.answer),
-    async: booleanField(value.async),
-    live: booleanField(value.live),
-    livePanel: booleanField(value.livePanel),
+    status: stringValue(value.status),
+    kind: stringValue(value.kind),
+    cardId: stringValue(value.cardId),
+    sessionId: stringValue(value.sessionId),
+    agentName: stringValue(value.agentName),
+    message: stringValue(value.message),
+    answer: stringValue(value.answer),
+    async: booleanValue(value.async),
+    live: booleanValue(value.live),
+    livePanel: booleanValue(value.livePanel),
     startedAt: numberField(value.startedAt),
     updatedAt: numberField(value.updatedAt),
     completedAt: numberField(value.completedAt),
@@ -61,20 +61,12 @@ export function normalizeCardDetails(value: unknown): CardDetails {
     activities: Array.isArray(value.activities) ? value.activities.filter(isRecord) : undefined,
     configuration: isRecord(value.configuration) ? value.configuration : undefined,
     sessions: Array.isArray(value.sessions) ? value.sessions.filter(isRecord) : undefined,
-    systemPrompt: stringField(value.systemPrompt),
-    error: stringField(value.error),
-    restored: booleanField(value.restored),
-    phase: stringField(value.phase),
+    systemPrompt: stringValue(value.systemPrompt),
+    error: stringValue(value.error),
+    restored: booleanValue(value.restored),
+    phase: stringValue(value.phase),
     call: isRecord(value.call) ? value.call : undefined,
   };
-}
-
-export function stringField(value: unknown) {
-  return typeof value === "string" ? value : undefined;
-}
-
-function booleanField(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
 }
 
 function numberField(value: unknown) {
@@ -212,17 +204,6 @@ export function resolveCardDetails(details: CardDetails) {
     liveDetails,
     live: isActiveCard(liveDetails),
   };
-}
-
-export function clearLiveCardDetails(details: CardDetails) {
-  const key = liveCardKey(details);
-  const entry = key ? liveCards.get(key) : undefined;
-
-  entry?.interruptExpiry?.();
-
-  if (key) liveCards.delete(key);
-
-  notifyLiveCardRefreshers(entry?.details ?? details);
 }
 
 function notifyLiveCardRefreshers(details?: UnknownRecord) {

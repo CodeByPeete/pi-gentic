@@ -8,7 +8,13 @@ import {
 } from "./transitions.js";
 import { getRuntimeSession, liveSessionId, runtimeSessionIsRunning, setRuntimeSession } from "./live.js";
 import type { PiCodingAgentPeer } from "../peer.js";
-import { getLiveRuntimeState, type HostRecord, type LiveRuntimeState } from "../state.js";
+import {
+  callHostMethod,
+  captureHostMethod,
+  getLiveRuntimeState,
+  type HostRecord,
+  type LiveRuntimeState,
+} from "../state.js";
 
 const noop = () => {};
 const noopAsync = async () => {};
@@ -24,9 +30,7 @@ function installRuntimeSwitch(
   state: LiveRuntimeState,
   { AgentSessionRuntime }: Pick<PiCodingAgentPeer, "AgentSessionRuntime">,
 ) {
-  if (state.switchSessionInstalled) return;
-  state.switchSessionInstalled = true;
-  state.hostSwitchSession = AgentSessionRuntime.prototype.switchSession as LiveRuntimeState["hostSwitchSession"];
+  if (!captureHostMethod(state, "runtime.switchSession", AgentSessionRuntime.prototype.switchSession)) return;
   AgentSessionRuntime.prototype.switchSession = async function switchSessionWithLiveRuntime(
     sessionPath: string,
     options?: HostRecord,
@@ -80,7 +84,7 @@ async function switchPersistedSession(
   const restore = parkCurrentLiveRuntimeForSwitch(state, runtimeHost);
 
   try {
-    return await state.hostSwitchSession?.call(runtimeHost, sessionPath, options);
+    return await callHostMethod(state, "runtime.switchSession", runtimeHost, [sessionPath, options]);
   } finally {
     restore();
   }
@@ -90,15 +94,15 @@ function installRuntimeNewSession(
   state: LiveRuntimeState,
   { AgentSessionRuntime }: Pick<PiCodingAgentPeer, "AgentSessionRuntime">,
 ) {
-  if (state.newSessionInstalled) return;
-  state.newSessionInstalled = true;
-  state.hostNewSession = AgentSessionRuntime.prototype.newSession as LiveRuntimeState["hostNewSession"];
+  if (!captureHostMethod(state, "runtime.newSession", AgentSessionRuntime.prototype.newSession)) return;
   AgentSessionRuntime.prototype.newSession = async function newSessionWithLiveRuntime(options?: HostRecord) {
     return trackSessionTransition(state, this, "new session", async (transition) => {
       const restore = parkCurrentLiveRuntimeForSwitch(state, this);
 
       try {
-        return await state.hostNewSession?.call(this, withVisibleContextTracking(state, this, transition, options));
+        return await callHostMethod(state, "runtime.newSession", this, [
+          withVisibleContextTracking(state, this, transition, options),
+        ]);
       } finally {
         restore();
       }
@@ -110,19 +114,16 @@ function installRuntimeFork(
   state: LiveRuntimeState,
   { AgentSessionRuntime }: Pick<PiCodingAgentPeer, "AgentSessionRuntime">,
 ) {
-  if (state.forkSessionInstalled) return;
-  state.forkSessionInstalled = true;
-  state.hostForkSession = AgentSessionRuntime.prototype.fork as LiveRuntimeState["hostForkSession"];
+  if (!captureHostMethod(state, "runtime.fork", AgentSessionRuntime.prototype.fork)) return;
   AgentSessionRuntime.prototype.fork = async function forkWithLiveRuntime(entryId: string, options?: HostRecord) {
     return trackSessionTransition(state, this, "forked session", async (transition) => {
       const restore = parkCurrentLiveRuntimeForSwitch(state, this);
 
       try {
-        return await state.hostForkSession?.call(
-          this,
+        return await callHostMethod(state, "runtime.fork", this, [
           entryId,
           withVisibleContextTracking(state, this, transition, options),
-        );
+        ]);
       } finally {
         restore();
       }
@@ -134,9 +135,7 @@ function installRuntimeImport(
   state: LiveRuntimeState,
   { AgentSessionRuntime }: Pick<PiCodingAgentPeer, "AgentSessionRuntime">,
 ) {
-  if (state.importSessionInstalled) return;
-  state.importSessionInstalled = true;
-  state.hostImportSession = AgentSessionRuntime.prototype.importFromJsonl as LiveRuntimeState["hostImportSession"];
+  if (!captureHostMethod(state, "runtime.importFromJsonl", AgentSessionRuntime.prototype.importFromJsonl)) return;
   AgentSessionRuntime.prototype.importFromJsonl = async function importWithLiveRuntime(
     inputPath: string,
     cwdOverride?: string,
@@ -145,7 +144,7 @@ function installRuntimeImport(
       const restore = parkCurrentLiveRuntimeForSwitch(state, this);
 
       try {
-        return await state.hostImportSession?.call(this, inputPath, cwdOverride);
+        return await callHostMethod(state, "runtime.importFromJsonl", this, [inputPath, cwdOverride]);
       } finally {
         restore();
       }

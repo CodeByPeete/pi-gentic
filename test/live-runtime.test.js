@@ -21,7 +21,7 @@ import {
   shouldPromptVisibleSessionNow,
   trackSessionPrompt,
 } from "../dist/infrastructure/pi/host.js";
-import { installPiHostForTest } from "./support/pi-host.js";
+import { hostMethodSlot, installPiHostForTest } from "./support/pi-host.js";
 
 test("live runtime state is shared across duplicate module instances", async () => {
   const nonce = Date.now();
@@ -38,6 +38,21 @@ test("live runtime state is shared across duplicate module instances", async () 
   firstState.liveRuntimes.set("duplicate-runtime", runtime);
   assert.equal(secondState.liveRuntimes.get("duplicate-runtime"), runtime);
   secondState.liveRuntimes.delete("duplicate-runtime");
+
+  for (const instance of [first, second]) {
+    const key = Symbol("duplicate-host-method");
+    assert.equal(
+      instance.captureHostMethod(firstState, key, function (increment) {
+        return this.value + increment;
+      }),
+      true,
+    );
+    assert.equal(instance.captureHostMethod(firstState, key, undefined), false);
+    assert.equal(instance.callHostMethod(secondState, key, { value: 2 }, [3]), 5);
+    instance.recordHostDiagnostic(`duplicate-state-${String(key)}`);
+    firstState.hostMethods.delete(key);
+    firstState.hostDiagnostics.pop();
+  }
 });
 
 test("the Pi host switches to and cancels native runtime replacements", async () => {
@@ -87,8 +102,8 @@ test("the Pi host switches to and cancels native runtime replacements", async ()
       /No live pi-gentic session/,
     );
 
-    const originalSwitch = state.hostSwitchSession;
-    state.hostSwitchSession = async (_path, options) => {
+    const originalSwitch = hostMethodSlot(state, "runtime.switchSession").value;
+    hostMethodSlot(state, "runtime.switchSession").value = async (_path, options) => {
       await options.withSession?.({ marker: "visible-context" });
       return { cancelled: false, native: true };
     };
@@ -100,12 +115,12 @@ test("the Pi host switches to and cancels native runtime replacements", async ()
       { cancelled: false, native: true },
     );
     assert.equal(state.activeContext.marker, "visible-context");
-    state.hostSwitchSession = originalSwitch;
+    hostMethodSlot(state, "runtime.switchSession").value = originalSwitch;
 
-    const originalAbort = state.hostAbortSession;
-    const originalPrompt = state.hostPromptSession;
-    state.hostAbortSession = async () => "native-abort";
-    state.hostPromptSession = async () => "native-prompt";
+    const originalAbort = hostMethodSlot(state, "session.abort").value;
+    const originalPrompt = hostMethodSlot(state, "session.prompt").value;
+    hostMethodSlot(state, "session.abort").value = async () => "native-abort";
+    hostMethodSlot(state, "session.prompt").value = async () => "native-prompt";
     const hostSession = {
       isStreaming: false,
       sessionManager: {
@@ -116,8 +131,8 @@ test("the Pi host switches to and cancels native runtime replacements", async ()
     };
     assert.equal(await peer.AgentSession.prototype.abort.call(hostSession), "native-abort");
     assert.equal(await peer.AgentSession.prototype.prompt.call(hostSession, "host prompt"), "native-prompt");
-    state.hostAbortSession = originalAbort;
-    state.hostPromptSession = originalPrompt;
+    hostMethodSlot(state, "session.abort").value = originalAbort;
+    hostMethodSlot(state, "session.prompt").value = originalPrompt;
   } finally {
     state.liveRuntimes.delete("target-live");
   }
@@ -127,10 +142,10 @@ test("session navigation does not abort work running in any session", async () =
   await installPiHost();
   const peer = await loadPiCodingAgentPeer();
   const state = getLiveRuntimeState();
-  const hostAbortSession = state.hostAbortSession;
+  const hostAbortSession = hostMethodSlot(state, "session.abort").value;
   let sourceAborts = 0;
 
-  state.hostAbortSession = async () => {
+  hostMethodSlot(state, "session.abort").value = async () => {
     sourceAborts += 1;
   };
 
@@ -200,7 +215,7 @@ test("session navigation does not abort work running in any session", async () =
       }
     }
   } finally {
-    state.hostAbortSession = hostAbortSession;
+    hostMethodSlot(state, "session.abort").value = hostAbortSession;
   }
 });
 
@@ -317,11 +332,11 @@ test("live resume falls back to the persisted session when a run settles after s
       getSessionId: () => sessionId,
     },
   };
-  const originalSwitch = state.hostSwitchSession;
+  const originalSwitch = hostMethodSlot(state, "runtime.switchSession").value;
   const visibleContexts = [];
   let switchedPath;
 
-  state.hostSwitchSession = async (path, options) => {
+  hostMethodSlot(state, "runtime.switchSession").value = async (path, options) => {
     switchedPath = path;
     await options.withSession?.({ marker: "persisted-target-context" });
     return { cancelled: false };
@@ -340,7 +355,7 @@ test("live resume falls back to the persisted session when a run settles after s
     assert.deepEqual(visibleContexts, [{ marker: "persisted-target-context" }]);
     assert.equal(state.activeContext.marker, "persisted-target-context");
   } finally {
-    state.hostSwitchSession = originalSwitch;
+    hostMethodSlot(state, "runtime.switchSession").value = originalSwitch;
     deleteRuntimeSession(sessionId);
   }
 });
@@ -349,7 +364,7 @@ test("native parent abort reaches every active descendant branch", async () => {
   await installPiHost();
   const peer = await loadPiCodingAgentPeer();
   const state = getLiveRuntimeState();
-  const originalAbort = state.hostAbortSession;
+  const originalAbort = hostMethodSlot(state, "session.abort").value;
   const aborted = [];
   const calls = [
     registerAgentCall({
@@ -370,7 +385,7 @@ test("native parent abort reaches every active descendant branch", async () => {
   ];
   let parentAborts = 0;
 
-  state.hostAbortSession = async () => {
+  hostMethodSlot(state, "session.abort").value = async () => {
     parentAborts += 1;
   };
 
@@ -385,7 +400,7 @@ test("native parent abort reaches every active descendant branch", async () => {
     assert.equal(state.activeCalls.has(calls[1].id), false);
     assert.equal(state.activeCalls.has(calls[2].id), false);
   } finally {
-    state.hostAbortSession = originalAbort;
+    hostMethodSlot(state, "session.abort").value = originalAbort;
     calls.forEach((call) => call.unregister());
   }
 });
@@ -693,7 +708,7 @@ test("visible prompts bypass a blocked input loop after switching sessions", () 
 test("interactive input prompts the visible session when another session blocks input", async () => {
   const state = getLiveRuntimeState();
 
-  await installPiHostForTest(state, "interactiveSubmitInstalled");
+  await installPiHostForTest(state, "interactive.setupEditorSubmitHandler");
   const { InteractiveMode } = await import(
     pathToFileURL(
       path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js"),
@@ -758,7 +773,7 @@ test("interactive input prompts the visible session when another session blocks 
 test("current InteractiveMode hydrates an active streaming message after its native session render", async () => {
   const state = getLiveRuntimeState();
 
-  await installPiHostForTest(state, "liveHydrationInstalled");
+  await installPiHostForTest(state, "interactive.renderCurrentSessionState");
   const { InteractiveMode } = await import(
     pathToFileURL(
       path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js"),
@@ -803,7 +818,7 @@ test("AgentSession dispose cleans stale pi-gentic runtime references", async () 
   const state = getLiveRuntimeState();
 
   state.liveRuntimes.clear();
-  await installPiHostForTest(state, "sessionDisposeInstalled");
+  await installPiHostForTest(state, "session.dispose");
   const { AgentSession } = await import(
     pathToFileURL(path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js")).href
   );
@@ -836,7 +851,7 @@ test("AgentSession dispose cleans stale pi-gentic runtime references", async () 
 test("/new parks the active visible run instead of disposing it", async () => {
   const state = getLiveRuntimeState();
   state.liveRuntimes.clear();
-  await installPiHostForTest(state, "newSessionInstalled");
+  await installPiHostForTest(state, "runtime.newSession");
   const { AgentSessionRuntime } = await import(
     pathToFileURL(path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session-runtime.js")).href
   );

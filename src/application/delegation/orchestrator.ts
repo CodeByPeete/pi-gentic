@@ -15,7 +15,8 @@ import {
 import { buildResolvedSystemPrompt } from "../agents/prompt.js";
 import { delegationReceipt as buildReceiptText, delegationReturn as buildReturnText } from "./messages.js";
 import { resolveSessionPolicy } from "../../domain/session-policy.js";
-import { loadConfiguration, type AgentDefinition } from "../../infrastructure/configuration/agents.js";
+import type { AgentDefinition } from "../../domain/configuration.js";
+import { loadConfiguration } from "../../infrastructure/configuration/agents.js";
 import { loadAvailableSkills, systemPromptSkillEntries } from "../../infrastructure/configuration/skills.js";
 import {
   booleanOr as chooseBoolean,
@@ -24,20 +25,8 @@ import {
   nonNegativeInteger as parseIntegerRadius,
   shortSessionId,
 } from "../../shared/value.js";
-import { reportRuntimeDiagnostic } from "../../shared/diagnostics.js";
-import {
-  DelegationAborted,
-  DelegationCompleted,
-  DelegationFailed,
-  DelegationStopped,
-  type DelegationState,
-} from "../../domain/delegation.js";
-import {
-  AgentName,
-  SessionId,
-  type DelegationId as DelegationIdValue,
-  type SessionId as SessionIdValue,
-} from "../../domain/identifiers.js";
+import { recoverDiagnostic, reportRuntimeDiagnostic } from "../../shared/diagnostics.js";
+import { AgentName, SessionId } from "../../domain/identifiers.js";
 import { reconcileActiveToolSelection, type ToolPolicyState } from "../../domain/capabilities.js";
 import { DelegationFibers } from "../../infrastructure/runtime/DelegationFibers.js";
 import { createDelegationId } from "../../infrastructure/runtime/DelegationRegistry.js";
@@ -136,32 +125,6 @@ function registerRuntimeHost(runtimeHost: PiAgentRuntimeHost, metadata: UnknownR
   setRuntimeSession(sessionManager.getSessionId(), runtime);
 
   return runtime;
-}
-
-type DelegationIdentity = {
-  readonly delegationId: DelegationIdValue;
-  readonly callerSessionId: SessionIdValue;
-  readonly targetSessionId: SessionIdValue;
-  readonly queuedAt: number;
-  readonly startedAt: number;
-};
-
-function terminalDelegationState(
-  identity: DelegationIdentity,
-  result: { answer: string; details: UnknownRecord },
-): DelegationState {
-  const completedAt = Date.now();
-  const reason = String(result.details.error ?? result.answer);
-
-  if (result.details.status === "done")
-    return DelegationCompleted.make({
-      ...identity,
-      completedAt,
-      answer: result.answer,
-    });
-  if (result.details.status === "aborted") return DelegationAborted.make({ ...identity, completedAt, reason });
-  if (result.details.status === "stopped") return DelegationStopped.make({ ...identity, completedAt, reason });
-  return DelegationFailed.make({ ...identity, completedAt, reason });
 }
 
 function isCustomPiMessage(value: unknown): value is {
@@ -301,7 +264,7 @@ export class PiGenticOrchestrator {
     return { config, policy, activeAgent };
   }
 
-  private resolveCurrentPolicy(ctx: PiContext, resources: { skills?: string[] } = {}) {
+  private resolveCurrentPolicy(ctx: PiContext, resources: { tools?: string[]; skills?: string[] } = {}) {
     const config = this.load(ctx);
     const state = getActiveState(ctx.sessionManager);
     const activeAgent = config.agents.find((agent) => agent.name === state.agentName);
@@ -384,16 +347,12 @@ export class PiGenticOrchestrator {
   }
 
   applyPolicySnapshot(ctx: PiContext, resources: { skills?: string[] } = {}) {
-    const config = this.load(ctx);
-    const state = getActiveState(ctx.sessionManager);
-    const activeAgent = config.agents.find((agent) => agent.name === state.agentName);
-    const policy = this.resolvePolicy(ctx, config, state, {
+    const snapshot = this.resolveCurrentPolicy(ctx, {
       tools: this.pi.getActiveTools(),
       skills: resources.skills ?? availableSkillNames(ctx),
     });
-    this.currentAgentName = policy.agentName;
-
-    return { config, policy, activeAgent };
+    this.currentAgentName = snapshot.policy.agentName;
+    return snapshot;
   }
 
   async loadDefaultAgent(ctx: PiContext, event: { reason?: string }) {
@@ -421,45 +380,29 @@ export class PiGenticOrchestrator {
 
   async loadAgent(ctx: PiContext, agentName: unknown, options: UnknownRecord = {}) {
     const config = this.load(ctx);
-
-    if (!agentName || agentName === "clear") {
-      appendActiveState(ctx.sessionManager, {
-        agentName: undefined,
-        overrides: undefined,
-      });
-      const { policy } = await this.applyCurrentPolicy(ctx);
-
-      return {
-        text: "Cleared active agent.",
-        details: this.cardDetails("load", "done", {
-          agentName: "agentless",
-          sessionId: ctx.sessionManager.getSessionId(),
-          configuration: compactPolicy(policy),
-          systemPrompt: this.resolvedPromptForCard(ctx, config, policy, undefined),
-        }),
-      };
-    }
-
-    const agent =
-      options.enforceAccess === false
-        ? config.agents.find((item) => String(item.name).toLowerCase() === String(agentName).toLowerCase())
+    const clearing = !agentName || agentName === "clear";
+    const agent = clearing
+      ? undefined
+      : options.enforceAccess === false
+        ? config.agents.find((item) => item.name.toLowerCase() === String(agentName).toLowerCase())
         : this.assertAgentAvailable(ctx, agentName, config);
 
-    if (!agent)
+    if (!clearing && !agent)
       throw new Error(
         `Unknown agent "${agentName}". Available agents: ${config.agents.map((item) => item.name).join(", ") || "none"}.`,
       );
     appendActiveState(ctx.sessionManager, {
-      agentName: agent.name,
-      overrides: options.overrides,
+      agentName: agent?.name,
+      overrides: agent ? options.overrides : undefined,
     });
     const { policy } = await this.applyCurrentPolicy(ctx);
+    const sessionId = ctx.sessionManager.getSessionId();
 
     return {
-      text: `Loaded ${agent.name} agent in session ${shortSessionId(ctx.sessionManager.getSessionId())}.`,
+      text: agent ? `Loaded ${agent.name} agent in session ${shortSessionId(sessionId)}.` : "Cleared active agent.",
       details: this.cardDetails("load", "done", {
-        agentName: agent.name,
-        sessionId: ctx.sessionManager.getSessionId(),
+        agentName: agent?.name ?? "agentless",
+        sessionId,
         configuration: compactPolicy(policy),
         systemPrompt: this.resolvedPromptForCard(ctx, config, policy, agent),
       }),
@@ -604,6 +547,19 @@ export class PiGenticOrchestrator {
       return liveDetails;
     };
     publish(details, { notify: true });
+    const deliverOutcome = async (text: string, outcomeDetails: UnknownRecord, invoke = invokeMeLater) => {
+      if (returnDelivery.kind !== "callerMessage" || !shouldPresentOutcome()) return;
+      return this.deliverCallerCard(ctx, {
+        callerSessionId,
+        callerSessionManager,
+        callerCwd,
+        config,
+        text,
+        details: outcomeDetails,
+        invoke,
+        queue: returnDelivery.queue,
+      });
+    };
     deliverSendContextToCaller({
       pi: this.pi,
       ctx,
@@ -728,23 +684,11 @@ export class PiGenticOrchestrator {
         );
         const returnText =
           outcome.status === "done" ? buildReturnText(target.agentName, targetSessionId, outcome.text) : outcome.text;
-        if (returnDelivery.kind === "callerMessage") {
-          if (shouldPresentOutcome())
-            await this.deliverCallerCard(ctx, {
-              callerSessionId,
-              callerSessionManager,
-              callerCwd,
-              config,
-              text: returnText,
-              details: completed,
-              invoke: invokeMeLater,
-              queue: returnDelivery.queue,
-            });
-
-          return { answer: outcome.text, details: completed };
-        }
-
-        return { answer: returnText, details: completed };
+        await deliverOutcome(returnText, completed);
+        return {
+          answer: returnDelivery.kind === "callerMessage" ? outcome.text : returnText,
+          details: completed,
+        };
       } catch (error) {
         const outcome = sessionRunOutcome(target, {
           request: input.message,
@@ -757,18 +701,7 @@ export class PiGenticOrchestrator {
             activities: completeSessionActivities(target.session),
           }),
         );
-        if (returnDelivery.kind === "callerMessage" && shouldPresentOutcome())
-          await this.deliverCallerCard(ctx, {
-            callerSessionId,
-            callerSessionManager,
-            callerCwd,
-            config,
-            text: outcome.text,
-            details: failed,
-            invoke: invokeMeLater,
-            queue: returnDelivery.queue,
-          });
-
+        await deliverOutcome(outcome.text, failed);
         return { answer: outcome.text, details: failed };
       } finally {
         try {
@@ -797,49 +730,28 @@ export class PiGenticOrchestrator {
     };
 
     if (returnDelivery.kind === "callerMessage") {
-      const identity = {
-        delegationId,
-        callerSessionId: Schema.decodeUnknownSync(SessionId)(callerSessionId),
-        targetSessionId: Schema.decodeUnknownSync(SessionId)(targetSessionId),
-        queuedAt: startedAt,
-        startedAt: readyAt,
-      };
-      const operation = Effect.tryPromise<DelegationState, string>({
-        try: async (signal) => terminalDelegationState(identity, await run(signal)),
+      const operation = Effect.tryPromise({
+        try: async (signal) => {
+          await run(signal);
+        },
         catch: getErrorMessage,
       }).pipe(
         Effect.catch((message) =>
           Effect.tryPromise({
-            try: async () => {
-              if (!shouldPresentOutcome()) return;
-              await this.deliverCallerCard(ctx, {
-                callerSessionId,
-                callerSessionManager,
-                callerCwd,
-                config,
-                text: message,
-                details: this.cardDetails("send", "error", {
+            try: () =>
+              deliverOutcome(
+                message,
+                this.cardDetails("send", "error", {
                   ...details,
                   status: "error",
                   error: message,
                   completedAt: Date.now(),
                   updatedAt: Date.now(),
                 }),
-                invoke: false,
-                queue: returnDelivery.queue,
-              });
-            },
+                false,
+              ),
             catch: getErrorMessage,
-          }).pipe(
-            Effect.ignore,
-            Effect.as(
-              DelegationFailed.make({
-                ...identity,
-                completedAt: Date.now(),
-                reason: message,
-              }),
-            ),
-          ),
+          }).pipe(Effect.ignore),
         ),
         Effect.ensuring(
           Effect.sync(() => {
@@ -982,22 +894,13 @@ export class PiGenticOrchestrator {
 
     if (typeof sessionManager.appendSessionInfo === "function") sessionManager.appendSessionInfo(input.message);
     persistSessionImmediately(sessionManager);
-    const runtimeHost = await createLiveRuntime({
-      cwd: input.cwd ?? ctx.cwd,
-      sessionManager,
-    });
-    const runtime: PiRuntimeSession = {
-      runtimeHost,
-      session: runtimeHost.session,
-      agentName: undefined,
+    const runtimeHost = await createLiveRuntime({ cwd: input.cwd ?? ctx.cwd, sessionManager });
+    return registerRuntimeHost(runtimeHost, {
       parentSessionId,
       parentSessionPath: parentSession,
       lastMessage: input.message,
       createdAt: new Date().toISOString(),
-    };
-    setRuntimeSession(runtimeHost.session.sessionManager.getSessionId(), runtime);
-
-    return runtime;
+    });
   }
 
   async getOrOpenSession(ctx: PiContext, reference: unknown, cwd?: string): Promise<PiRuntimeSession> {
@@ -1251,17 +1154,11 @@ async function listDiscoverySessionSources(cwd: string, sessionDir?: string) {
 }
 
 function currentSkillNames(ctx: PiContext) {
-  try {
-    return (
-      ctx
-        .getSystemPromptOptions?.()
-        .skills?.map((skill) => skill.name)
-        .filter((name): name is string => typeof name === "string") ?? []
-    );
-  } catch (error) {
-    reportRuntimeDiagnostic("current-skill-names", error);
-    return [];
-  }
+  return recoverDiagnostic(
+    "current-skill-names",
+    () => ctx.getSystemPromptOptions?.().skills?.map((skill) => skill.name) ?? [],
+    () => [],
+  );
 }
 
 function availableSkillNames(ctx: PiContext) {
@@ -1278,12 +1175,11 @@ function availableSkillNames(ctx: PiContext) {
 }
 
 function safeSystemPrompt(ctx: PiContext) {
-  try {
-    return ctx.getSystemPrompt?.() ?? "";
-  } catch (error) {
-    reportRuntimeDiagnostic("current-system-prompt", error);
-    return "";
-  }
+  return recoverDiagnostic(
+    "current-system-prompt",
+    () => ctx.getSystemPrompt?.() ?? "",
+    () => "",
+  );
 }
 
 function compactPolicy(policy: SessionPolicy) {

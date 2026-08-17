@@ -1,6 +1,6 @@
 import { type Component, type TUI } from "@earendil-works/pi-tui";
 import { Duration, Effect, Fiber, Schedule } from "effect";
-import { reportRuntimeDiagnostic } from "../../shared/diagnostics.js";
+import { recoverDiagnostic, reportRuntimeDiagnostic } from "../../shared/diagnostics.js";
 import type { PiApi, PiContext, PiTheme } from "../../infrastructure/pi/types.js";
 import type { ExtensionRuntime } from "../../runtime/ExtensionRuntime.js";
 import type { UnknownRecord } from "../../shared/types.js";
@@ -8,12 +8,14 @@ import { formatDuration, isRecord, shortestUniqueSessionId } from "../../shared/
 import { CARD_MESSAGE_TYPE, cardRuntime, isActiveCard, liveCardKey, normalizeCardDetails } from "./state.js";
 import {
   createAgentLabel,
+  foreground,
   formatActivity,
   invisibleComponent,
   joinWithMiddle,
   normalizeInline,
   renderBordered,
   styleAgentName,
+  timer,
 } from "../presentation/text.js";
 
 interface LiveRefreshOptions extends UnknownRecord {
@@ -175,10 +177,6 @@ export function startSessionLiveCardRefresh(ctx: PiContext, runtime: ExtensionRu
   return ownedStop;
 }
 
-export function sessionHasVisibleLiveCard(ctx: PiContext) {
-  return sessionLiveCardDetails(ctx).length > 0;
-}
-
 function sessionLiveCardDetails(ctx: PiContext) {
   const cards = [...cardRuntime.liveCards.values()]
     .map((entry) => entry.details)
@@ -200,43 +198,35 @@ function cardBelongsToSession(ctx: PiContext, details: UnknownRecord) {
 }
 
 function currentSessionId(ctx: PiContext) {
-  try {
-    return ctx.sessionManager?.getSessionId?.();
-  } catch (error) {
-    reportRuntimeDiagnostic("current-session-id", error);
-    return undefined;
-  }
+  return recoverDiagnostic(
+    "current-session-id",
+    () => ctx.sessionManager?.getSessionId?.(),
+    () => undefined,
+  );
 }
 
 function sessionCardKeys(ctx: PiContext) {
-  const keys = new Set();
-  let entries: UnknownRecord[] = [];
+  return recoverDiagnostic(
+    "session-card-keys",
+    () => {
+      const entries = [...(ctx.sessionManager.getEntries?.() ?? []), ...(ctx.sessionManager.getBranch?.() ?? [])];
+      const keys = new Set();
 
-  try {
-    const sessionEntries = [
-      ...(ctx.sessionManager?.getEntries?.() ?? []),
-      ...(ctx.sessionManager?.getBranch?.() ?? []),
-    ];
-    entries = sessionEntries.flatMap((entry) => (isRecord(entry) ? [entry] : []));
-  } catch (error) {
-    reportRuntimeDiagnostic("session-card-keys", error);
-    return keys;
-  }
-
-  for (const entry of entries) {
-    const message = isRecord(entry.message) ? entry.message : undefined;
-    const details =
-      entry?.type === "custom_message" && entry.customType === CARD_MESSAGE_TYPE && entry.display !== false
-        ? normalizeCardDetails(entry.details)
-        : entry?.type === "message" && message?.role === "toolResult" && message.toolName === "agents"
-          ? normalizeCardDetails(message.details)
-          : undefined;
-    const key = liveCardKey(details);
-
-    if (key) keys.add(key);
-  }
-
-  return keys;
+      for (const entry of entries.filter(isRecord)) {
+        const message = entry.type === "message" && isRecord(entry.message) ? entry.message : undefined;
+        const details =
+          entry.type === "custom_message" && entry.customType === CARD_MESSAGE_TYPE && entry.display !== false
+            ? normalizeCardDetails(entry.details)
+            : entry.type === "message" && message?.role === "toolResult" && message.toolName === "agents"
+              ? normalizeCardDetails(message.details)
+              : undefined;
+        const key = liveCardKey(details);
+        if (key) keys.add(key);
+      }
+      return keys;
+    },
+    () => new Set(),
+  );
 }
 
 class LiveCardsPanel {
@@ -265,22 +255,29 @@ class LiveCardsPanel {
     const sessionIds = visibleCards.map((details) => details.sessionId);
     const rows = visibleCards.map((details) => this.cardRow(details, Math.max(10, width - 4), sessionIds));
 
-    if (hiddenCount > 0) rows.unshift(this.dim(`… ${hiddenCount} earlier active card${hiddenCount === 1 ? "" : "s"}`));
+    if (hiddenCount > 0)
+      rows.unshift(
+        foreground(this.theme, "dim", `… ${hiddenCount} earlier active card${hiddenCount === 1 ? "" : "s"}`),
+      );
 
     return renderBordered(
       width,
-      (text) => this.dim(text),
+      (text) => foreground(this.theme, "dim", text),
       () => rows,
     );
   }
 
   cardRow(details: UnknownRecord, width: number, sessionIds: unknown[]) {
     const queued = details.status === "queued";
-    const indicator = queued ? this.accent("○") : this.success("●");
-    const mode = this.accent(details.async ? "[ASYNC]" : "[SYNC]");
+    const indicator = queued ? foreground(this.theme, "accent", "○") : foreground(this.theme, "success", "●");
+    const mode = foreground(this.theme, "accent", details.async ? "[ASYNC]" : "[SYNC]");
     const agent =
-      details.agentName && details.agentName !== "agentless" ? styleAgentName(details.agentName) : this.bold("agent");
-    const session = details.sessionId ? this.dim(`(${shortestUniqueSessionId(details.sessionId, sessionIds)})`) : "";
+      details.agentName && details.agentName !== "agentless"
+        ? styleAgentName(details.agentName)
+        : this.theme.bold("agent");
+    const session = details.sessionId
+      ? foreground(this.theme, "dim", `(${shortestUniqueSessionId(details.sessionId, sessionIds)})`)
+      : "";
     const activities = Array.isArray(details.activities) ? details.activities : [];
     const detail = normalizeInline(
       activities.length > 0
@@ -293,29 +290,11 @@ class LiveCardsPanel {
     const inactive = formatDuration(Math.max(0, now - Number(details.updatedAt ?? now)));
     const total = formatDuration(Math.max(0, now - Number(details.startedAt ?? now)));
     const left = `${indicator} ${mode} ${agent}${session ? ` ${session}` : ""}`;
-    const middle = ` ${this.dim("│")} ${detail}`;
-    const right = `${this.dim("idle")} ${this.timer(inactive)} ` + `${this.dim("· total")} ${this.timer(total)}`;
+    const middle = ` ${foreground(this.theme, "dim", "│")} ${detail}`;
+    const right =
+      `${foreground(this.theme, "dim", "idle")} ${timer(inactive)} ` +
+      `${foreground(this.theme, "dim", "· total")} ${timer(total)}`;
 
     return joinWithMiddle(left, middle, right, width);
-  }
-
-  bold(text: string) {
-    return this.theme.bold(text);
-  }
-
-  accent(text: string) {
-    return this.theme.fg("accent", text);
-  }
-
-  success(text: string) {
-    return this.theme.fg("success", text);
-  }
-
-  dim(text: string) {
-    return this.theme.fg("dim", text);
-  }
-
-  timer(text: string) {
-    return `\x1b[95m${text}\x1b[39m`;
   }
 }

@@ -10,7 +10,7 @@ export type PiCodingAgentPeer = {
   AgentSession: { prototype: HostRecord };
   theme?: PiTheme;
   AgentSessionRuntime: { prototype: HostRecord };
-  InteractiveMode?: { prototype?: HostRecord };
+  InteractiveMode: { prototype: HostRecord };
   SessionManager?: HostRecord;
   createAgentSessionFromServices: (options: HostRecord) => Promise<{
     session: PiAgentSession;

@@ -114,6 +114,33 @@ function writeSessionTree(sessionCount) {
   return { dir, cwd, parentPath, childIds };
 }
 
+function nativeThreadedRows(sessions) {
+  const nodes = new Map(sessions.map((session) => [session.path, { session, children: [], latest: 0 }]));
+  const roots = [];
+
+  for (const node of nodes.values()) {
+    const parent = nodes.get(node.session.parentSessionPath);
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+  const updateLatest = (node) => {
+    node.latest = Math.max(node.session.modified?.getTime?.() ?? 0, ...node.children.map(updateLatest));
+    node.children.sort((left, right) => right.latest - left.latest);
+    return node.latest;
+  };
+  roots.forEach(updateLatest);
+  roots.sort((left, right) => right.latest - left.latest);
+  const rows = [];
+  const visit = (node, depth, ancestorContinues, isLast) => {
+    rows.push({ session: node.session, depth, isLast, ancestorContinues });
+    node.children.forEach((child, index) =>
+      visit(child, depth + 1, [...ancestorContinues, depth > 0 && !isLast], index === node.children.length - 1),
+    );
+  };
+  roots.forEach((root, index) => visit(root, 0, [], index === roots.length - 1));
+  return rows;
+}
+
 function nativeSelector() {
   const calls = { setSessions: 0, filterSessions: 0, selected: [] };
   const list = {
@@ -121,22 +148,29 @@ function nativeSelector() {
     filteredSessions: [],
     selectedIndex: 0,
     maxVisible: 10,
+    sortMode: "threaded",
+    nameFilter: "all",
     searchInput: { render: () => [">"] },
     setSessions(sessions) {
       calls.setSessions++;
       this.allSessions = sessions;
-      this.filterSessions("");
+      this.filterSessions(this.searchInput.getValue?.() ?? "");
     },
     filterSessions(query) {
       calls.filterSessions++;
-      this.filteredSessions = this.allSessions
-        .filter((session) => String(session.allMessagesText).toLowerCase().includes(query.toLowerCase()))
-        .map((session) => ({
+      const matching = this.allSessions.filter((session) =>
+        String(session.allMessagesText).toLowerCase().includes(query.toLowerCase()),
+      );
+      if (this.sortMode === "threaded" && !query.trim()) this.filteredSessions = nativeThreadedRows(matching);
+      else {
+        if (query.trim() && this.sortMode !== "recent") matching.sort((left, right) => right.modified - left.modified);
+        this.filteredSessions = matching.map((session) => ({
           session,
-          depth: session.depth ?? 0,
-          isLast: session.isLast ?? true,
-          ancestorContinues: session.ancestorContinues ?? [],
+          depth: 0,
+          isLast: true,
+          ancestorContinues: [],
         }));
+      }
     },
     render() {
       return [
@@ -681,8 +715,8 @@ test("resume search refreshes only visible rows across repeated 1000-session nav
     }
 
     assert.equal(list.filteredSessions.length, 1);
-    assert.ok(metadataReads[0] > 0, "The initially visible row was not refreshed.");
-    assert.ok(metadataReads[999] > 0, "The searched row was not refreshed.");
+    assert.equal(metadataReads[0], 0, "An offscreen row was refreshed during search.");
+    assert.ok(metadataReads[999] > 0, "The visible searched row was not refreshed.");
     assert.equal(metadataReads[500], 0, "An offscreen row was refreshed during search.");
   } finally {
     dispose();

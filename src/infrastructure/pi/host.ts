@@ -1,15 +1,9 @@
 import { installInteractiveInput, installSessionLifecycle } from "./input.js";
 import { assertPiHostCapabilities, loadPiCodingAgentPeer } from "./peer.js";
 import { installSessionReplacements } from "./sessions/replacements.js";
-import { getLiveRuntimeState } from "./state.js";
+import { getLiveRuntimeState, recordHostDiagnostic } from "./state.js";
 
-export {
-  abortAgentCall,
-  abortAgentCallsForSession,
-  assertNoAgentCallCycle,
-  hasAgentCallsForSession,
-  registerAgentCall,
-} from "./delegation.js";
+export { abortAgentCall, abortAgentCallsForSession, assertNoAgentCallCycle, registerAgentCall } from "./delegation.js";
 export { handleInteractiveEscape, shouldPromptVisibleSessionNow, trackSessionPrompt } from "./input.js";
 export {
   applyInheritedModel,
@@ -57,9 +51,7 @@ export async function installPiHost() {
     installSessionLifecycle(state, peer);
     installInteractiveInput(state, peer);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-
-    if (!state.hostDiagnostics.includes(message)) state.hostDiagnostics.push(message);
+    recordHostDiagnostic(error);
   }
 }
 

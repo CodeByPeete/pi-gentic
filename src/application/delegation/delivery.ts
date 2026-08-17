@@ -1,6 +1,6 @@
 import { Duration, Effect, Exit, Schema } from "effect";
 import { getActiveState } from "../agents/state.js";
-import { reportRuntimeDiagnostic } from "../../shared/diagnostics.js";
+import { recoverDiagnostic, reportRuntimeDiagnostic } from "../../shared/diagnostics.js";
 import { AgentCallFailed } from "../../domain/errors.js";
 import type { DelegationId } from "../../domain/identifiers.js";
 import { getRuntimeSession } from "../../infrastructure/pi/host.js";
@@ -26,21 +26,20 @@ import {
 import type {
   CardDeliveryParameters,
   DeliveryQueue,
-  ReturnDeliveryParameters,
   SendCardDetails,
   SendCompletionOptions,
   SessionController,
 } from "./contracts.js";
 
 export function abortActor(ctx: PiContext) {
-  try {
-    const agentName = getActiveState(ctx.sessionManager).agentName;
-
-    return agentName ? `[${agentName}] agent` : "caller session";
-  } catch (error) {
-    reportRuntimeDiagnostic("abort-actor", error);
-    return "caller session";
-  }
+  return recoverDiagnostic(
+    "abort-actor",
+    () => {
+      const agentName = getActiveState(ctx.sessionManager).agentName;
+      return agentName ? `[${agentName}] agent` : "caller session";
+    },
+    () => "caller session",
+  );
 }
 
 export function shouldDeferSendCompletion({ async, awaitCompletion }: SendCompletionOptions = {}) {
@@ -188,38 +187,6 @@ export function deliverSendContextToCaller({
   }
 }
 
-export async function deliverReturnToCaller({
-  pi,
-  ctx,
-  callerSessionId,
-  callerSessionManager,
-  text,
-  invoke,
-  persist,
-  invokeInactiveCaller,
-  visibleSession,
-  queue,
-}: ReturnDeliveryParameters) {
-  const liveDelivery = await deliverToLiveCaller({
-    pi,
-    ctx,
-    callerSessionId,
-    text,
-    invoke,
-    visibleSession,
-    queue,
-  });
-
-  if (liveDelivery.delivered) return liveDelivery.mode;
-
-  if (invoke && (await deliverToInactiveCaller(invokeInactiveCaller, text, "background-return-delivery")))
-    return "background";
-
-  persistReturnForCaller({ callerSessionManager, text, invoke, persist });
-
-  return "persisted";
-}
-
 export async function deliverCardToCaller({
   pi,
   ctx,
@@ -268,54 +235,6 @@ export async function deliverCardToCaller({
   } catch (error) {
     reportRuntimeDiagnostic("persisted-card-delivery", error, "warning");
     return "unavailable";
-  }
-}
-
-export async function deliverToLiveCaller({
-  pi,
-  ctx,
-  callerSessionId,
-  text,
-  invoke,
-  visibleSession,
-  queue,
-}: Omit<ReturnDeliveryParameters, "callerSessionManager">) {
-  const liveTarget = liveCallerSession(ctx, callerSessionId, visibleSession);
-
-  try {
-    if (liveTarget) {
-      if (
-        (invoke || liveTarget.session.isStreaming === true) &&
-        typeof liveTarget.session.sendUserMessage === "function"
-      ) {
-        await liveTarget.session.sendUserMessage(
-          text,
-          liveTarget.session.isStreaming === true
-            ? { deliverAs: queue }
-            : sendUserMessageOptions(liveTarget.ctx, queue),
-        );
-
-        return { delivered: true, mode: "live" };
-      }
-
-      if (typeof liveTarget.session.sendCustomMessage === "function") {
-        await liveTarget.session.sendCustomMessage(returnContextMessage(text), {
-          triggerTurn: false,
-        });
-
-        return { delivered: true, mode: "live" };
-      }
-    }
-
-    if (!contextStillActive(ctx, callerSessionId)) return { delivered: false };
-
-    if (invoke) pi.sendUserMessage(text, sendUserMessageOptions(ctx, queue));
-    else pi.sendMessage(returnContextMessage(text), customMessageOptions(ctx, queue));
-
-    return { delivered: true, mode: "live" };
-  } catch (error) {
-    reportRuntimeDiagnostic("live-return-delivery", error);
-    return { delivered: false };
   }
 }
 
@@ -373,38 +292,6 @@ function replacedSessionContext(session: SessionController) {
   return typeof session.createReplacedSessionContext === "function"
     ? session.createReplacedSessionContext()
     : undefined;
-}
-
-function returnContextMessage(text: string) {
-  return {
-    customType: "pi-gentic:return-context",
-    content: text,
-    display: true,
-    details: { kind: "returnContext" },
-  };
-}
-
-export function persistReturnForCaller({
-  callerSessionManager,
-  text,
-  invoke,
-  persist,
-}: {
-  callerSessionManager: PiSessionManager;
-  text: string;
-  invoke: boolean;
-  persist?: (sessionManager: PiSessionManager) => unknown;
-}) {
-  if (invoke && typeof callerSessionManager.appendMessage === "function")
-    callerSessionManager.appendMessage({
-      role: "user",
-      content: [{ type: "text", text }],
-      timestamp: Date.now(),
-    });
-  else
-    callerSessionManager.appendCustomMessageEntry?.("pi-gentic:return-context", text, true, { kind: "returnContext" });
-
-  persist?.(callerSessionManager);
 }
 
 export async function awaitTargetCompletion(
@@ -501,19 +388,6 @@ export function promptSessionAndWaitForTurnEnd(
   );
 }
 
-export function sendUserMessageOptions(ctx: PiContext | undefined, queue: DeliveryQueue = "followUp") {
-  try {
-    return ctx?.isIdle?.() === false ? { deliverAs: queue } : undefined;
-  } catch (error) {
-    reportRuntimeDiagnostic("send-user-options", error);
-    return undefined;
-  }
-}
-
-export function isTargetSlashCommand(message: unknown, session: unknown = {}) {
-  return Boolean(resolveTargetSlashCommand(message, session));
-}
-
 export function resolveTargetSlashCommand(message: unknown, session: unknown = {}) {
   const name = slashCommandName(message);
 
@@ -607,13 +481,6 @@ function promptTemplateNames(session: unknown) {
   );
 }
 
-function customMessageOptions(ctx: PiContext, queue: DeliveryQueue = "followUp") {
-  return {
-    triggerTurn: false,
-    ...sendUserMessageOptions(ctx, queue),
-  };
-}
-
 async function deliverToInactiveCaller<T>(
   deliver: ((value: T) => Promise<unknown>) | undefined,
   value: T,
@@ -665,15 +532,14 @@ export function persistAgentCardState(
 }
 
 export function contextStillActive(ctx: PiContext, callerSessionId?: string) {
-  try {
-    void ctx.cwd;
-    const activeSessionId = ctx.sessionManager.getSessionId();
-
-    return !callerSessionId || activeSessionId === callerSessionId;
-  } catch (error) {
-    reportRuntimeDiagnostic("extension-context-liveness", error);
-    return false;
-  }
+  return recoverDiagnostic(
+    "extension-context-liveness",
+    () => {
+      void ctx.cwd;
+      return !callerSessionId || ctx.sessionManager.getSessionId() === callerSessionId;
+    },
+    () => false,
+  );
 }
 
 export function isStaleExtensionContextError(error: unknown) {

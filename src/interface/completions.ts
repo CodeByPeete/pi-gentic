@@ -1,7 +1,7 @@
 import { loadConfiguration } from "../infrastructure/configuration/agents.js";
 import { loadAvailableSkills } from "../infrastructure/configuration/skills.js";
 import type { UnknownRecord } from "../shared/types.js";
-import { isRecord, shortestUniqueSessionId } from "../shared/value.js";
+import { recordArray, shortestUniqueSessionId, stringArray, stringValue } from "../shared/value.js";
 
 const SEND_FLAGS = [
   "agent",
@@ -161,13 +161,14 @@ function commandCompletion(name: string, command: UnknownRecord = {}) {
 }
 
 function completionItemMatches(item: UnknownRecord, query: string) {
-  return Boolean(
-    !query ||
+  const normalized = query.toLowerCase();
+  return (
+    !normalized ||
     [item.value, item.label, item.description].some((text) =>
       String(text ?? "")
         .toLowerCase()
-        .includes(query),
-    ),
+        .includes(normalized),
+    )
   );
 }
 
@@ -177,24 +178,24 @@ function completeSendFlagValue(prefix: string, options: UnknownRecord) {
       flag: "model",
       values: modelCompletionValues(recordArray(options.models)),
     },
-    { flag: "thinking", values: THINKING_LEVELS.map(simpleValue) },
-    { flag: "theme", values: stringArray(options.themes).map(simpleValue) },
-    { flag: "tools", values: stringArray(options.tools).map(filterValue), list: true },
+    { flag: "thinking", values: THINKING_LEVELS.map(completionValue) },
+    { flag: "theme", values: stringArray(options.themes).map(completionValue) },
+    { flag: "tools", values: stringArray(options.tools).map(completionValue), list: true },
     {
       flag: "agents",
-      values: recordArray(options.agents).map((agent) => filterValue(agent.name)),
+      values: recordArray(options.agents).map((agent) => completionValue(agent.name)),
       list: true,
     },
-    { flag: "skills", values: stringArray(options.skills).map(filterValue), list: true },
+    { flag: "skills", values: stringArray(options.skills).map(completionValue), list: true },
     {
       flag: "system-prompt-files",
-      values: stringArray(options.systemPromptFiles).map(filterValue),
+      values: stringArray(options.systemPromptFiles).map(completionValue),
       list: true,
     },
-    { flag: "max-subagent-depth", values: ["1", "2", "3", "4", "5", "6"].map(simpleValue) },
-    { flag: "cwd", values: [".agentfiles/worktrees/"].map(simpleValue) },
-    { flag: "worktree", values: [suggestedWorktreeName(prefix)].map(simpleValue) },
-    { flag: "repo", values: ["."].map(simpleValue) },
+    { flag: "max-subagent-depth", values: ["1", "2", "3", "4", "5", "6"].map(completionValue) },
+    { flag: "cwd", values: [".agentfiles/worktrees/"].map(completionValue) },
+    { flag: "worktree", values: [suggestedWorktreeName(prefix)].map(completionValue) },
+    { flag: "repo", values: ["."].map(completionValue) },
   ];
 
   for (const descriptor of descriptors) {
@@ -207,15 +208,7 @@ function completeSendFlagValue(prefix: string, options: UnknownRecord) {
       : { query: completion.token, values: descriptor.values };
 
     return list.values
-      .filter(
-        (item) =>
-          !list.query ||
-          [item.value, item.label, item.description].some((text) =>
-            String(text ?? "")
-              .toLowerCase()
-              .includes(list.query.toLowerCase()),
-          ),
-      )
+      .filter((item) => completionItemMatches(item, list.query))
       .map((item) => ({ ...item, value: completion.replace(item.value) }));
   }
 
@@ -232,14 +225,6 @@ function suggestedWorktreeName(prefix: string) {
     .slice(0, 60);
 
   return slug || "agent-worktree";
-}
-
-function recordArray(value: unknown): UnknownRecord[] {
-  return Array.isArray(value) ? value.filter(isRecord) : [];
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function listValueCompletion(values: ReadonlyArray<CompletionItem>, token: string) {
@@ -271,13 +256,8 @@ function modelCompletionValues(models: UnknownRecord[] = []): CompletionItem[] {
   });
 }
 
-function simpleValue(value: string): CompletionItem {
-  return { value, label: value };
-}
-
-function filterValue(value: unknown): CompletionItem {
+function completionValue(value: unknown): CompletionItem {
   const text = String(value ?? "");
-
   return { value: text, label: text };
 }
 
@@ -290,16 +270,7 @@ function completeRecords(token: string, records: UnknownRecord[], key: string) {
       label: String(record[key] ?? ""),
       description: stringValue(record.description),
     }))
-    .filter((item) => item.value)
-    .filter(
-      (item) =>
-        !query ||
-        [item.value, item.label, item.description].some((text) =>
-          String(text ?? "")
-            .toLowerCase()
-            .includes(query),
-        ),
-    );
+    .filter((item) => item.value && completionItemMatches(item, query));
 }
 
 function flagValueCompletion(prefix: string, flag: string) {
@@ -332,15 +303,7 @@ function completeSessions(token: string, sessions: UnknownRecord[], currentSessi
   return sessions
     .filter((session) => sessionIdentifier(session) !== currentSessionId)
     .map((session) => sessionCompletion(session, sessionIds))
-    .filter(
-      (session) =>
-        !query ||
-        [session.value, session.label, session.description].some((text) =>
-          String(text ?? "")
-            .toLowerCase()
-            .includes(query),
-        ),
-    );
+    .filter((session) => completionItemMatches(session, query));
 }
 
 function sessionCompletion(session: UnknownRecord, sessionIds: string[]) {
@@ -363,8 +326,4 @@ function sessionCompletion(session: UnknownRecord, sessionIds: string[]) {
 
 function sessionIdentifier(session: UnknownRecord) {
   return stringValue(session.sessionId) ?? stringValue(session.id);
-}
-
-function stringValue(value: unknown) {
-  return typeof value === "string" ? value : undefined;
 }

@@ -7,7 +7,6 @@ import {
   handleInteractiveEscape,
   hasAgentCallsForSession,
   registerAgentCall,
-  waitForJoinedDelegations,
 } from "../dist/pi-host.js";
 
 test("aborting a session aborts targeted agent calls recursively", async () => {
@@ -80,55 +79,6 @@ test("aborting one tool call leaves sibling calls running", async () => {
   } finally {
     first.unregister();
     second.unregister();
-  }
-});
-
-test("joined delegations keep their caller open until every sibling settles", async () => {
-  const first = registerAgentCall({
-    callerSessionId: "parent",
-    targetSessionId: "first-child",
-    joinsCallerCompletion: true,
-  });
-  const second = registerAgentCall({
-    callerSessionId: "parent",
-    targetSessionId: "second-child",
-    joinsCallerCompletion: true,
-  });
-  const waiting = waitForJoinedDelegations("parent");
-  let settled = false;
-  void waiting.then(() => {
-    settled = true;
-  });
-
-  try {
-    first.unregister();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(settled, false);
-
-    second.unregister();
-    await waiting;
-    assert.equal(settled, true);
-  } finally {
-    first.unregister();
-    second.unregister();
-  }
-});
-
-test("waiting for nested completion stops immediately when its caller is aborted", async () => {
-  const controller = new AbortController();
-  const call = registerAgentCall({
-    callerSessionId: "parent",
-    targetSessionId: "child",
-    joinsCallerCompletion: true,
-  });
-  const waiting = waitForJoinedDelegations("parent", controller.signal);
-
-  try {
-    controller.abort(new Error("caller aborted"));
-
-    await assert.rejects(waiting, /caller aborted/);
-  } finally {
-    call.unregister();
   }
 });
 

@@ -37,13 +37,7 @@ import { formatSessionStatus, sessionStatus } from "../dist/orchestration.js";
 import { assertAvailableAgent, filterAvailableAgents } from "../dist/catalog.js";
 import { resolveSessionPolicy } from "../dist/catalog.js";
 import { PiGenticOrchestrator, prepareWorktree } from "../dist/orchestration.js";
-import {
-  deleteRuntimeSession,
-  hasJoinedDelegations,
-  loadPiCodingAgentPeer,
-  registerAgentCall,
-  setRuntimeSession,
-} from "../dist/pi-host.js";
+import { deleteRuntimeSession, loadPiCodingAgentPeer, registerAgentCall, setRuntimeSession } from "../dist/pi-host.js";
 import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
 import { clearLiveCardDetails, getLiveCardDetails } from "../dist/ui.js";
 
@@ -75,38 +69,6 @@ function callerContext(sessionId) {
       getSessionId: () => sessionId,
     },
   };
-}
-
-function deferredTarget(sessionId, answer) {
-  const messages = [];
-  const completion = Promise.withResolvers();
-  const target = {
-    session: {
-      agent: { state: { messages } },
-      isStreaming: false,
-      sessionManager: {
-        appendCustomMessageEntry() {},
-        getSessionId: () => sessionId,
-      },
-      prompt: async () => {
-        await completion.promise;
-        messages.push({ role: "assistant", content: answer, stopReason: "stop" });
-      },
-      abort: async () => {},
-    },
-  };
-
-  return { target, finish: completion.resolve };
-}
-
-function orchestratorForTarget(target) {
-  const orchestrator = new PiGenticOrchestrator({ getAllTools: () => [], sendMessage: () => {} }, effectRuntime);
-
-  orchestrator.load = () => ({});
-  orchestrator.resolvePolicy = () => ({ agentsTool: {} });
-  orchestrator.resolveTargetSession = async () => target;
-  orchestrator.deliverCallerCard = async () => "background";
-  return orchestrator;
 }
 
 test("terminal card persistence validates snapshots and copies activities", () => {
@@ -692,53 +654,65 @@ test("foreground sends complete through the managed delegation runtime", async (
   }
 });
 
-test("send returns the resumed target answer after invoked nested work settles", async () => {
-  const targetSessionId = "hierarchical-target";
+test("send returns the coordinator's resumed answer after nested work settles", async () => {
+  const callerSessionId = "hierarchical-caller";
+  const coordinatorSessionId = "hierarchical-coordinator";
   const nestedSessionId = "hierarchical-nested";
-  const initialMessages = [];
-  const finalMessages = [
-    {
-      role: "assistant",
-      content: "Final answer informed by nested work",
-      stopReason: "stop",
-    },
-  ];
+  const coordinatorMessages = [];
+  const nestedMessages = [];
   const nestedFinished = Promise.withResolvers();
-  let nestedCall;
-  const sessionManager = {
-    appendCustomMessageEntry() {},
-    getSessionId: () => targetSessionId,
-  };
-  const target = {
+  const nestedSettled = Promise.withResolvers();
+  let orchestrator;
+  const coordinator = {
     agentName: "coordinator",
     session: {
-      agent: { state: { messages: initialMessages } },
+      agent: { state: { messages: coordinatorMessages } },
       isStreaming: false,
-      sessionManager,
+      sessionManager: {
+        appendCustomMessageEntry() {},
+        getSessionId: () => coordinatorSessionId,
+      },
       prompt: async () => {
-        nestedCall = registerAgentCall({
-          callerSessionId: targetSessionId,
-          targetSessionId: nestedSessionId,
-          joinsCallerCompletion: true,
-        });
-        initialMessages.push({
-          role: "assistant",
-          content: "Waiting for nested work",
-          stopReason: "stop",
-        });
-        void nestedFinished.promise.then(() => {
-          target.session = {
-            ...target.session,
-            agent: { state: { messages: finalMessages } },
-          };
-          nestedCall.unregister();
-        });
+        await orchestrator.send(
+          callerContext(coordinatorSessionId),
+          { message: "Complete the nested work", async: true, invokeMeLater: true },
+          { onSettled: nestedSettled.resolve },
+        );
+        coordinatorMessages.push({ role: "assistant", content: "Waiting for nested work", stopReason: "stop" });
       },
       abort: async () => {},
     },
   };
-  const orchestrator = orchestratorForTarget(target);
-  const resultPromise = orchestrator.send(callerContext("hierarchical-caller"), {
+  const nested = {
+    agentName: "researcher",
+    session: {
+      agent: { state: { messages: nestedMessages } },
+      isStreaming: false,
+      sessionManager: {
+        appendCustomMessageEntry() {},
+        getSessionId: () => nestedSessionId,
+      },
+      prompt: async () => {
+        await nestedFinished.promise;
+        nestedMessages.push({ role: "assistant", content: "Nested answer", stopReason: "stop" });
+      },
+      abort: async () => {},
+    },
+  };
+  orchestrator = new PiGenticOrchestrator({ getAllTools: () => [], sendMessage: () => {} }, effectRuntime);
+  orchestrator.load = () => ({});
+  orchestrator.resolvePolicy = () => ({ agentsTool: {} });
+  orchestrator.resolveTargetSession = async (ctx) =>
+    ctx.sessionManager.getSessionId() === callerSessionId ? coordinator : nested;
+  orchestrator.deliverCallerCard = async (_ctx, delivery) => {
+    coordinatorMessages.push({
+      role: "assistant",
+      content: `Final answer informed by ${delivery.text}`,
+      stopReason: "stop",
+    });
+    return "background";
+  };
+  const resultPromise = orchestrator.send(callerContext(callerSessionId), {
     message: "Coordinate nested work",
     async: false,
   });
@@ -753,56 +727,12 @@ test("send returns the resumed target answer after invoked nested work settles",
 
     nestedFinished.resolve();
     const result = await resultPromise;
+    await nestedSettled.promise;
 
-    assert.match(result.text, /Final answer informed by nested work/);
+    assert.match(result.text, /Final answer informed by.*Nested answer/s);
   } finally {
-    nestedCall?.unregister();
-    deleteRuntimeSession(targetSessionId);
-  }
-});
-
-test("background send joins caller completion unless explicitly detached", async () => {
-  const callerSessionId = "joining-caller";
-  const targetSessionId = "joining-target";
-  const { target, finish } = deferredTarget(targetSessionId, "Nested answer");
-  const orchestrator = orchestratorForTarget(target);
-  const settled = Promise.withResolvers();
-
-  try {
-    await orchestrator.send(
-      callerContext(callerSessionId),
-      { message: "Nested work", async: true, invokeMeLater: true },
-      { onSettled: settled.resolve },
-    );
-
-    assert.equal(hasJoinedDelegations(callerSessionId), true);
-    finish();
-    await settled.promise;
-    assert.equal(hasJoinedDelegations(callerSessionId), false);
-  } finally {
-    deleteRuntimeSession(targetSessionId);
-  }
-});
-
-test("detached background send does not join caller completion", async () => {
-  const callerSessionId = "detached-caller";
-  const targetSessionId = "detached-target";
-  const { target, finish } = deferredTarget(targetSessionId, "Detached answer");
-  const orchestrator = orchestratorForTarget(target);
-  const settled = Promise.withResolvers();
-
-  try {
-    await orchestrator.send(
-      callerContext(callerSessionId),
-      { message: "Detached work", async: true, invokeMeLater: false },
-      { onSettled: settled.resolve },
-    );
-
-    assert.equal(hasJoinedDelegations(callerSessionId), false);
-    finish();
-    await settled.promise;
-  } finally {
-    deleteRuntimeSession(targetSessionId);
+    deleteRuntimeSession(coordinatorSessionId);
+    deleteRuntimeSession(nestedSessionId);
   }
 });
 

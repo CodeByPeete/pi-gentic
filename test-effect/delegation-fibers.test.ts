@@ -21,6 +21,38 @@ describe("DelegationFibers", () => {
       }),
     );
 
+    it.effect("joins every requested delegation to its caller while detached work remains independent", () =>
+      Effect.gen(function* () {
+        const delegations = yield* DelegationFibers;
+        const callerSessionId = "caller-session";
+        const first = yield* delegations.run("joined-1", Effect.never, {
+          callerSessionId,
+          joinsCallerCompletion: true,
+        });
+        const second = yield* delegations.run("joined-2", Effect.never, {
+          callerSessionId,
+          joinsCallerCompletion: true,
+        });
+        const detached = yield* delegations.run("detached", Effect.never, {
+          callerSessionId,
+          joinsCallerCompletion: false,
+        });
+        const waiting = yield* Effect.forkChild(delegations.awaitJoined(callerSessionId));
+
+        yield* Effect.yieldNow;
+        assert.isUndefined(waiting.pollUnsafe());
+
+        yield* Fiber.interrupt(first);
+        assert.isUndefined(waiting.pollUnsafe());
+
+        yield* Fiber.interrupt(second);
+        assert.strictEqual(yield* Fiber.join(waiting), 2);
+        assert.isUndefined(detached.pollUnsafe());
+
+        yield* Fiber.interrupt(detached);
+      }),
+    );
+
     it.effect("supervises high-volume concurrent delegations without identity collisions", () =>
       Effect.gen(function* () {
         const delegations = yield* DelegationFibers;

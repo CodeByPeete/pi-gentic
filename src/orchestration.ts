@@ -57,7 +57,6 @@ import {
   createLiveRuntime,
   findRuntimeSession,
   getRuntimeSession,
-  hasJoinedDelegations,
   isSessionActivityEvent,
   listRuntimeSessions,
   persistSessionImmediately,
@@ -66,7 +65,6 @@ import {
   resolveModelFromCatalog,
   setRuntimeSession,
   unregisterLiveRuntime,
-  waitForJoinedDelegations,
 } from "./pi-host.js";
 import {
   assertDifferentSession,
@@ -518,16 +516,23 @@ export function persistReturnForCaller({
   persist?.(callerSessionManager);
 }
 
-async function waitForTargetDelegationTree(target: PiRuntimeSession, runtime: ExtensionRuntime, signal?: AbortSignal) {
+async function awaitTargetCompletion(target: PiRuntimeSession, runtime: ExtensionRuntime, signal?: AbortSignal) {
   const sessionId = target.session.sessionManager.getSessionId();
+  const callerSessionId = Schema.decodeUnknownSync(SessionId)(sessionId);
 
-  while (true) {
-    await waitForJoinedDelegations(sessionId, signal);
-    const current = getRuntimeSession(sessionId) ?? target;
+  let current = target;
 
+  while (
+    (await runtime.runPromise(
+      Effect.flatMap(DelegationFibers, (delegations) => delegations.awaitJoined(callerSessionId)),
+      { signal },
+    )) > 0
+  ) {
+    current = getRuntimeSession(sessionId) ?? target;
     await waitForSessionTurnEnd(current.session, runtime, signal);
-    if (!hasJoinedDelegations(sessionId)) return current;
   }
+
+  return current;
 }
 
 function waitForSessionTurnEnd(session: SessionController, runtime: ExtensionRuntime, signal?: AbortSignal) {
@@ -1842,7 +1847,6 @@ export class PiGenticOrchestrator {
       id: delegationId,
       callerSessionId,
       targetSessionId,
-      joinsCallerCompletion: returnDelivery.kind === "callerMessage" && invokeMeLater,
       isCancellable: () => target.session.isStreaming === true,
       abort: async (options: UnknownRecord = {}) => {
         await abortTarget(options);
@@ -1921,7 +1925,7 @@ export class PiGenticOrchestrator {
           return { answer, details: completed };
         }
         if (targetBusy) await waitForSessionTurnEnd(target.session, this.runtime, callbacks.signal);
-        const completedTarget = await waitForTargetDelegationTree(target, this.runtime, callbacks.signal);
+        const completedTarget = await awaitTargetCompletion(target, this.runtime, callbacks.signal);
         const outcome = sessionRunOutcome(completedTarget, { request: input.message });
         const completed = recordRunResult(
           completedTarget,
@@ -2053,7 +2057,14 @@ export class PiGenticOrchestrator {
         ),
       );
 
-      await this.runtime.runPromise(Effect.flatMap(DelegationFibers, (fibers) => fibers.run(delegationId, operation)));
+      await this.runtime.runPromise(
+        Effect.flatMap(DelegationFibers, (fibers) =>
+          fibers.run(delegationId, operation, {
+            callerSessionId: identity.callerSessionId,
+            joinsCallerCompletion: invokeMeLater,
+          }),
+        ),
+      );
 
       return {
         text: sendPendingText({

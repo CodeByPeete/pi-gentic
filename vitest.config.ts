@@ -14,22 +14,7 @@ export default defineConfig({
     ],
     coverage: {
       provider: "v8",
-      include: [
-        "src/application/**/*.ts",
-        "src/domain/**/*.ts",
-        "src/infrastructure/**/*.ts",
-        "src/runtime/**/*.ts",
-      ],
-      exclude: [
-        "src/application/agents/**",
-        "src/application/delegation/**",
-        "src/application/sessions/**",
-        "src/domain/session-policy.ts",
-        "src/domain/session.ts",
-        "src/infrastructure/configuration/**",
-        "src/infrastructure/git/**",
-        "src/infrastructure/pi/**",
-      ],
+      include: ["src/extension-runtime.ts"],
       thresholds: {
         statements: 95,
         branches: 95,

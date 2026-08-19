@@ -29,6 +29,6 @@ Pi-gentic uses Effect 4. The linked Effect 3 sidebar is the adoption checklist b
 
 ## Source organization
 
-The extension entry is the only TypeScript file directly under `src/`. Domain rules, use cases, host access, commands, cards, and shared helpers each have one explicit home.
+Source code is grouped by product feature under `agents`, `delegation`, `sessions`, `worktrees`, `pi`, and `ui`. `extension.ts`, `extension-runtime.ts`, and `settings.ts` stay at the root because they compose or supply every feature. The complete ownership map and dependency rules live in [the architecture guide](architecture.md).
 
-The former flat files were reduced from 2,581 to at most 1,307 lines for delegation, from 1,133 to at most 341 for configuration, from 1,114 to at most 467 for cards, from 761 to at most 466 for sessions, and from 609 to at most 370 for commands and completion. The published entry decreased from 647 to 319 lines. Capability parity remains the hard limit on deletion.
+Effect services remain only for worktree management, Git execution, delegation fibers, and the managed extension runtime. Each has a real lifetime or a test replacement. Pi callbacks enter Effect through the managed runtime.

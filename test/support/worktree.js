@@ -1,4 +1,4 @@
-import { createExtensionRuntime, prepareWorktreeEffect } from "../../dist/runtime/ExtensionRuntime.js";
+import { createExtensionRuntime, prepareWorktreeEffect } from "../../dist/extension-runtime.js";
 
 export function prepareWorktree(request) {
   const runtime = createExtensionRuntime();

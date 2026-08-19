@@ -41,18 +41,24 @@
         },
         "overrides": [
           {
-            "include": [
-              "src/application/**/*.ts",
-              "src/domain/**/*.ts",
-              "src/infrastructure/**/*.ts",
-              "src/runtime/**/*.ts"
-            ],
+            "include": ["src/**/*.ts"],
             "exclude": [
-              "src/application/agents/prompt.ts",
-              "src/application/delegation/**/*.ts",
-              "src/application/sessions/**/*.ts",
-              "src/infrastructure/configuration/**/*.ts",
-              "src/infrastructure/pi/**/*.ts"
+              "src/agents/activation.ts",
+              "src/agents/prompts.ts",
+              "src/agents/tool.ts",
+              "src/agents/skills.ts",
+              "src/delegation/activity.ts",
+              "src/delegation/delivery.ts",
+              "src/delegation/runs.ts",
+              "src/delegation/send.ts",
+              "src/extension.ts",
+              "src/pi/**/*.ts",
+              "src/sessions/catalog.ts",
+              "src/sessions/discovery.ts",
+              "src/sessions/manage.ts",
+              "src/settings.ts",
+              "src/shared/**/*.ts",
+              "src/ui/**/*.ts"
             ],
             "options": {
               "diagnosticSeverity": {

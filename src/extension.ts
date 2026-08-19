@@ -1,57 +1,39 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { AGENT_CYCLE_SHORTCUT } from "./application/agents/state.js";
-import { loadPiSettings } from "./infrastructure/configuration/agents.js";
-import { findAvailableSkill } from "./infrastructure/configuration/skills.js";
-import { errorMessage as getErrorMessage, firstText, isRecord, shortSessionId } from "./shared/value.js";
-import {
-  buildManualSkillMessage,
-  parseAgentCommand,
-  parseSendCommand,
-  parseSkillCommand,
-} from "./interface/commands.js";
-import { completeAgents, completeSend, completeSkill, isCompletingSendSession } from "./interface/completions.js";
+import { errorMessage as getErrorMessage } from "./shared/values.js";
 import { reportRuntimeDiagnostic } from "./shared/diagnostics.js";
-import { normalizeAgentsToolInput } from "./domain/agents-tool.js";
-import { clearActiveVisibleExtension, installPiHost, setActiveVisibleExtension } from "./infrastructure/pi/host.js";
-import { PiGenticOrchestrator } from "./application/delegation/orchestrator.js";
-import type { PiApi, PiContext } from "./infrastructure/pi/types.js";
-import type { UnknownRecord } from "./shared/types.js";
-import { createExtensionRuntime, shouldDisposeExtensionRuntime } from "./runtime/ExtensionRuntime.js";
-import { installResumeIntegration } from "./infrastructure/pi/resume/index.js";
-import { executeAction } from "./interface/agents-tool-handler.js";
-import { showCard, startSessionLiveCardRefresh } from "./interface/cards/live.js";
-import { renderAgentsCall, renderAgentsResult } from "./interface/cards/render.js";
-import { restorePersistedCardDetails } from "./interface/cards/state.js";
-import { createCompletionContext, listCompletionSessions } from "./interface/completion-context.js";
-import { reportDiagnostics } from "./interface/startup-diagnostics.js";
-import { agentsToolDefinition } from "./interface/agents-tool-definition.js";
-
-function showErrorCard(pi: PiApi, orchestrator: PiGenticOrchestrator, error: unknown, kind = "error") {
-  const message = getErrorMessage(error);
-
-  showCard(pi, message, orchestrator.cardDetails(kind, "error", { error: message }));
-}
+import { installPiHost } from "./pi/host.js";
+import { clearActiveVisibleExtension, setActiveVisibleExtension } from "./pi/sessions.js";
+import { createOrchestrator } from "./delegation/send.js";
+import type { PiContext } from "./pi/types.js";
+import type { UnknownRecord } from "./shared/values.js";
+import { createExtensionRuntime, shouldDisposeExtensionRuntime } from "./extension-runtime.js";
+import { installResumeIntegration } from "./pi/resume/selector.js";
+import { installAgentsTool } from "./agents/tool.js";
+import { setAgentLabel, showCard, startSessionLiveCardRefresh } from "./ui/cards.js";
+import { renderAgentsResult } from "./ui/card-renderer.js";
+import { restorePersistedCardDetails } from "./ui/cards.js";
+import { createCompletionContext } from "./ui/completions.js";
+import { installTerminalCommands } from "./ui/commands.js";
+import { reportDiagnostics } from "./ui/terminal.js";
 
 export default async function piGentic(pi: ExtensionAPI) {
   const runtime = createExtensionRuntime();
 
   await installPiHost();
   await installResumeIntegration(runtime);
-  const orchestrator = new PiGenticOrchestrator(pi, runtime);
+  const orchestrator = createOrchestrator(pi, runtime, setAgentLabel);
   const completionContext = createCompletionContext(pi);
   const delegationContextBoundaries = new WeakMap<PiContext["sessionManager"], string | null>();
   let runtimeDisposed = false;
   let stopSessionLiveCardRefresh: (() => void) | undefined;
-  let childSessionCreationExposed: boolean | undefined;
-
-  const synchronizeAgentsTool = async (ctx: PiContext) => {
-    try {
-      registerAgentsTool(await orchestrator.canCreateChildSession(ctx));
-    } catch (error) {
-      reportRuntimeDiagnostic("agents-tool-capability", error);
-      registerAgentsTool(false);
-    }
-  };
+  const synchronizeAgentsTool = installAgentsTool({
+    pi,
+    runtime,
+    orchestrator,
+    captureContext: completionContext.capture,
+    delegationBoundaries: delegationContextBoundaries,
+  });
+  installTerminalCommands(pi, orchestrator, completionContext, (text, details) => showCard(pi, text, details));
 
   pi.on("session_shutdown", async (event) => {
     stopSessionLiveCardRefresh?.();
@@ -98,22 +80,8 @@ export default async function piGentic(pi: ExtensionAPI) {
       else await orchestrator.applyCurrentPolicy(ctx);
       await synchronizeAgentsTool(ctx);
     } catch (error) {
-      registerAgentsTool(false);
       ctx.ui.notify(`pi-gentic: ${getErrorMessage(error)}`, "warning");
     }
-  });
-
-  pi.registerShortcut(AGENT_CYCLE_SHORTCUT, {
-    description: "Cycle pi-gentic active agent",
-    handler: async (ctx) => {
-      completionContext.capture(ctx);
-      try {
-        const result = await orchestrator.cycleAgent(ctx);
-        showCard(pi, result.text, result.details);
-      } catch (error) {
-        showErrorCard(pi, orchestrator, error);
-      }
-    },
   });
 
   pi.on("agent_start", async (_event, ctx) => {
@@ -137,191 +105,4 @@ export default async function piGentic(pi: ExtensionAPI) {
 
     return orchestrator.buildPromptAppend(ctx, event);
   });
-
-  pi.registerCommand("agent", {
-    description: "Set, clear, or show the active pi-gentic agent",
-    getArgumentCompletions: (prefix) => completeAgents(prefix, orchestrator.currentAgentName),
-    handler: async (args, ctx) => {
-      completionContext.capture(ctx);
-      const parsed = parseAgentCommand(args);
-
-      if (!parsed.agent) {
-        const active = orchestrator.getActiveAgent(ctx);
-        ctx.ui.notify(
-          active ? `Active agent: ${active.name}\n${active.description ?? ""}` : "No active agent.",
-          "info",
-        );
-        return;
-      }
-
-      try {
-        if (parsed.sessionId) {
-          const config = orchestrator.load(ctx);
-          const runtime = await orchestrator.getOrOpenSession(ctx, parsed.sessionId);
-
-          if (parsed.agent === "clear") {
-            runtime.session.sessionManager.appendCustomEntry("pi-gentic:state", { agentName: undefined });
-            ctx.ui.notify(
-              `Cleared active agent in session ${shortSessionId(runtime.session.sessionManager.getSessionId())}.`,
-              "info",
-            );
-            return;
-          }
-          await orchestrator.loadAgentIntoSession(runtime.session, parsed.agent, undefined, config, ctx);
-          ctx.ui.notify(
-            `Loaded ${parsed.agent} in session ${shortSessionId(runtime.session.sessionManager.getSessionId())}.`,
-            "info",
-          );
-          return;
-        }
-
-        const result = await orchestrator.loadAgent(ctx, parsed.agent);
-        showCard(pi, result.text, result.details);
-      } catch (error) {
-        showErrorCard(pi, orchestrator, error);
-      }
-    },
-  });
-
-  pi.registerCommand("skill", {
-    description: "Manually invoke a Pi skill: /skill <name> [request]",
-    getArgumentCompletions: (prefix) => completeSkill(prefix, completionContext.current()),
-    handler: async (args, ctx) => {
-      completionContext.capture(ctx);
-      const parsed = parseSkillCommand(args);
-
-      if (!parsed.name) {
-        ctx.ui.notify?.("Usage: /skill <name> [request]", "warning");
-        return;
-      }
-
-      await invokeSkillCommand(pi, parsed.name, parsed.message, ctx);
-    },
-  });
-
-  pi.registerCommand("send", {
-    description: "Send a message to a pi-gentic child or target session",
-    getArgumentCompletions: async (prefix) => {
-      const snapshot = completionContext.current();
-
-      if (!isCompletingSendSession(prefix)) return completeSend(prefix, snapshot);
-      const sessions = await listCompletionSessions(snapshot);
-
-      return completeSend(prefix, {
-        cwd: snapshot.cwd,
-        sessions,
-        currentSessionId: snapshot.currentSessionId,
-      });
-    },
-    handler: async (args, ctx) => {
-      completionContext.capture(ctx);
-      const parsed = parseSendCommand(args);
-
-      if (typeof parsed.message !== "string" || !parsed.message.trim()) {
-        ctx.ui.notify(
-          "Usage: /send <message> [--agent <agentName>] [--session <sessionId>] [--fork] [--bg|--fg] [--no-invoke] [--cwd <dir>] [--worktree [branch]] [--repo <dir>] [override flags]",
-          "warning",
-        );
-        return;
-      }
-
-      try {
-        let showedProgress = false;
-        const result = await orchestrator.send(
-          ctx,
-          { ...parsed, message: parsed.message },
-          {
-            awaitCompletion: false,
-            onUpdate: (update: unknown) => {
-              if (showedProgress) return;
-              showedProgress = true;
-              const result = isRecord(update) ? update : {};
-              showCard(
-                pi,
-                firstText(result.content) ?? "Sending message...",
-                isRecord(result.details) ? result.details : {},
-              );
-            },
-          },
-        );
-
-        if (!showedProgress)
-          showCard(
-            pi,
-            typeof result.text === "string" ? result.text : String(result.text ?? ""),
-            isRecord(result.details) ? result.details : {},
-          );
-      } catch (error) {
-        showErrorCard(pi, orchestrator, error, "send");
-      }
-    },
-  });
-
-  function registerAgentsTool(canCreateChildSession: boolean) {
-    if (childSessionCreationExposed === canCreateChildSession) return;
-
-    pi.registerTool({
-      name: "agents",
-      label: "Agents",
-      ...agentsToolDefinition(canCreateChildSession),
-      renderShell: "self",
-      renderCall: renderAgentsCall,
-      renderResult: renderAgentsResult,
-      async execute(toolCallId, params, signal, onUpdate, ctx) {
-        completionContext.capture(ctx);
-        try {
-          const input = await runtime.runPromise(normalizeAgentsToolInput(params));
-          const callerEntryId = ctx.sessionManager.getLeafId?.();
-          const forkBoundaryEntryId =
-            input.action === "send" ? delegationContextBoundaries.get(ctx.sessionManager) : undefined;
-          const call = {
-            toolCallId,
-            ...(callerEntryId ? { callerEntryId } : {}),
-            ...(forkBoundaryEntryId !== undefined ? { forkBoundaryEntryId } : {}),
-            parameters: params,
-          };
-          const result = await executeAction(orchestrator, ctx, input, onUpdate, signal, call);
-
-          if (input.action === "load") await synchronizeAgentsTool(ctx);
-
-          return {
-            content: [
-              {
-                type: "text",
-                text: typeof result.text === "string" ? result.text : String(result.text ?? ""),
-              },
-            ],
-            details: { ...result.details, call },
-          };
-        } catch (error) {
-          throw new Error(getErrorMessage(error), { cause: error });
-        }
-      },
-    });
-    childSessionCreationExposed = canCreateChildSession;
-  }
-
-  registerAgentsTool(false);
-}
-
-async function invokeSkillCommand(pi: PiApi, skillName: string, message: string, ctx: PiContext) {
-  if (!skillCommandsEnabled(ctx)) {
-    ctx.ui.notify?.("Pi skill commands are disabled by settings.", "warning");
-    return;
-  }
-  const skill = findAvailableSkill(skillName, { cwd: ctx.cwd });
-
-  if (!skill) {
-    ctx.ui.notify?.(`Unknown Pi skill "${skillName}".`, "warning");
-    return;
-  }
-
-  await pi.sendUserMessage(buildManualSkillMessage(skill, message));
-}
-
-function skillCommandsEnabled(ctx: PiContext) {
-  return (
-    loadPiSettings(undefined, ctx.cwd ?? process.cwd(), [], ctx.isProjectTrusted?.() === true).enableSkillCommands !==
-    false
-  );
 }

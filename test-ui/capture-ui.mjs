@@ -2,11 +2,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { startSessionLiveCardRefresh } from "../dist/interface/cards/live.js";
-import { renderAgentsResult } from "../dist/interface/cards/render.js";
-import { setLiveCardDetails } from "../dist/interface/cards/state.js";
+import { startSessionLiveCardRefresh } from "../dist/ui/cards.js";
+import { renderAgentsResult } from "../dist/ui/card-renderer.js";
+import { setLiveCardDetails } from "../dist/ui/cards.js";
 import { clearLiveCardDetails } from "../test/support/cards.js";
-import { createExtensionRuntime } from "../dist/runtime/ExtensionRuntime.js";
+import { createExtensionRuntime } from "../dist/extension-runtime.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const outputDir = path.join(root, "output");
@@ -107,7 +107,7 @@ const cases = [
           type: "assistant",
           text: "Implemented the completed-card presentation.\n\nChanges:\n- The answer is the primary body content.\n- The original request remains available as card state.\n- Matching assistant activity is shown once.",
         },
-        { type: "tool", name: "edit", summary: "src/interface/cards/render.ts" },
+        { type: "tool", name: "edit", summary: "src/ui/card-renderer.ts" },
         { type: "tool", name: "bash", summary: "220 tests passed" },
       ],
     },

@@ -1,4 +1,4 @@
-import { cardRuntime, liveCardKey } from "../../dist/interface/cards/state.js";
+import { cardRuntime, liveCardKey } from "../../dist/ui/cards.js";
 
 export function clearLiveCardDetails(details) {
   const keys = details ? [liveCardKey(details)] : [...cardRuntime.liveCards.keys()];

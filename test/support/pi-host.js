@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import { installPiHost } from "../../dist/infrastructure/pi/host.js";
+import { installPiHost } from "../../dist/pi/host.js";
 
 export async function installPiHostForTest(state, methodKey) {
   process.env.PI_CLI = path.resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js");

@@ -469,7 +469,7 @@ flowchart TD
 
 One managed runtime belongs to the loaded extension. It owns background work, live updates, timers, process streams, and cleanup. Unknown data from Pi, processes, configuration, and saved cards is checked at its boundary. Long-running cards keep the latest 100 activities and the exact number of hidden activities.
 
-The Pi host integration lives directly in `src/infrastructure/pi/`. It targets the installed current Pi release, with no older-version branches or migration layer. See the [host-contract decision](docs/adr/0002-pi-host-contract.md) and [Effect feature ledger](docs/effect-feature-ledger.md) for the detailed design record.
+Private Pi integration lives under `src/pi/`. The package targets the installed current Pi release and keeps no older-version branch or migration layer. The [architecture guide](docs/architecture.md) explains every source file and its owner. The [host-contract decision](docs/adr/0002-pi-host-contract.md) and [Effect feature ledger](docs/effect-feature-ledger.md) record the runtime constraints.
 
 ### Development
 
@@ -523,13 +523,15 @@ pi-gentic/
 ├─ scripts/             repeatable setup helpers
 ├─ src/
 │  ├─ extension.ts      published Pi entry
-│  ├─ domain/           rules and validated domain values
-│  ├─ application/      agent, delegation, session, and worktree use cases
-│  ├─ infrastructure/   configuration, Git, processes, runtimes, and Pi integration
-│  ├─ interface/        commands, completions, cards, and terminal presentation
-│  ├─ runtime/          managed Effect runtime composition
-│  └─ shared/           small dependency-free helpers
-├─ test/                main automated checks
+│  ├─ settings.ts       trusted settings and agent definitions
+│  ├─ agents/           activation, prompts, skills, and agents tool
+│  ├─ delegation/       send, delivery, activity, and active runs
+│  ├─ sessions/         catalog, discovery, management, and policy
+│  ├─ worktrees/        safe worktree and Git execution
+│  ├─ pi/               direct integration with the installed Pi runtime
+│  ├─ ui/               commands, completions, cards, and terminal output
+│  └─ shared/           value and diagnostic helpers
+├─ test/                tests grouped by the same feature names
 ├─ test-effect/         Effect-focused checks
 ├─ test-ui/             terminal component captures
 ├─ test-e2e/            full terminal-flow captures

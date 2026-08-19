@@ -36,6 +36,10 @@ export function recoverDiagnostic<T>(
   }
 }
 
+export function isStaleExtensionContextError(error: unknown) {
+  return (error instanceof Error ? error.message : String(error)).includes("This extension ctx is stale");
+}
+
 export function readRuntimeDiagnostics(minimumSeverity: DiagnosticSeverity = "debug") {
   const severityRank: Record<DiagnosticSeverity, number> = {
     debug: 0,

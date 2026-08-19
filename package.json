@@ -23,6 +23,7 @@
   "files": [
     "dist",
     "docs/assets",
+    "docs/architecture.md",
     "docs/effect-feature-ledger.md",
     "README.md"
   ],
@@ -39,13 +40,14 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.js\" \"test-effect/**/*.ts\" \"test-ui/**/*.mjs\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.js\" \"test-effect/**/*.ts\" \"test-ui/**/*.mjs\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:test": "tsc -p tsconfig.test.json",
     "check:effect": "effect-tsgo diagnostics --project tsconfig.json --strict --format pretty",
-    "check": "npm run typecheck && npm run check:effect && npm run lint && npm run check:dead-code && npm test && npm run pack:dry",
+    "check": "npm run typecheck && npm run typecheck:test && npm run check:effect && npm run lint && npm run check:dead-code && npm test && npm run pack:dry",
     "test": "npm run test:unit && npm run test:effect",
-    "test:unit": "npm run build && node --test test/*.test.js",
+    "test:unit": "npm run build && node --test \"test/**/*.test.js\"",
     "test:effect": "vitest run",
-    "test:integration": "npm run build && node --test test/config-trust.test.js test/worktree-security.test.js",
-    "test:coverage": "npm run build && node --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=93 --test-coverage-branches=80 --test-coverage-include=dist/**/*.js --test-coverage-exclude=dist/domain/** --test-coverage-exclude=dist/infrastructure/pi/** --test-coverage-exclude=dist/infrastructure/runtime/** --test-coverage-exclude=dist/runtime/** --test-coverage-exclude=dist/interface/cards/** --test-coverage-exclude=dist/interface/presentation/** --test test/*.test.js",
+    "test:integration": "npm run build && node --test test/settings/trust.test.js test/worktrees/security.test.js",
+    "test:coverage": "npm run build && node --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=93 --test-coverage-branches=80 --test-coverage-include=dist/**/*.js --test-coverage-exclude=dist/pi/** --test-coverage-exclude=dist/delegation/runs.js --test-coverage-exclude=dist/extension-runtime.js --test-coverage-exclude=dist/ui/cards.js --test-coverage-exclude=dist/ui/card-renderer.js --test-coverage-exclude=dist/ui/terminal.js --test \"test/**/*.test.js\"",
     "test:coverage:effect": "vitest run --coverage",
     "test:ui": "npm run build && node test-ui/capture-ui.mjs",
     "test:e2e": "npm run build && python test-e2e/capture-terminal-ui.py --deterministic",
@@ -55,8 +57,8 @@
     "pack:dry": "npm pack --dry-run",
     "lint": "oxlint src test test-effect test-ui",
     "check:dead-code": "knip --no-progress --include files,dependencies,unlisted,binaries,exports,types",
-    "test:host": "npm run build && node --test test/active-agent-calls.test.js test/host-contract.test.js test/live-runtime.test.js test/resume.test.js test/session-transitions.test.js",
-    "test:coverage:host": "npm run build && node --experimental-test-coverage --test-coverage-lines=93 --test-coverage-functions=93 --test-coverage-branches=79 --test-coverage-include=dist/infrastructure/pi/**/*.js --test test/*.test.js"
+    "test:host": "npm run build && node --test test/delegation/active-calls.test.js test/pi/host.test.js test/pi/runtime.test.js test/pi/resume.test.js test/pi/transitions.test.js",
+    "test:coverage:host": "npm run build && node --experimental-test-coverage --test-coverage-lines=93 --test-coverage-functions=93 --test-coverage-branches=79 --test-coverage-include=dist/pi/**/*.js --test \"test/**/*.test.js\""
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.84.2",

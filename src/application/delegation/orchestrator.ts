@@ -11,6 +11,7 @@ import {
   getActiveState,
   nextAgentName,
   shouldApplyDefaultAgent,
+  subagentCreationError,
 } from "../agents/state.js";
 import { buildResolvedSystemPrompt } from "../agents/prompt.js";
 import { delegationReceipt as buildReceiptText, delegationReturn as buildReturnText } from "./messages.js";
@@ -59,7 +60,7 @@ import {
   assignTreeDepths,
   buildSessionTree,
   currentSessionSummary,
-  resolveCurrentSessionDepth,
+  resolveRootedSessionDepth,
   runtimeSessionSummary,
   withRuntimeState,
 } from "../sessions/runtime-view.js";
@@ -180,6 +181,7 @@ export class PiGenticOrchestrator {
   pi: PiApi;
   currentAgentName?: string;
   runtime: ExtensionRuntime;
+  private readonly sessionDepths = new WeakMap<PiSessionManager, number>();
   private readonly toolPolicyStates = new WeakMap<PiSessionManager, ToolPolicyState>();
 
   constructor(pi: PiApi, runtime: ExtensionRuntime) {
@@ -837,15 +839,37 @@ export class PiGenticOrchestrator {
     return session;
   }
 
-  async assertCanCreateChildSession(ctx: PiContext, config: Configuration) {
-    const policy = this.resolvePolicy(ctx, config);
-    const currentDepth = await this.currentSessionDepth(ctx);
+  async canCreateChildSession(ctx: PiContext, config: Configuration = this.load(ctx)) {
+    return !subagentCreationError(await this.subagentCreationLimits(ctx, config));
+  }
 
-    return assertCanCreateSubagent({
-      currentDepth,
+  async assertCanCreateChildSession(ctx: PiContext, config: Configuration) {
+    assertCanCreateSubagent(await this.subagentCreationLimits(ctx, config));
+  }
+
+  private async subagentCreationLimits(ctx: PiContext, config: Configuration) {
+    const policy = this.resolvePolicy(ctx, config);
+    const limits = {
+      currentDepth: 0,
       maxSubagentDepth: policy.maxSubagentDepth,
       globalMaxSubagentDepth: config.settings.globalMaxSubagentDepth,
-    });
+    };
+
+    if (!subagentCreationError(limits)) limits.currentDepth = await this.cachedSessionDepth(ctx);
+    return limits;
+  }
+
+  private async cachedSessionDepth(ctx: PiContext) {
+    const cached = this.sessionDepths.get(ctx.sessionManager);
+    if (cached !== undefined) return cached;
+
+    const depth = resolveRootedSessionDepth(
+      currentSessionSummary(ctx),
+      await listDiscoverySessionSources(ctx.cwd, ctx.sessionManager.getSessionDir()),
+      listRuntimeSessions(),
+    );
+    this.sessionDepths.set(ctx.sessionManager, depth);
+    return depth;
   }
 
   async assertCanMessageSession(ctx: PiContext, target: PiRuntimeSession, config: Configuration) {
@@ -859,15 +883,6 @@ export class PiGenticOrchestrator {
       [...persisted, ...listRuntimeSessions().map(runtimeSessionSummary)],
       { scope: config.settings.sessionMessagingScope },
     );
-  }
-
-  async currentSessionDepth(ctx: PiContext) {
-    const current = currentSessionSummary(ctx);
-
-    if (!current) return 0;
-    const sessionDir = ctx.sessionManager.getSessionDir();
-    const persisted = await listDiscoverySessionSources(ctx.cwd, sessionDir);
-    return resolveCurrentSessionDepth(current, persisted, listRuntimeSessions());
   }
 
   async createChildSession(

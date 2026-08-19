@@ -14,6 +14,7 @@ import {
 } from "../dist/application/sessions/model.js";
 import {
   buildSessionTree,
+  resolveRootedSessionDepth,
   sessionCompletionScope,
   withRuntimeState,
 } from "../dist/application/sessions/runtime-view.js";
@@ -24,6 +25,16 @@ const sessions = [
   { id: "87654321-bbbb", path: "/tmp/two.jsonl", firstMessage: "two" },
   { id: "abcdef12-cccc", path: "/tmp/three.jsonl", firstMessage: "three" },
 ];
+
+test("session depth is defined only by a complete rooted lineage", () => {
+  const root = { id: "root", path: "/sessions/root.jsonl" };
+  const parent = { id: "parent", path: "/sessions/parent.jsonl", parentSessionPath: root.path };
+  const current = { id: "current", path: "/sessions/current.jsonl", parentSessionPath: parent.path };
+
+  assert.equal(resolveRootedSessionDepth(current, [root, parent]), 2);
+  assert.throws(() => resolveRootedSessionDepth(current, [parent]), /complete session lineage/i);
+  assert.throws(() => resolveRootedSessionDepth(undefined, []), /complete session lineage/i);
+});
 
 test("resolves full session id", () => {
   assert.equal(resolveSessionReference(sessions, "12345678-aaaa").firstMessage, "one");

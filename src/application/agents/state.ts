@@ -49,7 +49,7 @@ function emptyActiveState() {
   return { agentName: undefined, overrides: undefined };
 }
 
-export function assertCanCreateSubagent({
+export function subagentCreationError({
   currentDepth,
   maxSubagentDepth,
   globalMaxSubagentDepth,
@@ -64,14 +64,21 @@ export function assertCanCreateSubagent({
   const nextDepth = depth + 1;
 
   if (localLimit < 1)
-    throw new Error(
+    return new Error(
       `Cannot create a child session because maxSubagentDepth is ${localLimit}. Reuse an existing session or raise the local limit.`,
     );
 
   if (nextDepth > globalLimit)
-    throw new Error(
+    return new Error(
       `Cannot create a child session at depth ${nextDepth} because globalMaxSubagentDepth is ${globalLimit}. Reuse an existing session or raise the global limit.`,
     );
+
+  return undefined;
+}
+
+export function assertCanCreateSubagent(limits: Parameters<typeof subagentCreationError>[0]) {
+  const error = subagentCreationError(limits);
+  if (error) throw error;
 }
 
 function integer(value: unknown) {

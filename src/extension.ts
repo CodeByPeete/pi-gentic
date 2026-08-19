@@ -1,4 +1,3 @@
-import { Tool } from "effect/unstable/ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { AGENT_CYCLE_SHORTCUT } from "./application/agents/state.js";
 import { loadPiSettings } from "./infrastructure/configuration/agents.js";
@@ -12,7 +11,7 @@ import {
 } from "./interface/commands.js";
 import { completeAgents, completeSend, completeSkill, isCompletingSendSession } from "./interface/completions.js";
 import { reportRuntimeDiagnostic } from "./shared/diagnostics.js";
-import { AgentsToolParametersSchema, normalizeAgentsToolInput } from "./domain/agents-tool.js";
+import { normalizeAgentsToolInput } from "./domain/agents-tool.js";
 import { clearActiveVisibleExtension, installPiHost, setActiveVisibleExtension } from "./infrastructure/pi/host.js";
 import { PiGenticOrchestrator } from "./application/delegation/orchestrator.js";
 import type { PiApi, PiContext } from "./infrastructure/pi/types.js";
@@ -25,8 +24,7 @@ import { renderAgentsCall, renderAgentsResult } from "./interface/cards/render.j
 import { restorePersistedCardDetails } from "./interface/cards/state.js";
 import { createCompletionContext, listCompletionSessions } from "./interface/completion-context.js";
 import { reportDiagnostics } from "./interface/startup-diagnostics.js";
-
-const AgentsToolParameters = Tool.getJsonSchemaFromSchema(AgentsToolParametersSchema);
+import { agentsToolDefinition } from "./interface/agents-tool-definition.js";
 
 function showErrorCard(pi: PiApi, orchestrator: PiGenticOrchestrator, error: unknown, kind = "error") {
   const message = getErrorMessage(error);
@@ -44,6 +42,16 @@ export default async function piGentic(pi: ExtensionAPI) {
   const delegationContextBoundaries = new WeakMap<PiContext["sessionManager"], string | null>();
   let runtimeDisposed = false;
   let stopSessionLiveCardRefresh: (() => void) | undefined;
+  let childSessionCreationExposed: boolean | undefined;
+
+  const synchronizeAgentsTool = async (ctx: PiContext) => {
+    try {
+      registerAgentsTool(await orchestrator.canCreateChildSession(ctx));
+    } catch (error) {
+      reportRuntimeDiagnostic("agents-tool-capability", error);
+      registerAgentsTool(false);
+    }
+  };
 
   pi.on("session_shutdown", async (event) => {
     stopSessionLiveCardRefresh?.();
@@ -88,7 +96,9 @@ export default async function piGentic(pi: ExtensionAPI) {
 
       if (defaultResult) showCard(pi, defaultResult.text, defaultResult.details);
       else await orchestrator.applyCurrentPolicy(ctx);
+      await synchronizeAgentsTool(ctx);
     } catch (error) {
+      registerAgentsTool(false);
       ctx.ui.notify(`pi-gentic: ${getErrorMessage(error)}`, "warning");
     }
   });
@@ -118,7 +128,8 @@ export default async function piGentic(pi: ExtensionAPI) {
     orchestrator.prepareVisibleTurn(ctx);
   });
 
-  pi.on("before_agent_start", (event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
+    await synchronizeAgentsTool(ctx);
     const forkBoundaryEntryId = ctx.sessionManager.getLeafId?.();
 
     if (forkBoundaryEntryId !== undefined) delegationContextBoundaries.set(ctx.sessionManager, forkBoundaryEntryId);
@@ -246,50 +257,51 @@ export default async function piGentic(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
-    name: "agents",
-    label: "Agents",
-    description: [
-      "Perform one pi-gentic orchestration action.",
-      "Sessions are durable collaborators: when continuing, retrying, or referring to the same agent or same work, target a different existing sessionId instead of creating a new child session; create a new session only for independent work.",
-      "Actions: list returns available agent names; get returns one agent definition and requires agent; status reports one session and requires sessionId; load sets the active agent and accepts agent plus optional overrides; send delivers message to a different existing sessionId or to a new child when no sessionId is supplied, with optional agent, async, fork, cwd, worktree, repo, invokeMeLater, and overrides; abort stops the current session or the supplied sessionId; discoverSessions returns nearby orchestration sessions and accepts rx and ry.",
-      "Use one action per call. Do not send slash commands, prose wrappers, or shell commands as the action.",
-    ].join(" "),
-    promptSnippet:
-      "Orchestrate durable pi-gentic agent sessions; reuse a different sessionId for the same agent or same work, and use actions list, get, status, load, send, abort, and discoverSessions",
-    parameters: AgentsToolParameters,
-    renderShell: "self",
-    renderCall: renderAgentsCall,
-    renderResult: renderAgentsResult,
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      completionContext.capture(ctx);
-      try {
-        const input = await runtime.runPromise(normalizeAgentsToolInput(params));
-        const callerEntryId = ctx.sessionManager.getLeafId?.();
-        const forkBoundaryEntryId =
-          input.action === "send" ? delegationContextBoundaries.get(ctx.sessionManager) : undefined;
-        const call = {
-          toolCallId,
-          ...(callerEntryId ? { callerEntryId } : {}),
-          ...(forkBoundaryEntryId !== undefined ? { forkBoundaryEntryId } : {}),
-          parameters: params,
-        };
-        const result = await executeAction(orchestrator, ctx, input, onUpdate, signal, call);
+  function registerAgentsTool(canCreateChildSession: boolean) {
+    if (childSessionCreationExposed === canCreateChildSession) return;
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: typeof result.text === "string" ? result.text : String(result.text ?? ""),
-            },
-          ],
-          details: { ...result.details, call },
-        };
-      } catch (error) {
-        throw new Error(getErrorMessage(error), { cause: error });
-      }
-    },
-  });
+    pi.registerTool({
+      name: "agents",
+      label: "Agents",
+      ...agentsToolDefinition(canCreateChildSession),
+      renderShell: "self",
+      renderCall: renderAgentsCall,
+      renderResult: renderAgentsResult,
+      async execute(toolCallId, params, signal, onUpdate, ctx) {
+        completionContext.capture(ctx);
+        try {
+          const input = await runtime.runPromise(normalizeAgentsToolInput(params));
+          const callerEntryId = ctx.sessionManager.getLeafId?.();
+          const forkBoundaryEntryId =
+            input.action === "send" ? delegationContextBoundaries.get(ctx.sessionManager) : undefined;
+          const call = {
+            toolCallId,
+            ...(callerEntryId ? { callerEntryId } : {}),
+            ...(forkBoundaryEntryId !== undefined ? { forkBoundaryEntryId } : {}),
+            parameters: params,
+          };
+          const result = await executeAction(orchestrator, ctx, input, onUpdate, signal, call);
+
+          if (input.action === "load") await synchronizeAgentsTool(ctx);
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: typeof result.text === "string" ? result.text : String(result.text ?? ""),
+              },
+            ],
+            details: { ...result.details, call },
+          };
+        } catch (error) {
+          throw new Error(getErrorMessage(error), { cause: error });
+        }
+      },
+    });
+    childSessionCreationExposed = canCreateChildSession;
+  }
+
+  registerAgentsTool(false);
 }
 
 async function invokeSkillCommand(pi: PiApi, skillName: string, message: string, ctx: PiContext) {

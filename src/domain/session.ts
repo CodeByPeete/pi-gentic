@@ -59,18 +59,22 @@ export function indexSessions(sessions: UnknownRecord[], normalize: (key: string
     }
     return result;
   };
+  const lineage = (identity: UnknownRecord) => {
+    const path = new Set<UnknownRecord>();
+
+    for (let current = find(identity); current && !path.has(current); current = parent(current)) {
+      path.add(current);
+      if (parentSessionKeys(current).length === 0) return { sessions: [...path], rooted: true };
+    }
+    return { sessions: [...path], rooted: false };
+  };
   const isAncestor = (ancestor: UnknownRecord, session: UnknownRecord) => {
     const ancestorKeys = new Set(sessionKeys(ancestor).map(normalize));
-    let current = session;
 
-    for (let guard = 0; guard < 100; guard++) {
-      const next = parent(current);
-      if (!next) return false;
-      if (sessionKeys(next).some((key) => ancestorKeys.has(normalize(key)))) return true;
-      current = next;
-    }
-    return false;
+    return lineage(session)
+      .sessions.slice(1)
+      .some((candidate) => sessionKeys(candidate).some((key) => ancestorKeys.has(normalize(key))));
   };
 
-  return { byKey, descendants, find, isAncestor, parent };
+  return { byKey, descendants, find, isAncestor, lineage, parent };
 }

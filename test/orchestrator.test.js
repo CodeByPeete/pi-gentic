@@ -1410,13 +1410,7 @@ test("orchestrator applies runtime policy and discovers the current session", as
     ["tools", ["read"]],
   ]);
 
-  const depthOrchestrator = new PiGenticOrchestrator({ getAllTools: () => [] }, effectRuntime);
-  depthOrchestrator.currentSessionDepth = async () => 1;
-  depthOrchestrator.resolvePolicy = () => ({ maxSubagentDepth: 2 });
-  await assert.doesNotReject(() =>
-    depthOrchestrator.assertCanCreateChildSession({}, { settings: { globalMaxSubagentDepth: 3 } }),
-  );
-  await depthOrchestrator.assertCanMessageSession({}, {}, { settings: { sessionMessagingScope: "all" } });
+  await orchestrator.assertCanMessageSession({}, {}, { settings: { sessionMessagingScope: "all" } });
 
   const overrideEntries = [];
   const overrideSession = {
@@ -1511,7 +1505,6 @@ test("orchestrator applies runtime policy and discovers the current session", as
   orchestrator.resolvePolicy = () => ({ agentsTool: { rx: 0, ry: 0 } });
 
   try {
-    assert.equal(await orchestrator.currentSessionDepth(ctx), 0);
     const result = await orchestrator.discoverSessions(ctx, {});
     assert.equal(result.sessions.length, 1);
     assert.equal(result.sessions[0].sessionId, "019fcccc-1111-7111-8111-111111111111");

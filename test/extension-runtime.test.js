@@ -13,21 +13,32 @@ const theme = {
   fg: (_name, text) => text,
 };
 
+function validateAgentsCall(tool, id, arguments_) {
+  return validateToolCall([tool], { id, name: "agents", arguments: arguments_ });
+}
+
+function assertChildSessionBlocked(tool) {
+  assert.throws(
+    () => validateAgentsCall(tool, "blocked-child-send", { action: "send", message: "create a child" }),
+    /sessionId/,
+  );
+}
+
 test("extension boundary registers and runs native Pi interfaces", async (t) => {
   const cwd = mkdtempSync(path.join(tmpdir(), "pi-gentic-extension-"));
   const configRoot = path.join(cwd, ".pi", "extensions", "pi-gentic");
+  const writeSettings = (settings = {}) =>
+    writeFileSync(
+      path.join(configRoot, "settings.json"),
+      JSON.stringify({ defaultAgent: "fixture-reviewer", sessionMessagingScope: "all", ...settings }),
+    );
   mkdirSync(path.join(configRoot, "agents"), { recursive: true });
-  writeFileSync(
-    path.join(configRoot, "settings.json"),
-    JSON.stringify({
-      defaultAgent: "fixture-reviewer",
-      sessionMessagingScope: "all",
-    }),
-  );
+  writeSettings();
   writeFileSync(
     path.join(configRoot, "agents", "fixture-reviewer.md"),
     "---\nname: fixture-reviewer\ndescription: Deterministic extension fixture.\ntools: agents\n---\n",
   );
+  writeFileSync(path.join(configRoot, "DELEGATION.md"), "Fixture delegation guidance remains visible.");
   const skillRoot = path.join(cwd, ".agents", "skills", "fixture-skill");
   mkdirSync(skillRoot, { recursive: true });
   writeFileSync(
@@ -59,8 +70,12 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     registerMessageRenderer: (name, renderer) => renderers.set(name, renderer),
     registerShortcut: (key, shortcut) => shortcuts.set(key, shortcut),
     registerTool: (tool) => {
-      tools.push(tool);
-      activeTools.push(tool.name);
+      const existing = tools.findIndex((candidate) => candidate.name === tool.name);
+
+      if (existing === -1) {
+        tools.push(tool);
+        activeTools.push(tool.name);
+      } else tools[existing] = tool;
     },
     sendMessage: (message) => messages.push(message),
     sendUserMessage: async (message) => messages.push(message),
@@ -108,6 +123,8 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   assert.deepEqual([...commands.keys()].sort(), ["agent", "send", "skill"]);
   assert.equal(shortcuts.size, 1);
   assert.equal(tools[0].name, "agents");
+
+  for (const handler of events.get("session_start") ?? []) await handler({ reason: "startup" }, ctx);
   assert.throws(
     () =>
       validateToolCall([tools[0]], {
@@ -149,6 +166,20 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   assert.match(toolSchema, /current request is replaced by the child's assignment/);
   assert.match(toolSchema, /Source Git repository/);
   assert.match(toolSchema, /automatic branch and path generation/);
+
+  writeSettings({ globalMaxSubagentDepth: 0 });
+  const promptResult = await (events.get("before_agent_start") ?? [])[0]?.({ systemPrompt: "Base" }, ctx);
+  assertChildSessionBlocked(tools[0]);
+  validateAgentsCall(tools[0], "existing-session-send", {
+    action: "send",
+    message: "continue there",
+    sessionId: "session-1",
+  });
+  const existingSessionTool = JSON.stringify(tools[0]);
+  assert.doesNotMatch(existingSessionTool, /new child|child session|worktree|fork/i);
+  assert.doesNotMatch(existingSessionTool, /"async"|"repo"/);
+  assert.match(promptResult.systemPrompt, /Fixture delegation guidance remains visible/);
+
   assert.equal(
     typeof renderers.get("pi-gentic:card")(
       { content: "done", details: { kind: "send", status: "done" } },
@@ -158,7 +189,6 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     "function",
   );
 
-  for (const handler of events.get("session_start") ?? []) await handler({ reason: "startup" }, ctx);
   assert.ok(Array.isArray(commands.get("agent").getArgumentCompletions("")));
   assert.ok((await commands.get("send").getArgumentCompletions("message --a")).length > 0);
   const peer = await loadPiCodingAgentPeer();

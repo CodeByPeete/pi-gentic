@@ -412,6 +412,8 @@ Completion is determined solely by delegation relationships. Joined work compose
 
 Sending to an existing session does not create a child and does not use this allowance.
 
+When the current session has no remaining child allowance, the `agents` tool stays available for existing sessions and agent selection. Its `send` action then requires `sessionId`, and child-only fields are omitted from the model-facing tool contract. Pi-gentic continues to include configured `DELEGATION.md` guidance. The complete contract returns automatically when the session can create a child again.
+
 ## Resource filters
 
 Agents can limit the tools, skills, agents, and extra instruction files they use.

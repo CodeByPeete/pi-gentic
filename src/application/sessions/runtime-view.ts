@@ -1,4 +1,5 @@
 import type { PiContext, PiRuntimeSession } from "../../infrastructure/pi/types.js";
+import { indexSessions } from "../../domain/session.js";
 import type { UnknownRecord } from "../../shared/types.js";
 import { shortSessionId } from "../../shared/value.js";
 import { getActiveState } from "../agents/state.js";
@@ -10,7 +11,6 @@ import {
   runtimeSessionIsRunning,
 } from "../../infrastructure/pi/host.js";
 import {
-  findSessionSummary,
   mergeSessionSummaries,
   orderSessionCompletions,
   orderSessionTree,
@@ -24,27 +24,34 @@ export function buildSessionTree(
   runtimeSessions: PiRuntimeSession[] = listRuntimeSessions(),
   options: UnknownRecord = {},
 ) {
-  return orderSessionTree(
-    mergeSessionSummaries([
-      currentSession,
-      ...persistedSessions.map((session) => summarizeSession(session, options)),
-      ...runtimeSessions.map(runtimeSessionSummary),
-    ]),
-  );
+  return orderSessionTree(sessionSummaries(currentSession, persistedSessions, runtimeSessions, options));
 }
 
-export function resolveCurrentSessionDepth(
+export function resolveRootedSessionDepth(
   currentSession: UnknownRecord | undefined,
   persistedSessions: UnknownRecord[],
   runtimeSessions: PiRuntimeSession[] = listRuntimeSessions(),
 ) {
-  if (!currentSession) return 0;
-  const session = findSessionSummary(
-    buildSessionTree(currentSession, persistedSessions, runtimeSessions),
+  if (!currentSession) throw new Error("Cannot determine session depth without a complete session lineage.");
+  const lineage = indexSessions(sessionSummaries(currentSession, persistedSessions, runtimeSessions)).lineage(
     currentSession,
   );
 
-  return Math.max(0, Number(session?.depth ?? 0));
+  if (!lineage.rooted) throw new Error("Cannot determine session depth without a complete session lineage.");
+  return lineage.sessions.length - 1;
+}
+
+function sessionSummaries(
+  currentSession: UnknownRecord | undefined,
+  persistedSessions: UnknownRecord[],
+  runtimeSessions: PiRuntimeSession[],
+  options: UnknownRecord = {},
+) {
+  return mergeSessionSummaries([
+    currentSession,
+    ...persistedSessions.map((session) => summarizeSession(session, options)),
+    ...runtimeSessions.map(runtimeSessionSummary),
+  ]);
 }
 
 export function sessionCompletionScope(

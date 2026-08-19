@@ -4,6 +4,7 @@ dist/
 test-ui/output/
 test-e2e/output/
 .agentfiles/
+.pi/extensions/pi-gentic/settings.json
 .playwright-cli/
 *.tgz
 .DS_Store

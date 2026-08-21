@@ -354,19 +354,41 @@ def session_selected(needle):
     return session_line(needle).lstrip().startswith((">", "›"))
 
 
-def open_selected_session(proc, target, label, timeout=10):
+def submit_until(proc, key, label, completed, ready=lambda _text: True, timeout=10):
     deadline = time.time() + timeout
     next_submit = 0
     while time.time() < deadline:
         text = screen_text()
-        if "Resume Session" not in text and "Resumed session" in text and target in text:
+        if completed(text):
             return text
         now = time.time()
-        if now >= next_submit and "Resume Session" in text and session_selected(target):
-            proc.write("\r")
+        if now >= next_submit and ready(text):
+            proc.write(key)
             next_submit = now + 0.25
         time.sleep(0.05)
     raise TimeoutError(f"Timed out waiting for {label}\n--- screen ---\n{screen_text()}")
+
+
+def open_selected_session(proc, target, label, timeout=10):
+    return submit_until(
+        proc,
+        "\r",
+        label,
+        lambda text: "Resume Session" not in text and "Resumed session" in text and target in text,
+        lambda text: "Resume Session" in text and session_selected(target),
+        timeout,
+    )
+
+
+def close_resume_selector(proc, label, timeout=10):
+    return submit_until(
+        proc,
+        "\x1b",
+        label,
+        lambda text: "Resume Session" not in text,
+        lambda text: "Resume Session" in text,
+        timeout,
+    )
 
 
 def tree_session_line(needle):
@@ -734,12 +756,7 @@ def capture_prompt_preflight_switch():
             time.sleep(0.1)
         if not completion_marker.exists():
             raise AssertionError("Submitted prompt did not complete after switching sessions")
-        proc.write("\x1b")
-        wait_for(
-            "resume selector closes after submitted prompt completion",
-            lambda value: "Resume Session" not in value,
-            timeout=10,
-        )
+        close_resume_selector(proc, "resume selector closes after submitted prompt completion")
         proc.write("/resume\r")
         completed = wait_for(
             "submitted session becomes inactive after completion",
@@ -846,8 +863,8 @@ def capture_session_transition_isolation():
         )
 
         proc.write("/resume\r")
-        background_short_id = requests[0]["sessionId"][:13]
-        new_short_id = requests[1]["sessionId"][:13]
+        background_short_id = requests[0]["sessionId"][:8]
+        new_short_id = requests[1]["sessionId"][:8]
         wait_for(
             "concurrent sessions in resume",
             lambda value: "Resume Session" in value

@@ -1276,8 +1276,7 @@ def main():
         capture_completed_card_answer()
         if os.environ.get("RUNNER_OS") != "Linux":
             capture_prompt_preflight_switch()
-        capture_session_transition_isolation()
-        if os.environ.get("RUNNER_OS") != "Linux":
+            capture_session_transition_isolation()
             capture_resume_1000_sessions()
         return
     if os.environ.get("PI_E2E_ABORT_ONLY") == "1":

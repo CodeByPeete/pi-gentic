@@ -1,6 +1,4 @@
 import { AGENT_CYCLE_SHORTCUT } from "../agents/activation.js";
-import { buildManualSkillMessage } from "../agents/prompts.js";
-import { findAvailableSkill } from "../agents/skills.js";
 import type { Orchestrator } from "../delegation/send.js";
 import type { PiApi, PiContext } from "../pi/types.js";
 import { loadPiSettings } from "../settings.js";
@@ -293,7 +291,7 @@ export function installTerminalCommands(
         return;
       }
 
-      await invokeSkillCommand(pi, parsed.name, parsed.message, ctx);
+      await invokeSkillCommand(pi, orchestrator, parsed.name, parsed.message, ctx);
     },
   });
 
@@ -354,19 +352,29 @@ export function installTerminalCommands(
   });
 }
 
-async function invokeSkillCommand(pi: PiApi, skillName: string, message: string, ctx: PiContext) {
+async function invokeSkillCommand(
+  pi: PiApi,
+  orchestrator: Orchestrator,
+  skillName: string,
+  message: string,
+  ctx: PiContext,
+) {
   if (!skillCommandsEnabled(ctx)) {
     ctx.ui.notify?.("Pi skill commands are disabled by settings.", "warning");
     return;
   }
-  const skill = findAvailableSkill(skillName, { cwd: ctx.cwd });
+  const nativeSkillName = orchestrator
+    .applyPolicySnapshot(ctx)
+    .policy.resources.skills.find((name) => name.toLowerCase() === skillName.toLowerCase());
 
-  if (!skill) {
-    ctx.ui.notify?.(`Unknown Pi skill "${skillName}".`, "warning");
+  if (!nativeSkillName) {
+    ctx.ui.notify?.(`Unavailable Pi skill "${skillName}".`, "warning");
     return;
   }
 
-  await pi.sendUserMessage(buildManualSkillMessage(skill, message));
+  await pi.sendUserMessage(`/skill:${nativeSkillName}${message ? ` ${message}` : ""}`, {
+    expandPromptTemplates: true,
+  });
 }
 
 function skillCommandsEnabled(ctx: PiContext) {

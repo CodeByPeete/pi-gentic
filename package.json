@@ -51,6 +51,7 @@
     "test:coverage:effect": "vitest run --coverage",
     "test:ui": "npm run build && node test-ui/capture-ui.mjs",
     "test:e2e": "npm run build && python test-e2e/capture-terminal-ui.py --deterministic",
+    "test:e2e:skills": "npm run build && python test-e2e/capture-terminal-ui.py --skills",
     "test:e2e:live": "npm run build && python test-e2e/capture-terminal-ui.py",
     "prepare": "sh ./scripts/prepare-effect.sh",
     "prepack": "npm run build",

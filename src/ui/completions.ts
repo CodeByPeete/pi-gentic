@@ -81,7 +81,7 @@ export function completeSkill(prefix: string, options: CompletionOptions = {}) {
   const suggestionContext = typeof options === "object" ? options : {};
   const token = prefix.split(/\s/).at(-1) ?? "";
   const replaceToken = (value: string) => `${prefix.slice(0, prefix.length - token.length)}${value}`;
-  const skills = suggestionContext.skills?.length
+  const skills = Array.isArray(suggestionContext.skills)
     ? suggestionContext.skills
     : loadAvailableSkills({ cwd }).map((skill) => skill.name);
   const query = token.toLowerCase();
@@ -345,7 +345,13 @@ type CompletionSnapshot = {
   systemPromptFiles: string[];
 };
 
-export function createCompletionContext(pi: PiApi, onCapture?: (snapshot: UnknownRecord, ctx?: PiContext) => void) {
+export function createCompletionContext(
+  pi: PiApi,
+  options: {
+    onCapture?: (snapshot: UnknownRecord, ctx?: PiContext) => void;
+    resolveSkills?: (ctx: PiContext) => string[];
+  } = {},
+) {
   let snapshot: CompletionSnapshot = {
     cwd: process.cwd(),
     agents: [],
@@ -372,14 +378,16 @@ export function createCompletionContext(pi: PiApi, onCapture?: (snapshot: Unknow
         agents: config.agents,
         models: scopedModelSuggestions(ctx),
         tools: safeToolNames(pi),
-        skills: (nativeSkills.length > 0 ? nativeSkills : loadAvailableSkills({ cwd, projectTrusted })).map(
-          (skill) => skill.name,
-        ),
+        skills:
+          options.resolveSkills?.(ctx) ??
+          (nativeSkills.length > 0 ? nativeSkills : loadAvailableSkills({ cwd, projectTrusted })).map(
+            (skill) => skill.name,
+          ),
         commands: safeCommands(pi),
         themes: themeSuggestions(config),
         systemPromptFiles: systemPromptFileSuggestions(config),
       };
-      onCapture?.(snapshot, ctx);
+      options.onCapture?.(snapshot, ctx);
 
       return snapshot;
     },

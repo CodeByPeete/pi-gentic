@@ -63,12 +63,6 @@ export function loadAvailableSkills(options: UnknownRecord = {}) {
   return loaded.skills.flatMap((skill) => loadSkillEntry(skill, diagnostics));
 }
 
-export function findAvailableSkill(name: unknown, options: UnknownRecord = {}) {
-  const query = String(name ?? "").toLowerCase();
-
-  return loadAvailableSkills(options).find((skill) => String(skill.name).toLowerCase() === query);
-}
-
 export function systemPromptSkillEntries(ctx: PiContext) {
   const skills = ctx.getSystemPromptOptions?.()?.skills;
 

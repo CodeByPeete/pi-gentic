@@ -1,6 +1,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
 import { Exit, Schema } from "effect";
-import { resolveModelFromCatalog } from "../pi/sessions.js";
+import { applySessionSkillPolicy, nativeSessionSkillNames } from "../pi/skill-policy.js";
+import { resolveModelFromCatalog, sessionForContext } from "../pi/sessions.js";
 import type { PiApi, PiContext, PiSessionManager } from "../pi/types.js";
 import { loadConfiguration, type AgentDefinition } from "../settings.js";
 import { isStaleExtensionContextError, recoverDiagnostic } from "../shared/diagnostics.js";
@@ -229,7 +230,7 @@ export function createAgentOperations(
     if (isThinkingLevel(resolvedPolicy.thinking)) pi.setThinkingLevel(resolvedPolicy.thinking);
 
     if (resolvedPolicy.theme && ctx.mode === "tui") ctx.ui.setTheme(resolvedPolicy.theme);
-    const policy = reconcileVisibleToolPolicy(ctx, resolvedPolicy);
+    const policy = reconcileVisiblePolicy(ctx, resolvedPolicy);
     setTitle(ctx, options.running === true);
     setAgentWidget(ctx);
 
@@ -238,7 +239,7 @@ export function createAgentOperations(
 
   function applyCurrentToolPolicy(ctx: PiContext, resources: { skills?: string[] } = {}) {
     const { config, policy: resolvedPolicy, activeAgent } = resolveCurrentPolicy(ctx, resources);
-    const policy = reconcileVisibleToolPolicy(ctx, resolvedPolicy);
+    const policy = reconcileVisiblePolicy(ctx, resolvedPolicy);
 
     return { config, policy, activeAgent };
   }
@@ -252,13 +253,16 @@ export function createAgentOperations(
     return { config, policy, activeAgent };
   }
 
-  function reconcileVisibleToolPolicy(ctx: PiContext, policy: SessionPolicy) {
+  function reconcileVisiblePolicy(ctx: PiContext, policy: SessionPolicy) {
+    const session = sessionForContext(ctx);
+    const skillsChanged = session ? applySessionSkillPolicy(session, policy.skillFilters) : false;
     const tools = reconcileSessionTools(
       ctx.sessionManager,
       pi.getAllTools().map((tool) => tool.name),
       pi.getActiveTools(),
       policy.toolFilters,
       (selection) => pi.setActiveTools(selection),
+      { rebuildPrompt: skillsChanged },
     );
     const effectivePolicy = { ...policy, resources: { ...policy.resources, tools } };
 
@@ -273,6 +277,7 @@ export function createAgentOperations(
     observedToolNames: ReadonlyArray<string>,
     filters: ReadonlyArray<string> | undefined,
     apply: (selection: Array<string>) => void,
+    options: { rebuildPrompt?: boolean } = {},
   ) {
     const reconciliation = reconcileActiveToolSelection({
       registeredToolNames,
@@ -281,7 +286,7 @@ export function createAgentOperations(
       previousState: toolPolicyStates.get(sessionManager),
     });
 
-    if (reconciliation.changed) apply(reconciliation.selection);
+    if (reconciliation.changed || options.rebuildPrompt === true) apply(reconciliation.selection);
     toolPolicyStates.set(sessionManager, reconciliation.state);
 
     return reconciliation.selection;
@@ -439,6 +444,9 @@ function currentSkillNames(ctx: PiContext) {
 }
 
 function availableSkillNames(ctx: PiContext) {
+  const session = sessionForContext(ctx);
+
+  if (session) return nativeSessionSkillNames(session);
   const skills = [
     ...systemPromptSkillEntries(ctx),
     ...loadAvailableSkills({

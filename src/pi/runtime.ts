@@ -20,7 +20,7 @@ class HostCapabilityUnavailable extends Schema.TaggedErrorClass<HostCapabilityUn
 
 export type PiCodingAgentPeer = {
   diagnostics?: string[];
-  AgentSession: { prototype: HostRecord };
+  AgentSession: Function & { prototype: PiAgentSession };
   theme?: PiTheme;
   AgentSessionRuntime: { prototype: HostRecord };
   InteractiveMode: { prototype: HostRecord };
@@ -41,6 +41,7 @@ export type LiveRuntimeState = {
   runtimeSessions: Map<string, PiRuntimeSession>;
   sessionTransitions: WeakMap<object, SessionTransition>;
   transitionDispatches: WeakMap<object, SessionTransition>;
+  hostSessions: WeakMap<object, PiAgentSession>;
   hostMethods: Map<string, Function>;
   hostDiagnostics: string[];
   activeContext?: PiContext;
@@ -58,6 +59,7 @@ export function getLiveRuntimeState(): LiveRuntimeState {
     runtimeSessions: new Map(),
     sessionTransitions: new WeakMap(),
     transitionDispatches: new WeakMap(),
+    hostSessions: new WeakMap(),
     hostMethods: new Map(),
     hostDiagnostics: [],
   }) as LiveRuntimeState;
@@ -65,6 +67,7 @@ export function getLiveRuntimeState(): LiveRuntimeState {
   state.runtimeSessions ??= new Map();
   state.sessionTransitions ??= new WeakMap();
   state.transitionDispatches ??= new WeakMap();
+  state.hostSessions ??= new WeakMap();
   state.hostMethods ??= new Map();
   state.hostDiagnostics ??= [];
   return state;
@@ -138,6 +141,7 @@ export function assertPiHostCapabilities(peer: PiCodingAgentPeer) {
     [peer.AgentSessionRuntime?.prototype, "newSession", "AgentSessionRuntime"],
     [peer.AgentSessionRuntime?.prototype, "fork", "AgentSessionRuntime"],
     [peer.AgentSessionRuntime?.prototype, "importFromJsonl", "AgentSessionRuntime"],
+    [peer.AgentSession?.prototype, "bindExtensions", "AgentSession"],
     [peer.AgentSession?.prototype, "abort", "AgentSession"],
     [peer.AgentSession?.prototype, "prompt", "AgentSession"],
     [peer.AgentSession?.prototype, "dispose", "AgentSession"],

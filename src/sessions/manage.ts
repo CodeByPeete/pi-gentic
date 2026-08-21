@@ -9,6 +9,7 @@ import {
 } from "../agents/activation.js";
 import { abortActor } from "../delegation/delivery.js";
 import { sessionStatus } from "../delegation/activity.js";
+import { applySessionSkillPolicy, nativeSessionSkillNames } from "../pi/skill-policy.js";
 import {
   applyInheritedModel,
   createLiveRuntime,
@@ -20,7 +21,7 @@ import {
 import type { PiAgentRuntimeHost, PiAgentSession, PiContext, PiRuntimeSession, PiSessionManager } from "../pi/types.js";
 import { loadConfiguration } from "../settings.js";
 import type { UnknownRecord } from "../shared/values.js";
-import { isRecord, nonNegativeInteger as parseIntegerRadius, shortSessionId } from "../shared/values.js";
+import { isRecord, nonNegativeInteger as parseIntegerRadius, shortSessionId, stringValue } from "../shared/values.js";
 import { resolveSessionPolicy } from "./policy.js";
 import {
   assertSessionMessagingScope,
@@ -84,6 +85,8 @@ export function branchForkBeforeDelegation(
 function registerRuntimeHost(runtimeHost: PiAgentRuntimeHost, metadata: UnknownRecord = {}) {
   const session = runtimeHost.session;
   const sessionManager = session.sessionManager;
+  const parentSessionPath =
+    stringValue(metadata.parentSessionPath) ?? stringValue(sessionManager.getHeader?.()?.parentSession);
   const runtime: PiRuntimeSession = {
     runtimeHost,
     session,
@@ -91,6 +94,7 @@ function registerRuntimeHost(runtimeHost: PiAgentRuntimeHost, metadata: UnknownR
     lastMessage: "",
     createdAt: new Date().toISOString(),
     ...metadata,
+    parentSessionPath,
   };
   setRuntimeSession(sessionManager.getSessionId(), runtime);
   return runtime;
@@ -261,12 +265,14 @@ export function createSessionOperations(agents: AgentOperations) {
     }
 
     if (isThinkingLevel(resolvedPolicy.thinking)) session.setThinkingLevel(resolvedPolicy.thinking);
+    const skillsChanged = applySessionSkillPolicy(session, resolvedPolicy.skillFilters);
     const tools = reconcileSessionTools(
       session.sessionManager,
       session.getAllTools().map((tool) => tool.name),
       session.getActiveToolNames(),
       resolvedPolicy.toolFilters,
       (selection) => session.setActiveToolsByName(selection),
+      { rebuildPrompt: skillsChanged },
     );
 
     return { ...resolvedPolicy, resources: { ...resolvedPolicy.resources, tools } };
@@ -293,7 +299,7 @@ export function createSessionOperations(agents: AgentOperations) {
       overrides: state.overrides,
       allAgents: config.agents.map((agent) => agent.name),
       allTools: session.getAllTools().map((tool) => tool.name),
-      allSkills: session.resourceLoader.getSkills().skills.map((skill) => skill.name),
+      allSkills: nativeSessionSkillNames(session),
     });
   }
 

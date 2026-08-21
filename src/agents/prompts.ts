@@ -3,22 +3,6 @@ import path from "node:path";
 import type { UnknownRecord } from "../shared/values.js";
 import { errorMessage as getErrorMessage, isRecord } from "../shared/values.js";
 
-export function buildManualSkillMessage(skill: UnknownRecord, message = "") {
-  const allowedTools = Array.isArray(skill.allowedTools)
-    ? skill.allowedTools.filter((tool) => typeof tool === "string")
-    : [];
-  return [
-    `Use the Pi skill "${skill.name}" for this request.`,
-    skill.description ? `Description: ${skill.description}` : "",
-    skill.location ? `Location: ${skill.location}` : "",
-    allowedTools.length ? `Allowed tools: ${allowedTools.join(", ")}` : "",
-    skill.instructions ? `<skill_instructions>\n${skill.instructions}\n</skill_instructions>` : "",
-    message ? `Request:\n${message}` : "Proceed with this skill.",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-}
-
 export function buildResolvedSystemPrompt({
   baseSystemPrompt,
   config,

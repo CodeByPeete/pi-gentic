@@ -31,7 +31,12 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   const writeSettings = (settings = {}) =>
     writeFileSync(
       path.join(configRoot, "settings.json"),
-      JSON.stringify({ defaultAgent: "fixture-reviewer", sessionMessagingScope: "all", ...settings }),
+      JSON.stringify({
+        defaultAgent: "fixture-reviewer",
+        sessionMessagingScope: "all",
+        agentDefaults: { skills: ["!blocked-skill"] },
+        ...settings,
+      }),
     );
   mkdirSync(path.join(configRoot, "agents"), { recursive: true });
   writeSettings();
@@ -46,6 +51,12 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
     path.join(skillRoot, "SKILL.md"),
     "---\nname: fixture-skill\ndescription: Deterministic skill fixture.\n---\nFollow the request.",
   );
+  const blockedSkillRoot = path.join(cwd, ".agents", "skills", "blocked-skill");
+  mkdirSync(blockedSkillRoot, { recursive: true });
+  writeFileSync(
+    path.join(blockedSkillRoot, "SKILL.md"),
+    "---\nname: blocked-skill\ndescription: Excluded skill fixture.\n---\nDo not expose this skill.",
+  );
   const events = new Map();
   const commands = new Map();
   const renderers = new Map();
@@ -56,6 +67,7 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   const activeToolWrites = [];
   const notifications = [];
   const messages = [];
+  const userMessages = [];
   const activeEntries = [];
   let activeLeafId;
   const pi = {
@@ -79,7 +91,10 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
       } else tools[existing] = tool;
     },
     sendMessage: (message) => messages.push(message),
-    sendUserMessage: async (message) => messages.push(message),
+    sendUserMessage: async (content, options) => {
+      messages.push(content);
+      userMessages.push({ content, options });
+    },
     setActiveTools: (selection) => {
       activeTools = selection;
       activeToolWrites.push(selection);
@@ -126,6 +141,10 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   assert.equal(tools[0].name, "agents");
 
   for (const handler of events.get("session_start") ?? []) await handler({ reason: "startup" }, ctx);
+  assert.deepEqual(commands.get("skill").getArgumentCompletions("blocked"), []);
+  assert.deepEqual(commands.get("skill").getArgumentCompletions("fixture"), [
+    { value: "fixture-skill", label: "fixture-skill" },
+  ]);
   assert.throws(
     () =>
       validateToolCall([tools[0]], {
@@ -237,11 +256,20 @@ test("extension boundary registers and runs native Pi interfaces", async (t) => 
   await commands.get("agent").handler("", ctx);
   await commands.get("agent").handler(`clear --session ${targetSessionId}`, ctx);
   await commands.get("agent").handler(`fixture-reviewer --session ${targetSessionId}`, ctx);
-  await commands.get("agent").handler("clear", ctx);
-  await commands.get("agent").handler("missing-agent", ctx);
+  await commands.get("agent").handler("fixture-reviewer", ctx);
   await commands.get("skill").handler("", ctx);
   await commands.get("skill").handler("missing-skill request", ctx);
-  await commands.get("skill").handler("fixture-skill request", ctx);
+  const messagesBeforeBlockedSkill = messages.length;
+  await commands.get("skill").handler("blocked-skill request", ctx);
+  assert.equal(messages.length, messagesBeforeBlockedSkill);
+  await commands.get("skill").handler("FIXTURE-SKILL request", ctx);
+  assert.equal(messages.length, messagesBeforeBlockedSkill + 1);
+  assert.deepEqual(userMessages.at(-1), {
+    content: "/skill:fixture-skill request",
+    options: { expandPromptTemplates: true },
+  });
+  await commands.get("agent").handler("clear", ctx);
+  await commands.get("agent").handler("missing-agent", ctx);
   writeFileSync(path.join(cwd, ".pi", "settings.json"), JSON.stringify({ enableSkillCommands: false }));
   await commands.get("skill").handler("fixture-reviewer request", ctx);
   await commands.get("send").handler("", ctx);

@@ -32,10 +32,11 @@ import {
 import { createOrchestrator } from "../../dist/delegation/send.js";
 import { branchForkBeforeDelegation } from "../../dist/sessions/manage.js";
 import { assertAvailableAgent, filterAvailableAgents } from "../../dist/agents/activation.js";
+import { buildSessionTree, currentSessionSummary } from "../../dist/sessions/catalog.js";
 import { resolveSessionPolicy } from "../../dist/sessions/policy.js";
 import { prepareWorktree } from "../support/worktree.js";
 import { registerAgentCall } from "../../dist/delegation/runs.js";
-import { deleteRuntimeSession, setRuntimeSession } from "../../dist/pi/sessions.js";
+import { deleteRuntimeSession, persistSessionImmediately, setRuntimeSession } from "../../dist/pi/sessions.js";
 import { loadPiCodingAgentPeer } from "../../dist/pi/runtime.js";
 import { createExtensionRuntime } from "../../dist/extension-runtime.js";
 import { getLiveCardDetails } from "../../dist/ui/cards.js";
@@ -935,6 +936,99 @@ test("prompt append ignores stale extension contexts during session replacement"
   assert.equal(orchestrator.buildPromptAppend(ctx, { systemPrompt: "Base prompt" }), undefined);
 });
 
+test("session skill policy controls native prompt and slash-command capabilities", async (t) => {
+  t.after(() => deleteRuntimeSession("skill-policy-session"));
+  const catalog = [
+    {
+      name: "report",
+      description: "Writes reports.",
+      filePath: "C:/skills/report/SKILL.md",
+      disableModelInvocation: false,
+    },
+    {
+      name: "unslop",
+      description: "Edits prose.",
+      filePath: "C:/skills/unslop/SKILL.md",
+      disableModelInvocation: false,
+    },
+  ];
+  const nativeResourceLoader = {
+    getSkills: () => ({ skills: catalog, diagnostics: [] }),
+  };
+  const entries = [];
+  const session = {
+    _resourceLoader: nativeResourceLoader,
+    get resourceLoader() {
+      return this._resourceLoader;
+    },
+    getAllTools: () => [{ name: "read" }],
+    getActiveToolNames: () => ["read"],
+    modelRuntime: { getAvailable: () => [] },
+    sessionManager: {
+      appendCustomEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+      getEntries: () => entries,
+      getSessionId: () => "skill-policy-session",
+    },
+    setActiveToolsByName() {
+      this.systemPrompt = this.resourceLoader
+        .getSkills()
+        .skills.map((skill) => `<name>${skill.name}</name>`)
+        .join("\n");
+    },
+    setModel: async () => {},
+    setThinkingLevel: () => {},
+    createReplacedSessionContext() {
+      return {
+        getCommands: () =>
+          this.resourceLoader.getSkills().skills.map((skill) => ({
+            name: `skill:${skill.name}`,
+            source: "skill",
+          })),
+      };
+    },
+  };
+  const orchestrator = createOrchestrator({ getAllTools: () => [] }, effectRuntime);
+  const config = {
+    roots: [],
+    settings: {
+      agentDefaults: { skills: ["!report"] },
+      agentlessSession: { skills: ["!report"] },
+    },
+    agents: [
+      {
+        name: "writer",
+        description: "Writes text.",
+        skills: ["+report"],
+      },
+    ],
+  };
+
+  await orchestrator.applyPolicyToAgentSession(session, config);
+
+  assert.deepEqual(
+    session.resourceLoader.getSkills().skills.map((skill) => skill.name),
+    ["unslop"],
+  );
+  assert.doesNotMatch(session.systemPrompt, /<name>report<\/name>/);
+  assert.match(session.systemPrompt, /<name>unslop<\/name>/);
+  assert.equal(resolveTargetSlashCommand("/skill:report write it", session), undefined);
+  assert.equal(resolveTargetSlashCommand("/skill:unslop edit it", session)?.source, "skill");
+
+  await orchestrator.loadAgentIntoSession(session, "writer", undefined, config);
+
+  assert.deepEqual(
+    session.resourceLoader.getSkills().skills.map((skill) => skill.name),
+    ["report", "unslop"],
+  );
+  assert.match(session.systemPrompt, /<name>report<\/name>/);
+  assert.equal(resolveTargetSlashCommand("/skill:report write it", session)?.source, "skill");
+
+  await orchestrator.applySessionOverrides(session, { skills: [] }, config);
+
+  assert.deepEqual(session.resourceLoader.getSkills().skills, []);
+  assert.equal(resolveTargetSlashCommand("/skill:unslop edit it", session), undefined);
+});
+
 test("visible tool policy runs before prompts and after model changes", async () => {
   let activeTools = ["exec_command", "agents"];
   const toolWrites = [];
@@ -1272,6 +1366,70 @@ test("orchestrator creates native child and fork session runtimes", async () => 
   }
 });
 
+test("reopened child sessions retain tree identity after their live runtime disappears", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "pi-gentic-reopened-child-"));
+  const peer = await loadPiCodingAgentPeer();
+  const originals = {
+    createAgentSessionServices: peer.createAgentSessionServices,
+    createAgentSessionFromServices: peer.createAgentSessionFromServices,
+    createAgentSessionRuntime: peer.createAgentSessionRuntime,
+  };
+  const parentManager = peer.SessionManager.create(root, root);
+  parentManager.appendSessionInfo("Parent session");
+  const parentPath = parentManager.getSessionFile();
+  const childManager = peer.SessionManager.create(root, root, { parentSession: parentPath });
+  childManager.appendSessionInfo("Child session");
+  const unrelatedManager = peer.SessionManager.create(root, root);
+  unrelatedManager.appendSessionInfo("Unrelated session");
+  for (const manager of [parentManager, childManager, unrelatedManager]) persistSessionImmediately(manager);
+  const childId = childManager.getSessionId();
+  const unrelatedId = unrelatedManager.getSessionId();
+  const sessionFromManager = (sessionManager) => ({
+    isStreaming: false,
+    sessionManager,
+  });
+
+  peer.createAgentSessionServices = async () => ({ diagnostics: [] });
+  peer.createAgentSessionFromServices = async ({ sessionManager }) => ({
+    session: sessionFromManager(sessionManager),
+  });
+  peer.createAgentSessionRuntime = async (createRuntime, options) => createRuntime(options);
+  setRuntimeSession(childId, {
+    session: sessionFromManager(childManager),
+    parentSessionId: parentManager.getSessionId(),
+    parentSessionPath: parentPath,
+  });
+  deleteRuntimeSession(childId);
+  const orchestrator = createOrchestrator({ getAllTools: () => [] }, effectRuntime);
+  const ctx = {
+    cwd: root,
+    sessionManager: parentManager,
+  };
+  const config = { settings: { sessionMessagingScope: "tree" } };
+
+  try {
+    const reopened = await orchestrator.getOrOpenSession(ctx, childId);
+    const persisted = await peer.SessionManager.list(root, root);
+    const tree = buildSessionTree(currentSessionSummary(ctx), persisted, [reopened]);
+    const reopenedSummary = tree.find((session) => session.sessionId === childId);
+
+    assert.equal(reopened.parentSessionPath, parentPath);
+    assert.equal(reopenedSummary?.depth, 1);
+    await assert.doesNotReject(() => orchestrator.assertCanMessageSession(ctx, reopened, config));
+    await assert.rejects(
+      () => orchestrator.assertCanMessageSession(ctx, { session: sessionFromManager(unrelatedManager) }, config),
+      /different session tree/i,
+    );
+  } finally {
+    deleteRuntimeSession(childId);
+    deleteRuntimeSession(unrelatedId);
+    peer.createAgentSessionServices = originals.createAgentSessionServices;
+    peer.createAgentSessionFromServices = originals.createAgentSessionFromServices;
+    peer.createAgentSessionRuntime = originals.createAgentSessionRuntime;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("orchestrator invokes registered caller runtimes with structured returns", async () => {
   const sessionId = "019fffff-1111-7111-8111-111111111111";
   const sent = [];
@@ -1389,7 +1547,10 @@ test("orchestrator applies runtime policy and discovers the current session", as
     getAllTools: () => [{ name: "read" }],
     getActiveToolNames: () => [],
     modelRuntime: { getAvailable: () => [model] },
-    resourceLoader: { getSkills: () => ({ skills: [{ name: "debug" }] }) },
+    _resourceLoader: { getSkills: () => ({ skills: [{ name: "debug" }] }) },
+    get resourceLoader() {
+      return this._resourceLoader;
+    },
     sessionManager: { getEntries: () => [] },
     setActiveToolsByName: (tools) => calls.push(["tools", tools]),
     setModel: async (selected) => calls.push(["model", selected]),
@@ -1399,7 +1560,8 @@ test("orchestrator applies runtime policy and discovers the current session", as
     model: "gpt-test",
     thinking: "high",
     toolFilters: ["read"],
-    resources: { tools: ["read"], agents: [], skills: [] },
+    skillFilters: ["*"],
+    resources: { tools: ["read"], agents: [], skills: ["debug"] },
   });
 
   await orchestrator.applyPolicyToAgentSession(session, {});
@@ -2164,7 +2326,10 @@ test("named child sessions activate with the current Pi model runtime", async ()
       getModels: () => [selectedModel],
       getAvailableSnapshot: () => [selectedModel],
     },
-    resourceLoader: { getSkills: () => ({ skills: [] }) },
+    _resourceLoader: { getSkills: () => ({ skills: [] }) },
+    get resourceLoader() {
+      return this._resourceLoader;
+    },
     sessionManager: {
       appendCustomEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
       getEntries: () => entries,

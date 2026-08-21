@@ -17,6 +17,7 @@ import { callHostMethod, captureHostMethod, type LiveRuntimeState } from "./runt
 const NATIVE_INTERACTIVE_SUBMIT = Symbol.for("pi-gentic.native-interactive-submit");
 
 export function installSessionLifecycle(state: LiveRuntimeState, peer: PiCodingAgentPeer) {
+  installSessionBinding(state, peer);
   installSessionAbort(state, peer);
   installSessionPrompt(state, peer);
   installSessionDispose(state, peer);
@@ -27,6 +28,16 @@ export function installInteractiveInput(state: LiveRuntimeState, peer: PiCodingA
   installInteractiveSubmit(state, peer);
   installInteractiveFollowUp(state, peer);
   installInteractiveLiveSessionHydration(state, peer);
+}
+
+function installSessionBinding(state: LiveRuntimeState, { AgentSession }: Pick<PiCodingAgentPeer, "AgentSession">) {
+  if (!captureHostMethod(state, "session.bindExtensions", AgentSession.prototype.bindExtensions)) return;
+
+  AgentSession.prototype.bindExtensions = async function bindExtensionsWithSessionTracking(...args: unknown[]) {
+    state.hostSessions.set(this.sessionManager, this);
+
+    return callHostMethod(state, "session.bindExtensions", this, args);
+  };
 }
 
 function installSessionAbort(state: LiveRuntimeState, { AgentSession }: Pick<PiCodingAgentPeer, "AgentSession">) {
@@ -61,6 +72,7 @@ function installSessionDispose(state: LiveRuntimeState, { AgentSession }: Pick<P
     try {
       return callHostMethod(state, "session.dispose", this, args);
     } finally {
+      state.hostSessions.delete(this.sessionManager);
       if (typeof sessionId === "string" && sessionId) {
         unregisterLiveRuntime(sessionId);
         deleteRuntimeSession(sessionId);

@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { buildManualSkillMessage } from "../../dist/agents/prompts.js";
 import { parseSkillCommand } from "../../dist/ui/commands.js";
 import { completeSkill } from "../../dist/ui/completions.js";
 import { assertCanCreateSubagent } from "../../dist/agents/activation.js";
@@ -430,27 +429,14 @@ test("skill validation reports invalid definitions and duplicate names", () => {
   }
 });
 
-test("skill command parsing, completions, and manual prompt formatting", () => {
+test("skill command parsing and completions", () => {
   assert.deepEqual(parseSkillCommand('tdd "write tests"'), {
     name: "tdd",
     message: "write tests",
   });
 
   assert.deepEqual(completeSkill("td", { skills: ["tdd", "review"] }), [{ value: "tdd", label: "tdd" }]);
-
-  assert.match(
-    buildManualSkillMessage(
-      {
-        name: "tdd",
-        description: "Test-first",
-        location: "/skills/tdd/SKILL.md",
-        allowedTools: ["read"],
-        instructions: "Write a failing test first.",
-      },
-      "add coverage",
-    ),
-    /<skill_instructions>\nWrite a failing test first\.\n<\/skill_instructions>[\s\S]*Request:\nadd coverage/,
-  );
+  assert.deepEqual(completeSkill("", { skills: [] }), []);
 });
 
 test("noSkills suppresses discovery but keeps explicit settings skills", () => {

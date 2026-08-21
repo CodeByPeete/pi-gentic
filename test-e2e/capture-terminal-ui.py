@@ -1185,6 +1185,44 @@ def capture_lag_session():
         stop(proc)
 
 
+def capture_agent_skill_policy(proc):
+    proc.write("/agent researcher\r")
+    wait_for("researcher loaded", lambda text: "Loaded researcher" in text, timeout=20)
+    proc.write("\x0f")
+    wait_for(
+        "expanded researcher skill policy",
+        lambda text: "Skill: html" in text
+        and "Skill: playwright-cli" in text
+        and "Skill: report" in text
+        and "Skill: clean" not in text
+        and "Available agents" in text
+        and "</pi-gentic-context>" in text
+        and "<available_skills" not in text,
+        timeout=20,
+    )
+    researcher_card = render_png("loaded-agent-skills-terminal.png")
+    proc.write("\x0f")
+    wait_for("researcher prompt collapse", lambda text: "Tool output: collapsed" in text, timeout=20)
+
+    proc.write("/agent clear\r")
+    wait_for("agent cleared", lambda text: "Cleared active agent" in text, timeout=20)
+    proc.write("\x0f")
+    wait_for(
+        "expanded agentless skill policy",
+        lambda text: "Skill: update-pi" in text
+        and "Available agents" in text
+        and "</pi-gentic-context>" in text
+        and "<active-agent" not in text
+        and "<available_skills" not in text,
+        timeout=20,
+    )
+    clear_card = render_png("agentless-clear-configuration-terminal.png")
+    proc.write("\x0f")
+    wait_for("agentless prompt collapse", lambda text: "Tool output: collapsed" in text, timeout=20)
+
+    return researcher_card, clear_card
+
+
 def main():
     global stop_reader, screen, stream
     if os.environ.get("PI_E2E_LAG_ONLY") == "1":
@@ -1212,49 +1250,22 @@ def main():
     if os.environ.get("PI_E2E_REFRESH_ONLY") == "1":
         capture_scroll_safe_live_panel()
         return
+    if "--skills" in sys.argv:
+        reset_output(clear_artifacts=False)
+        proc = spawn()
+        try:
+            for screenshot in capture_agent_skill_policy(proc):
+                print(screenshot)
+        finally:
+            stop_reader = True
+            stop(proc)
+        return
     reset_output()
     proc = spawn()
     try:
+        researcher_card, clear_prompt = capture_agent_skill_policy(proc)
         proc.write("/agent researcher\r")
-        wait_for("researcher loaded", lambda text: "Loaded researcher" in text and "skills:" in text and "playwright-cli" in text, timeout=20)
-        researcher_card = render_png("loaded-agent-skills-terminal.png")
-        proc.write("\x0f")
-        wait_for(
-            "expanded researcher prompt resources",
-            lambda text: "Available agents" in text
-            and "</pi-gentic-context>" in text
-            and "<available_skills" not in text,
-            timeout=20,
-        )
-        researcher_prompt = render_png("expanded-agent-resolved-prompt-terminal.png")
-        proc.write("\x0f")
-        wait_for(
-            "researcher prompt collapse",
-            lambda text: "Ctrl+O to expand" in text,
-            timeout=20,
-        )
-
-        proc.write("/agent clear\r")
-        wait_for(
-            "agent cleared",
-            lambda text: "Cleared active agent" in text,
-            timeout=20,
-        )
-        proc.write("\x0f")
-        wait_for(
-            "expanded agentless configuration",
-            lambda text: "Available agents" in text
-            and "</pi-gentic-context>" in text
-            and "<active-agent" not in text
-            and "<available_skills" not in text,
-            timeout=20,
-        )
-        clear_prompt = render_png("agentless-clear-configuration-terminal.png")
-        proc.write("\x0f")
-        time.sleep(0.4)
-
-        proc.write("/agent researcher\r")
-        wait_for("researcher reloaded", lambda text: "researcher" in text, timeout=20)
+        wait_for("researcher reloaded", lambda text: "Loaded researcher" in text, timeout=20)
 
         proc.write("/send hello --agent missing --no-invoke\r")
         wait_for("invalid agent error card", lambda text: "Agent call failed." in text and 'Unknown agent "missing"' in text, timeout=30)
@@ -1434,7 +1445,7 @@ def main():
         new_default_agent_path = render_png("new-session-default-agent-terminal.png")
 
         RAW_LOG.write_text("".join(raw_chunks), encoding="utf-8", errors="replace")
-        paths = [researcher_card, researcher_prompt, clear_prompt, invalid_agent_error, no_invoke, existing_session_activity, OUTPUT / "model-inheritance-check.txt", reviewer_card, tree_message, persisted_card_state, restored_card, restart_tree, lag_regression_path, lag_tree_path, LAG_TIMING, timer_check, autonomous_timer_card, active_tree_refresh, running_child_returned, inactive_tree_refresh, switched_tree_refresh, startup_default_agent_path, cycle_clear_path, new_default_agent_path, RAW_LOG]
+        paths = [researcher_card, clear_prompt, invalid_agent_error, no_invoke, existing_session_activity, OUTPUT / "model-inheritance-check.txt", reviewer_card, tree_message, persisted_card_state, restored_card, restart_tree, lag_regression_path, lag_tree_path, LAG_TIMING, timer_check, autonomous_timer_card, active_tree_refresh, running_child_returned, inactive_tree_refresh, switched_tree_refresh, startup_default_agent_path, cycle_clear_path, new_default_agent_path, RAW_LOG]
         for path in filter(None, paths):
             print(path)
     finally:

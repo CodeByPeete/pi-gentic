@@ -13,6 +13,7 @@ import {
   getRuntimeSession,
   setActiveVisibleExtension,
   setRuntimeSession,
+  sessionForContext,
 } from "../../dist/pi/sessions.js";
 import { getLiveRuntimeState, loadPiCodingAgentPeer } from "../../dist/pi/runtime.js";
 import { shouldPromptVisibleSessionNow, trackSessionPrompt } from "../../dist/pi/input.js";
@@ -133,6 +134,24 @@ test("the Pi host switches to and cancels native runtime replacements", async ()
     hostMethodSlot(state, "session.prompt").value = originalPrompt;
   } finally {
     state.liveRuntimes.delete("target-live");
+  }
+});
+
+test("native extension binding associates a Pi context with its session", async () => {
+  await installPiHost();
+  const peer = await loadPiCodingAgentPeer();
+  const state = getLiveRuntimeState();
+  const nativeBinding = hostMethodSlot(state, "session.bindExtensions").value;
+  const sessionManager = { getSessionId: () => "bound-session" };
+  const session = Object.assign(Object.create(peer.AgentSession.prototype), { sessionManager });
+
+  hostMethodSlot(state, "session.bindExtensions").value = async () => "bound";
+  try {
+    assert.equal(await peer.AgentSession.prototype.bindExtensions.call(session, {}), "bound");
+    assert.equal(sessionForContext({ sessionManager }), session);
+  } finally {
+    state.hostSessions.delete(sessionManager);
+    hostMethodSlot(state, "session.bindExtensions").value = nativeBinding;
   }
 });
 

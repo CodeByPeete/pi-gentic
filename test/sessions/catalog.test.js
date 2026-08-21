@@ -36,6 +36,31 @@ test("session depth is defined only by a complete rooted lineage", () => {
   assert.throws(() => resolveRootedSessionDepth(undefined, []), /complete session lineage/i);
 });
 
+test("runtime summaries cannot erase persisted parent identity", () => {
+  const parent = {
+    id: "019e0001-1111-7111-8111-111111111111",
+    path: "/sessions/parent.jsonl",
+  };
+  const child = {
+    id: "019e0002-2222-7222-8222-222222222222",
+    path: "/sessions/child.jsonl",
+    parentSessionPath: parent.path,
+  };
+  const runtime = {
+    session: {
+      sessionManager: {
+        getSessionFile: () => child.path,
+        getSessionId: () => child.id,
+      },
+    },
+    parentSessionPath: undefined,
+  };
+  const tree = buildSessionTree(parent, [parent, child], [runtime]);
+
+  assert.equal(tree.find((session) => session.sessionId === child.id)?.depth, 1);
+  assert.equal(tree.find((session) => session.sessionId === child.id)?.parentSessionPath, parent.path);
+});
+
 test("resolves full session id", () => {
   assert.equal(resolveSessionReference(sessions, "12345678-aaaa").firstMessage, "one");
 });
@@ -239,6 +264,39 @@ test("session tree links children when the parent path only carries the session 
       ["019eafba", 0],
       ["019eafbf", 1],
     ],
+  );
+});
+
+test("session tree identity ignores colliding display prefixes", () => {
+  const firstRoot = {
+    sessionId: "12345678-aaaa-7111-8111-111111111111",
+    path: "/sessions/first-root.jsonl",
+    modified: "2026-01-01T00:00:01.000Z",
+  };
+  const secondRoot = {
+    sessionId: "12345678-bbbb-7222-8222-222222222222",
+    path: "/sessions/second-root.jsonl",
+    modified: "2026-01-01T00:00:02.000Z",
+  };
+  const child = {
+    sessionId: "abcdef12-cccc-7333-8333-333333333333",
+    path: "/sessions/child.jsonl",
+    parentSessionId: secondRoot.sessionId,
+    modified: "2026-01-01T00:00:03.000Z",
+  };
+  const ordered = orderSessionTree([firstRoot, secondRoot, child]);
+
+  assert.deepEqual(
+    ordered.map((session) => [session.sessionId, session.depth]),
+    [
+      [secondRoot.sessionId, 0],
+      [child.sessionId, 1],
+      [firstRoot.sessionId, 0],
+    ],
+  );
+  assert.throws(
+    () => assertSessionMessagingScope(firstRoot, child, ordered, { scope: "tree" }),
+    /different session tree/i,
   );
 });
 

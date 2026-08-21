@@ -22,7 +22,9 @@ export default async function piGentic(pi: ExtensionAPI) {
   await installPiHost();
   await installResumeIntegration(runtime);
   const orchestrator = createOrchestrator(pi, runtime, setAgentLabel);
-  const completionContext = createCompletionContext(pi);
+  const completionContext = createCompletionContext(pi, {
+    resolveSkills: (ctx) => orchestrator.applyPolicySnapshot(ctx).policy.resources.skills,
+  });
   const delegationContextBoundaries = new WeakMap<PiContext["sessionManager"], string | null>();
   let runtimeDisposed = false;
   let stopSessionLiveCardRefresh: (() => void) | undefined;
@@ -71,7 +73,6 @@ export default async function piGentic(pi: ExtensionAPI) {
     stopSessionLiveCardRefresh?.();
     restorePersistedCardDetails(ctx.sessionManager);
     stopSessionLiveCardRefresh = startSessionLiveCardRefresh(ctx, runtime);
-    completionContext.capture(ctx);
     reportDiagnostics(pi, ctx);
     try {
       const defaultResult = await orchestrator.loadDefaultAgent(ctx, event);
@@ -79,6 +80,7 @@ export default async function piGentic(pi: ExtensionAPI) {
       if (defaultResult) showCard(pi, defaultResult.text, defaultResult.details);
       else await orchestrator.applyCurrentPolicy(ctx);
       await synchronizeAgentsTool(ctx);
+      completionContext.capture(ctx);
     } catch (error) {
       ctx.ui.notify(`pi-gentic: ${getErrorMessage(error)}`, "warning");
     }

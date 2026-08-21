@@ -232,11 +232,16 @@ function modelsEqual(a: HostRecord | undefined, b: HostRecord | undefined) {
   return a?.provider === b?.provider && a?.id === b?.id;
 }
 
+export function sessionForContext(ctx: PiContext) {
+  return getLiveRuntimeState().hostSessions.get(ctx.sessionManager);
+}
+
 export function setActiveVisibleExtension(api: PiApi, ctx: PiContext) {
   const state = getLiveRuntimeState();
 
   state.activeApi = api;
   state.activeContext = ctx;
+  state.activeSession = state.hostSessions.get(ctx.sessionManager);
 }
 
 export function clearActiveVisibleExtension(api: PiApi) {

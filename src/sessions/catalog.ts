@@ -10,7 +10,7 @@ import {
 } from "../pi/sessions.js";
 import { reportRuntimeDiagnostic } from "../shared/diagnostics.js";
 import type { UnknownRecord } from "../shared/values.js";
-import { isRecord, shortSessionId } from "../shared/values.js";
+import { isRecord, omitUndefined, shortSessionId } from "../shared/values.js";
 
 const persistedSummaryCache = new Map();
 const PERSISTED_SUMMARY_CACHE_CAPACITY = 4_096;
@@ -55,7 +55,7 @@ export function resolveSessionReference(sessions: UnknownRecord[], reference: un
   if (!reference) throw new Error("sessionId is required.");
   const query = String(reference).toLowerCase();
   const matches = sessions.filter((session) =>
-    sessionKeys(session).some(
+    sessionReferenceKeys(session).some(
       (key) => String(key).toLowerCase() === query || String(key).toLowerCase().includes(query),
     ),
   );
@@ -206,7 +206,7 @@ export function filterSessionNeighborhood(
 function orderSessionCompletions(sessions: UnknownRecord[], currentSession: UnknownRecord | undefined) {
   if (!currentSession) return sortSessions(sessions, modifiedTime);
   const graph = indexSessions(sessions);
-  const currentKeys = sessionKeys(currentSession);
+  const currentKeys = sessionIdentityKeys(currentSession);
   const rank = (session: UnknownRecord) => {
     const parentKey = parentSessionKey(session, graph);
 
@@ -222,10 +222,9 @@ function mergeSessionSummaries(sessions: unknown[]) {
   const byKey = new Map<string, UnknownRecord>();
 
   for (const session of sessions.filter(isRecord)) {
-    const key = session.path ?? session.sessionId ?? session.id;
+    const key = sessionIdentityKeys(session)[0];
 
-    if (typeof key !== "string" || !key) continue;
-    byKey.set(key, { ...byKey.get(key), ...session });
+    if (key) byKey.set(key, { ...byKey.get(key), ...omitUndefined({ ...session }) });
   }
 
   return [...byKey.values()];
@@ -303,9 +302,9 @@ function cleanSessionMessage(text: string) {
 }
 
 function sameSessionIdentity(a: UnknownRecord | undefined, b: UnknownRecord | undefined) {
-  const rightKeys = new Set(sessionKeys(b));
+  const rightKeys = new Set(sessionIdentityKeys(b));
 
-  return sessionKeys(a).some((key) => rightKeys.has(key));
+  return sessionIdentityKeys(a).some((key) => rightKeys.has(key));
 }
 
 function sessionDisplayId(session: UnknownRecord | undefined) {
@@ -365,33 +364,35 @@ function sessionIdFromPath(value: unknown) {
   return String(value ?? "").match(/([0-9a-f]{8,}(?:-[0-9a-f-]+)?)\.jsonl$/i)?.[1];
 }
 
-function sessionKeys(session: UnknownRecord | undefined) {
+function sessionIdentityKeys(session: UnknownRecord | undefined) {
   if (!session) return [];
-  return [
-    session.path,
-    session.sessionId,
-    session.id,
-    shortSessionId(session.sessionId ?? session.id),
-    sessionIdFromPath(session.path),
-  ].filter((key): key is string => typeof key === "string" && key.length > 0);
+
+  return [session.path, session.sessionId, session.id, sessionIdFromPath(session.path)].filter(
+    (key): key is string => typeof key === "string" && key.length > 0,
+  );
+}
+
+function sessionReferenceKeys(session: UnknownRecord) {
+  const shortId = shortSessionId(session.sessionId ?? session.id);
+
+  return shortId ? [...sessionIdentityKeys(session), shortId] : sessionIdentityKeys(session);
 }
 
 function parentSessionKeys(session: UnknownRecord) {
-  return [
-    session.parentSessionPath,
-    session.parentSessionId,
-    sessionIdFromPath(session.parentSessionPath),
-    shortSessionId(session.parentSessionId),
-  ].filter((key): key is string => typeof key === "string" && key.length > 0);
+  return [session.parentSessionPath, session.parentSessionId, sessionIdFromPath(session.parentSessionPath)].filter(
+    (key): key is string => typeof key === "string" && key.length > 0,
+  );
 }
 
 function primarySessionKey(session: UnknownRecord) {
-  return String(session.path ?? session.sessionId ?? session.id ?? shortSessionId(session.sessionId ?? session.id));
+  return sessionIdentityKeys(session)[0] ?? "";
 }
 
 export function indexSessions(sessions: UnknownRecord[], normalize: (key: string) => string = (key) => key) {
   const byKey = new Map<string, UnknownRecord>();
-  for (const session of sessions) for (const key of sessionKeys(session)) byKey.set(normalize(key), session);
+
+  for (const session of sessions)
+    for (const key of sessionIdentityKeys(session)) byKey.set(normalize(key), session);
   const parent = (session: UnknownRecord) => {
     const key = parentSessionKeys(session)
       .map(normalize)
@@ -399,13 +400,14 @@ export function indexSessions(sessions: UnknownRecord[], normalize: (key: string
     return key ? byKey.get(key) : undefined;
   };
   const find = (identity: UnknownRecord) => {
-    const keys = new Set(sessionKeys(identity).map(normalize));
-    return keys.size
-      ? sessions.find((session) => sessionKeys(session).some((key) => keys.has(normalize(key))))
-      : undefined;
+    const key = sessionIdentityKeys(identity)
+      .map(normalize)
+      .find((candidate) => byKey.has(candidate));
+
+    return key ? byKey.get(key) : undefined;
   };
   const descendants = (identity: UnknownRecord) => {
-    const keys = new Set(sessionKeys(identity).map(normalize));
+    const keys = new Set(sessionIdentityKeys(identity).map(normalize));
     const result: UnknownRecord[] = [];
 
     for (let changed = true; changed; ) {
@@ -413,7 +415,7 @@ export function indexSessions(sessions: UnknownRecord[], normalize: (key: string
       for (const session of sessions) {
         if (result.includes(session) || !parentSessionKeys(session).some((key) => keys.has(normalize(key)))) continue;
         result.push(session);
-        for (const key of sessionKeys(session)) keys.add(normalize(key));
+        for (const key of sessionIdentityKeys(session)) keys.add(normalize(key));
         changed = true;
       }
     }
@@ -429,11 +431,11 @@ export function indexSessions(sessions: UnknownRecord[], normalize: (key: string
     return { sessions: [...path], rooted: false };
   };
   const isAncestor = (ancestor: UnknownRecord, session: UnknownRecord) => {
-    const ancestorKeys = new Set(sessionKeys(ancestor).map(normalize));
+    const ancestorKeys = new Set(sessionIdentityKeys(ancestor).map(normalize));
 
     return lineage(session)
       .sessions.slice(1)
-      .some((candidate) => sessionKeys(candidate).some((key) => ancestorKeys.has(normalize(key))));
+      .some((candidate) => sessionIdentityKeys(candidate).some((key) => ancestorKeys.has(normalize(key))));
   };
 
   return { byKey, descendants, find, isAncestor, lineage, parent };

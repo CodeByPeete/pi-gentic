@@ -27,6 +27,12 @@ function assertChildSessionBlocked(tool) {
 
 test("extension boundary registers and runs native Pi interfaces", async (t) => {
   const cwd = mkdtempSync(path.join(tmpdir(), "pi-gentic-extension-"));
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = path.join(cwd, "missing-user-agent-dir");
+  t.after(() => {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+  });
   const configRoot = path.join(cwd, ".pi", "extensions", "pi-gentic");
   const writeSettings = (settings = {}) =>
     writeFileSync(

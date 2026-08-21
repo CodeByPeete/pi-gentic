@@ -354,6 +354,21 @@ def session_selected(needle):
     return session_line(needle).lstrip().startswith((">", "›"))
 
 
+def open_selected_session(proc, target, label, timeout=10):
+    deadline = time.time() + timeout
+    next_submit = 0
+    while time.time() < deadline:
+        text = screen_text()
+        if "Resume Session" not in text and "Resumed session" in text and target in text:
+            return text
+        now = time.time()
+        if now >= next_submit and "Resume Session" in text and session_selected(target):
+            proc.write("\r")
+            next_submit = now + 0.25
+        time.sleep(0.05)
+    raise TimeoutError(f"Timed out waiting for {label}\n--- screen ---\n{screen_text()}")
+
+
 def tree_session_line(needle):
     return next((line for line in reversed(screen_text().splitlines()) if needle in line and ("└─" in line or "├─" in line)), "")
 
@@ -719,6 +734,13 @@ def capture_prompt_preflight_switch():
             time.sleep(0.1)
         if not completion_marker.exists():
             raise AssertionError("Submitted prompt did not complete after switching sessions")
+        proc.write("\x1b")
+        wait_for(
+            "resume selector closes after submitted prompt completion",
+            lambda value: "Resume Session" not in value,
+            timeout=10,
+        )
+        proc.write("/resume\r")
         completed = wait_for(
             "submitted session becomes inactive after completion",
             lambda value: "Resume Session" in value
@@ -1017,12 +1039,7 @@ def capture_resume_1000_sessions():
             target_elapsed = round((time.monotonic() - reopened_at) * 1000, 1)
             target_ready_ms.append(target_elapsed)
             switched_at = time.monotonic()
-            proc.write("\r")
-            wait_for(
-                f"switch to {label} cycle {attempt}",
-                lambda text: "Resume Session" not in text and "Resumed session" in text and target in text,
-                timeout=10,
-            )
+            open_selected_session(proc, target, f"switch to {label} cycle {attempt}")
             switch_elapsed = round((time.monotonic() - switched_at) * 1000, 1)
             switch_ms.append(switch_elapsed)
             if reopen_elapsed >= 2000:

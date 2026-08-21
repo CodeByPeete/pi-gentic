@@ -137,19 +137,8 @@ function resolvePromptFile(filePath: string, config: UnknownRecord, sourceRoot?:
 
     try {
       const canonicalCandidate = realpathSync(candidate);
-      const allowed = roots.some((root) => {
-        const canonicalRoot = realpathSync(root);
-        const relative = path.relative(canonicalRoot, canonicalCandidate);
 
-        return (
-          relative.length > 0 &&
-          relative !== ".." &&
-          !relative.startsWith(`..${path.sep}`) &&
-          !path.isAbsolute(relative)
-        );
-      });
-
-      if (allowed) return canonicalCandidate;
+      if (roots.some((root) => isInsideConfigurationRoot(canonicalCandidate, root))) return canonicalCandidate;
       recordPromptDiagnostic(config, candidate, "Ignored prompt file outside trusted configuration roots");
     } catch (error) {
       recordPromptDiagnostic(config, candidate, "Could not validate prompt file", error);
@@ -157,6 +146,18 @@ function resolvePromptFile(filePath: string, config: UnknownRecord, sourceRoot?:
   }
 
   return undefined;
+}
+
+function isInsideConfigurationRoot(candidate: string, root: string) {
+  try {
+    const relative = path.relative(realpathSync(root), candidate);
+
+    return (
+      relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function configurationRoots(config: UnknownRecord): string[] {

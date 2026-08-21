@@ -2,15 +2,14 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["test-effect/**/*.test.ts"],
+    include: ["test/effect/**/*.test.ts"],
     exclude: [
       ".agentfiles/**",
       ".repos/**",
       "dist/**",
       "node_modules/**",
-      "test/**",
-      "test-e2e/**",
-      "test-ui/**",
+      "test/e2e/**",
+      "test/ui/**",
     ],
     coverage: {
       provider: "v8",

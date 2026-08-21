@@ -16,8 +16,8 @@ if os.name == "nt":
 else:
     import pexpect
 
-PACKAGE = pathlib.Path(__file__).resolve().parents[1]
-OUTPUT = PACKAGE / "test-e2e" / "output"
+PACKAGE = pathlib.Path(__file__).resolve().parents[2]
+OUTPUT = PACKAGE / "test" / "e2e" / "output"
 AGENT_DIR = OUTPUT / "agent"
 SESSION_DIR = OUTPUT / "sessions"
 WORK_DIR = OUTPUT / "default-agent-work"

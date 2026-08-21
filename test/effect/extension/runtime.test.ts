@@ -1,12 +1,12 @@
 import { assert, describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber } from "effect";
-import { WorktreeManager } from "../../src/worktrees/manager.js";
-import { createDelegationId, DelegationFibers } from "../../src/delegation/runs.js";
+import { WorktreeManager } from "../../../src/worktrees/manager.js";
+import { createDelegationId, DelegationFibers } from "../../../src/delegation/runs.js";
 import {
   createExtensionRuntime,
   prepareWorktreeEffect,
   shouldDisposeExtensionRuntime,
-} from "../../src/extension-runtime.js";
+} from "../../../src/extension-runtime.js";
 
 describe("ExtensionRuntime", () => {
   it("survives native session replacement and closes at host shutdown", () => {

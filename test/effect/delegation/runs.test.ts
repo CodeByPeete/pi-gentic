@@ -8,7 +8,7 @@ import {
   listActiveDelegations,
   registerActiveDelegation,
   settleActiveDelegation,
-} from "../../src/delegation/runs.js";
+} from "../../../src/delegation/runs.js";
 
 const delegationId = Schema.decodeUnknownSync(DelegationId);
 

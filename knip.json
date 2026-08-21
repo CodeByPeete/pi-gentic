@@ -2,14 +2,14 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "test/**/*.test.js",
-    "test-effect/**/*.test.ts",
-    "test-ui/**/*.mjs"
+    "test/effect/**/*.test.ts",
+    "test/ui/**/*.mjs"
   ],
   "project": [
     "src/**/*.ts",
     "test/**/*.js",
-    "test-effect/**/*.ts",
-    "test-ui/**/*.mjs"
+    "test/**/*.ts",
+    "test/**/*.mjs"
   ],
   "ignoreDependencies": ["@effect/language-service"],
   "ignoreBinaries": ["magick"]

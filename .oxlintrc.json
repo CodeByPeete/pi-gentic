@@ -12,8 +12,8 @@
     ".repos/**",
     "dist/**",
     "node_modules/**",
-    "test-e2e/output/**",
-    "test-ui/output/**"
+    "test/e2e/output/**",
+    "test/ui/output/**"
   ],
   "rules": {
     "eslint/no-control-regex": "off",
@@ -36,7 +36,7 @@
   },
   "overrides": [
     {
-      "files": ["test/**/*.js", "test-ui/**/*.mjs"],
+      "files": ["test/**/*.js", "test/**/*.mjs"],
       "rules": {
         "typescript/no-floating-promises": "off"
       }

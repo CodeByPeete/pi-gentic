@@ -1,7 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { FastCheck } from "effect/testing";
-import { applyCapabilityFilter, reconcileActiveToolSelection } from "../../src/sessions/policy.js";
+import { applyCapabilityFilter, reconcileActiveToolSelection } from "../../../src/sessions/policy.js";
 
 const names = FastCheck.uniqueArray(FastCheck.stringMatching(/^[a-z][a-z0-9_-]{0,12}$/), { maxLength: 20 });
 const selectionCases: Array<[string, string[], string[], string[], string[]]> = [

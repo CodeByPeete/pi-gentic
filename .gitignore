@@ -1,10 +1,10 @@
 node_modules/
 dist/
 .repos/effect
-test-ui/output/
-test-e2e/output/
+test/ui/output/
+test/e2e/output/
 .agentfiles/
-.pi/extensions/pi-gentic/settings.json
+.pi/
 .playwright-cli/
 *.tgz
 .DS_Store

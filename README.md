@@ -33,13 +33,13 @@ Pi-gentic targets the current Pi release directly. Its Pi packages are pinned to
 Install the published package:
 
 ```bash
-pi install npm:pi-gentic@0.4.0
+pi install npm:pi-gentic@0.5.0
 ```
 
 Or install the matching Git release:
 
 ```bash
-pi install git:github.com/CodeByPeete/pi-gentic@v0.4.0
+pi install git:github.com/CodeByPeete/pi-gentic@v0.5.0
 ```
 
 Start Pi after installation. If Pi is already open, restart it so the extension can load.
@@ -471,7 +471,7 @@ flowchart TD
 
 One managed runtime belongs to the loaded extension. It owns background work, live updates, timers, process streams, and cleanup. Unknown data from Pi, processes, configuration, and saved cards is checked at its boundary. Long-running cards keep the latest 100 activities and the exact number of hidden activities.
 
-Private Pi integration lives under `src/pi/`. The package targets the installed current Pi release and keeps no older-version branch or migration layer. The [architecture guide](docs/architecture.md) explains every source file and its owner. The [host-contract decision](docs/adr/0002-pi-host-contract.md) and [Effect feature ledger](docs/effect-feature-ledger.md) record the runtime constraints.
+Private Pi integration lives under `src/pi/`. The package targets the installed current Pi release and keeps no older-version branch or migration layer. Feature folders own agent policy, delegation, sessions, worktrees, Pi integration, and terminal output.
 
 ### Development
 
@@ -496,7 +496,7 @@ npm run test:ui
 npm run test:e2e
 ```
 
-`npm run test:e2e` uses deterministic fixtures and does not call a live model. `npm run test:e2e:live` is optional and may call the configured model. Fresh visual output is written under `test-ui/output` and `test-e2e/output`.
+`npm run test:e2e` uses deterministic fixtures and does not call a live model. `npm run test:e2e:live` is optional and may call the configured model. Fresh visual output is written under `test/ui/output` and `test/e2e/output`.
 
 ### Release publishing
 
@@ -533,10 +533,11 @@ pi-gentic/
 │  ├─ pi/               direct integration with the installed Pi runtime
 │  ├─ ui/               commands, completions, cards, and terminal output
 │  └─ shared/           value and diagnostic helpers
-├─ test/                tests grouped by the same feature names
-├─ test-effect/         Effect-focused checks
-├─ test-ui/             terminal component captures
-├─ test-e2e/            full terminal-flow captures
+├─ test/                all automated checks and evidence
+│  ├─ effect/           Effect-focused checks
+│  ├─ ui/               UI checks and terminal component captures
+│  ├─ e2e/              full terminal-flow captures
+│  └─ */                checks grouped by source feature
 ├─ package.json         package details and commands
 └─ tsconfig.json        TypeScript settings
 ```

@@ -12,5 +12,5 @@
       }
     ]
   },
-  "include": ["src/**/*.ts", "test-effect/**/*.ts"]
+  "include": ["src/**/*.ts", "test/effect/**/*.ts"]
 }

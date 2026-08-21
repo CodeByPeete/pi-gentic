@@ -391,8 +391,7 @@ function primarySessionKey(session: UnknownRecord) {
 export function indexSessions(sessions: UnknownRecord[], normalize: (key: string) => string = (key) => key) {
   const byKey = new Map<string, UnknownRecord>();
 
-  for (const session of sessions)
-    for (const key of sessionIdentityKeys(session)) byKey.set(normalize(key), session);
+  for (const session of sessions) for (const key of sessionIdentityKeys(session)) byKey.set(normalize(key), session);
   const parent = (session: UnknownRecord) => {
     const key = parentSessionKeys(session)
       .map(normalize)

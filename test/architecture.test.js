@@ -22,6 +22,14 @@ function relativeSource(file, specifier) {
   return path.resolve(path.dirname(file), specifier.replace(/\.js$/, ".ts"));
 }
 
+test("all test suites share the test root", async () => {
+  const legacyTestRoots = (await readdir(path.resolve("."), { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("test-"))
+    .map((entry) => entry.name);
+
+  assert.deepEqual(legacyTestRoots, []);
+});
+
 test("source folders and imports expose one cycle-free feature architecture", async () => {
   const files = await sourceFiles();
   const known = new Set(files);

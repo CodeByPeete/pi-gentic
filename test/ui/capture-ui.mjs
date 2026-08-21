@@ -2,11 +2,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { startSessionLiveCardRefresh } from "../dist/ui/cards.js";
-import { renderAgentsResult } from "../dist/ui/card-renderer.js";
-import { setLiveCardDetails } from "../dist/ui/cards.js";
-import { clearLiveCardDetails } from "../test/support/cards.js";
-import { createExtensionRuntime } from "../dist/extension-runtime.js";
+import { startSessionLiveCardRefresh } from "../../dist/ui/cards.js";
+import { renderAgentsResult } from "../../dist/ui/card-renderer.js";
+import { setLiveCardDetails } from "../../dist/ui/cards.js";
+import { clearLiveCardDetails } from "../support/cards.js";
+import { createExtensionRuntime } from "../../dist/extension-runtime.js";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const outputDir = path.join(root, "output");

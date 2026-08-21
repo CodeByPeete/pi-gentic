@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { decodeAgentsToolInput, normalizeAgentsToolInput } from "../../src/agents/tool.js";
+import { decodeAgentsToolInput, normalizeAgentsToolInput } from "../../../src/agents/tool.js";
 
 describe("Agents tool contract", () => {
   it.effect("decodes action-specific fields into a discriminated request", () =>

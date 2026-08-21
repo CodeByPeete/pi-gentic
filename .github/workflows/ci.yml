@@ -75,5 +75,5 @@ jobs:
         with:
           name: ui-evidence-${{ runner.os }}
           path: |
-            test-ui/output/
-            test-e2e/output/
+            test/ui/output/
+            test/e2e/output/

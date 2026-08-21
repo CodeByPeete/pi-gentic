@@ -7,8 +7,8 @@ import pyte
 import winpty
 from PIL import Image, ImageDraw, ImageFont
 
-PACKAGE = pathlib.Path(__file__).resolve().parents[1]
-OUTPUT = PACKAGE / "test-e2e" / "output" / "async-queue-flow"
+PACKAGE = pathlib.Path(__file__).resolve().parents[2]
+OUTPUT = PACKAGE / "test" / "e2e" / "output" / "async-queue-flow"
 SESSION_DIR = OUTPUT / "sessions"
 WORK_DIR = OUTPUT / "work"
 PI = [shutil.which("pi") or "pi"]

@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Schema } from "effect";
-import { DelegationFibers, DelegationFibersLive, DelegationId } from "../../src/delegation/runs.js";
+import { DelegationFibers, DelegationFibersLive, DelegationId } from "../../../src/delegation/runs.js";
 
 const delegationId = Schema.decodeUnknownSync(DelegationId);
 

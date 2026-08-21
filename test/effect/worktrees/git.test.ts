@@ -2,7 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { Effect } from "effect";
 import { expect } from "vitest";
-import { runProcess } from "../../src/worktrees/git.js";
+import { runProcess } from "../../../src/worktrees/git.js";
 
 it.layer(NodeServices.layer)((it) => {
   it.effect("collects scoped process output with a timeout", () =>

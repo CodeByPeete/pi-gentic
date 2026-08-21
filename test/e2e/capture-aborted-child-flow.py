@@ -9,8 +9,8 @@ import pyte
 import winpty
 from PIL import Image, ImageDraw, ImageFont
 
-PACKAGE = pathlib.Path(__file__).resolve().parents[1]
-OUTPUT = PACKAGE / "test-e2e" / "output" / "aborted-child-flow"
+PACKAGE = pathlib.Path(__file__).resolve().parents[2]
+OUTPUT = PACKAGE / "test" / "e2e" / "output" / "aborted-child-flow"
 SESSION_DIR = OUTPUT / "sessions"
 WORK_DIR = OUTPUT / "work"
 RAW_LOG = OUTPUT / "terminal.raw.log"

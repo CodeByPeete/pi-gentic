@@ -1,6 +1,6 @@
 {
   "name": "pi-gentic",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "Pi extension for orchestrating durable agent sessions, delegation, and worktrees.",
   "repository": {
@@ -23,8 +23,6 @@
   "files": [
     "dist",
     "docs/assets",
-    "docs/architecture.md",
-    "docs/effect-feature-ledger.md",
     "README.md"
   ],
   "exports": "./dist/extension.js",
@@ -37,8 +35,8 @@
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.js\" \"test-effect/**/*.ts\" \"test-ui/**/*.mjs\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.js\" \"test-effect/**/*.ts\" \"test-ui/**/*.mjs\"",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.js\" \"test/**/*.ts\" \"test/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.js\" \"test/**/*.ts\" \"test/**/*.mjs\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:test": "tsc -p tsconfig.test.json",
     "check:effect": "effect-tsgo diagnostics --project tsconfig.json --strict --format pretty",
@@ -49,14 +47,14 @@
     "test:integration": "npm run build && node --test test/settings/trust.test.js test/worktrees/security.test.js",
     "test:coverage": "npm run build && node --experimental-test-coverage --test-coverage-lines=95 --test-coverage-functions=93 --test-coverage-branches=80 --test-coverage-include=dist/**/*.js --test-coverage-exclude=dist/pi/** --test-coverage-exclude=dist/delegation/runs.js --test-coverage-exclude=dist/extension-runtime.js --test-coverage-exclude=dist/ui/cards.js --test-coverage-exclude=dist/ui/card-renderer.js --test-coverage-exclude=dist/ui/terminal.js --test \"test/**/*.test.js\"",
     "test:coverage:effect": "vitest run --coverage",
-    "test:ui": "npm run build && node test-ui/capture-ui.mjs",
-    "test:e2e": "npm run build && python test-e2e/capture-terminal-ui.py --deterministic",
-    "test:e2e:skills": "npm run build && python test-e2e/capture-terminal-ui.py --skills",
-    "test:e2e:live": "npm run build && python test-e2e/capture-terminal-ui.py",
+    "test:ui": "npm run build && node test/ui/capture-ui.mjs",
+    "test:e2e": "npm run build && python test/e2e/capture-terminal-ui.py --deterministic",
+    "test:e2e:skills": "npm run build && python test/e2e/capture-terminal-ui.py --skills",
+    "test:e2e:live": "npm run build && python test/e2e/capture-terminal-ui.py",
     "prepare": "sh ./scripts/prepare-effect.sh",
     "prepack": "npm run build",
     "pack:dry": "npm pack --dry-run",
-    "lint": "oxlint src test test-effect test-ui",
+    "lint": "oxlint src test",
     "check:dead-code": "knip --no-progress --include files,dependencies,unlisted,binaries,exports,types",
     "test:host": "npm run build && node --test test/delegation/active-calls.test.js test/pi/host.test.js test/pi/runtime.test.js test/pi/resume.test.js test/pi/transitions.test.js",
     "test:coverage:host": "npm run build && node --experimental-test-coverage --test-coverage-lines=93 --test-coverage-functions=93 --test-coverage-branches=79 --test-coverage-include=dist/pi/**/*.js --test \"test/**/*.test.js\""

@@ -1,6 +1,6 @@
 import type { AgentDefinition } from "../settings.js";
 import type { UnknownRecord } from "../shared/values.js";
-import { isRecord, stringValue } from "../shared/values.js";
+import { isRecord, mergeFilterLayers, stringValue } from "../shared/values.js";
 
 const DEFAULT_ACCESS = ["*"];
 
@@ -13,13 +13,6 @@ export function applyFilterList(allNames: string[], filters: unknown = DEFAULT_A
         filters.filter((filter): filter is string => typeof filter === "string"),
       )
     : [...allNames];
-}
-
-export function mergeFilterLayers(...layers: unknown[]) {
-  const filters = layers.filter(Array.isArray);
-
-  if (filters.length === 0) return undefined;
-  return filters.some((layer) => layer.length === 0) ? [] : filters.flatMap((layer) => layer);
 }
 
 export function resolveSessionPolicy({

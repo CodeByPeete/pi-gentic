@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { buildResolvedSystemPrompt } from "../../dist/agents/prompts.js";
+import { loadConfiguration } from "../../dist/settings.js";
+import { resolveSessionPolicy } from "../../dist/sessions/policy.js";
 
 const basePrompt = [
   "Base SYSTEM.md prompt.",
@@ -50,6 +52,69 @@ function extensionInput(overrides = {}) {
   };
 }
 
+function withResolvedPromptFixture(
+  {
+    globalRules,
+    projectRules,
+    globalDefaults,
+    projectDefaults,
+    globalFiles = {},
+    projectFiles = {},
+    globalAgents = [],
+    projectAgents = [],
+    activeAgentName,
+  },
+  assertPrompt,
+) {
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-prompt-roots-"));
+  const roots = {
+    global: path.join(dir, "global"),
+    project: path.join(dir, "project"),
+  };
+
+  try {
+    for (const [scope, rules, defaults, agentDefinitions] of [
+      ["global", globalRules, globalDefaults, globalAgents],
+      ["project", projectRules, projectDefaults, projectAgents],
+    ]) {
+      mkdirSync(roots[scope], { recursive: true });
+      writeFileSync(
+        path.join(roots[scope], "settings.json"),
+        JSON.stringify({
+          agentDefaults: { systemPromptFiles: defaults },
+          agentlessSession: { systemPromptFiles: rules },
+          agentDefinitions,
+        }),
+      );
+    }
+
+    for (const [scope, files] of [
+      ["global", globalFiles],
+      ["project", projectFiles],
+    ]) {
+      for (const [filePath, content] of Object.entries(files)) {
+        const destination = path.join(roots[scope], filePath);
+        mkdirSync(path.dirname(destination), { recursive: true });
+        writeFileSync(destination, content);
+      }
+    }
+
+    const config = loadConfiguration({ roots: [roots.global, roots.project] });
+    const activeAgent = config.agents.find((agent) => agent.name === activeAgentName);
+    const policy = resolveSessionPolicy({
+      settings: config.settings,
+      activeAgent,
+      allAgents: [],
+      allTools: [],
+      allSkills: [],
+    });
+
+    assertPrompt(buildResolvedSystemPrompt({ baseSystemPrompt: "Base", config: { ...config, activeAgent }, policy }));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 test("resolved prompt preserves native Pi content and appends one delimited context", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-gentic-prompt-"));
 
@@ -74,6 +139,101 @@ test("resolved prompt preserves native Pi content and appends one delimited cont
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("project prompt references resolve from the configuration root that declares them", () => {
+  withResolvedPromptFixture(
+    {
+      globalRules: ["+prompts/shared.md"],
+      projectRules: ["*", "+prompts/shared.md"],
+      globalFiles: { "prompts/shared.md": "Global shared prompt." },
+      projectFiles: { "prompts/shared.md": "Project shared prompt." },
+    },
+    (prompt) => {
+      assert.match(prompt, /Project shared prompt/);
+      assert.doesNotMatch(prompt, /Global shared prompt/);
+    },
+  );
+});
+
+test("an inactive project agent cannot redirect an agentless prompt reference", () => {
+  withResolvedPromptFixture(
+    {
+      globalRules: ["+prompts/shared.md"],
+      projectRules: ["*"],
+      globalFiles: { "prompts/shared.md": "Global agentless prompt." },
+      projectFiles: { "prompts/shared.md": "Inactive project agent prompt." },
+      projectAgents: [{ name: "builder", systemPromptFiles: ["+prompts/shared.md"] }],
+    },
+    (prompt) => {
+      assert.match(prompt, /Global agentless prompt/);
+      assert.doesNotMatch(prompt, /Inactive project agent prompt/);
+    },
+  );
+});
+
+test("agent defaults cannot be redirected by an agentless project prompt", () => {
+  withResolvedPromptFixture(
+    {
+      globalRules: ["*"],
+      projectRules: ["*", "+prompts/shared.md"],
+      globalDefaults: ["+prompts/shared.md"],
+      projectDefaults: ["*"],
+      globalFiles: { "prompts/shared.md": "Global agent default prompt." },
+      projectFiles: { "prompts/shared.md": "Project agentless prompt." },
+      globalAgents: [{ name: "builder" }],
+      activeAgentName: "builder",
+    },
+    (prompt) => {
+      assert.match(prompt, /Global agent default prompt/);
+      assert.doesNotMatch(prompt, /Project agentless prompt/);
+    },
+  );
+});
+
+test("project prompt rules layer additions and removals over global prompt rules", () => {
+  withResolvedPromptFixture(
+    {
+      globalRules: ["+prompts/global.md", "+prompts/removed.md"],
+      projectRules: ["*", "-prompts/removed.md", "+prompts/local.md"],
+      globalFiles: {
+        "prompts/global.md": "Global inherited prompt.",
+        "prompts/removed.md": "Removed global prompt.",
+      },
+      projectFiles: { "prompts/local.md": "Local added prompt." },
+    },
+    (prompt) => {
+      assert.match(prompt, /Global inherited prompt/);
+      assert.match(prompt, /Local added prompt/);
+      assert.doesNotMatch(prompt, /Removed global prompt/);
+    },
+  );
+});
+
+test("project prompt exclusions remove inherited wildcard matches", () => {
+  withResolvedPromptFixture(
+    {
+      globalRules: ["prompts/inherited.md"],
+      projectRules: ["*", "!prompts/*.md", "+prompts/local.txt"],
+      globalFiles: { "prompts/inherited.md": "Excluded inherited prompt." },
+      projectFiles: { "prompts/local.txt": "Included local prompt." },
+    },
+    (prompt) => {
+      assert.match(prompt, /Included local prompt/);
+      assert.doesNotMatch(prompt, /Excluded inherited prompt/);
+    },
+  );
+});
+
+test("an empty project prompt rule list clears inherited prompts", () => {
+  withResolvedPromptFixture(
+    {
+      globalRules: ["+prompts/inherited.md"],
+      projectRules: [],
+      globalFiles: { "prompts/inherited.md": "Inherited prompt." },
+    },
+    (prompt) => assert.equal(prompt, "Base"),
+  );
 });
 
 test("agent policy never removes native prompts, project instructions, or skills", () => {

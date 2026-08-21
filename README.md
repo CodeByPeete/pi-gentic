@@ -439,6 +439,8 @@ Examples:
 { "tools": [] }
 ```
 
+Pi-gentic loads global extension settings first, then layers trusted project extension settings over them. Each relative `systemPromptFiles` path resolves from the `extensions/pi-gentic` folder that declared it. Project rules can use `+` to add a local prompt, `!` to exclude matching inherited paths, `-` to remove an exact inherited path even when another rule added it, and `[]` to clear inherited prompts.
+
 ## Privacy and local data
 
 Pi-gentic stores its state through Pi's session files and configuration folders. It does not send its own telemetry to an outside service.

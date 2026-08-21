@@ -1,7 +1,9 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { systemPromptFileKey, systemPromptFilePath } from "../settings.js";
 import type { UnknownRecord } from "../shared/values.js";
-import { errorMessage as getErrorMessage, isRecord } from "../shared/values.js";
+import { errorMessage as getErrorMessage, isRecord, stringArray } from "../shared/values.js";
+import { applyCapabilityFilter } from "../sessions/policy.js";
 
 export function buildResolvedSystemPrompt({
   baseSystemPrompt,
@@ -47,31 +49,41 @@ function delegationSections(config: UnknownRecord, policy: UnknownRecord) {
 
 function promptFileSections(config: UnknownRecord, filters: unknown) {
   return promptFileRefs(filters)
-    .map((filePath) => readPromptFile(filePath, config))
+    .map((filePath) => readPromptFile(filePath, config, configuredPromptFileRoot(config, filePath)))
     .filter((content) => content.length > 0);
 }
 
-function promptFileRefs(filters: unknown): string[] {
-  if (!Array.isArray(filters)) return [];
+function promptFileRefs(filters: unknown) {
+  const rules = stringArray(filters).map((rule) => rule.trim());
+  const candidates = new Map<string, string>();
 
-  return filters.flatMap((entry) => {
-    if (typeof entry !== "string") return [];
-    const value = entry.trim();
+  for (const rule of rules) {
+    const filePath = systemPromptFilePath(rule);
 
-    if (value.startsWith("+")) return [value.slice(1)];
-    if (
-      value.length === 0 ||
-      value === "*" ||
-      value.startsWith("!") ||
-      value.startsWith("-") ||
-      value.includes("*") ||
-      value.includes("?")
-    ) {
-      return [];
-    }
+    if (filePath) candidates.set(systemPromptFileKey(filePath), filePath);
+  }
 
-    return [value];
-  });
+  const selected = new Set(applyCapabilityFilter([...candidates.values()], rules).map(systemPromptFileKey));
+
+  return [...candidates].flatMap(([key, filePath]) => (selected.has(key) ? [filePath] : []));
+}
+
+function configuredPromptFileRoot(config: UnknownRecord, filePath: string) {
+  const roots = config.systemPromptFileRoots;
+
+  if (!isRecord(roots)) return undefined;
+  const activeAgent = isRecord(config.activeAgent) ? config.activeAgent : undefined;
+  const agentName = typeof activeAgent?.name === "string" ? activeAgent.name.toLowerCase() : undefined;
+  const agentRoots = agentName && roots.agents instanceof Map ? roots.agents.get(agentName) : undefined;
+  const agentRoot = promptFileRoot(agentRoots, filePath);
+
+  return agentRoot ?? promptFileRoot(activeAgent ? roots.agentDefaults : roots.agentlessSession, filePath);
+}
+
+function promptFileRoot(roots: unknown, filePath: string) {
+  const root = roots instanceof Map ? roots.get(systemPromptFileKey(filePath)) : undefined;
+
+  return typeof root === "string" ? root : undefined;
 }
 
 function agentsSection(config: UnknownRecord, policy: UnknownRecord) {
@@ -98,8 +110,8 @@ function canUseAgentsTool(policy: UnknownRecord) {
   return tools.includes("agents") && agents.length > 0;
 }
 
-function readPromptFile(filePath: string, config: UnknownRecord) {
-  const resolved = resolvePromptFile(filePath, config);
+function readPromptFile(filePath: string, config: UnknownRecord, root?: string) {
+  const resolved = resolvePromptFile(filePath, config, root);
 
   if (!resolved) return "";
 
@@ -111,10 +123,14 @@ function readPromptFile(filePath: string, config: UnknownRecord) {
   }
 }
 
-function resolvePromptFile(filePath: string, config: UnknownRecord) {
+function resolvePromptFile(filePath: string, config: UnknownRecord, sourceRoot?: string) {
   if (filePath.length === 0) return undefined;
   const roots = configurationRoots(config);
-  const candidates = path.isAbsolute(filePath) ? [filePath] : roots.map((root) => path.resolve(root, filePath));
+  const candidates = path.isAbsolute(filePath)
+    ? [filePath]
+    : sourceRoot
+      ? [path.resolve(sourceRoot, filePath)]
+      : roots.map((root) => path.resolve(root, filePath));
 
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;

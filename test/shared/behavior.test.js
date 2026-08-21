@@ -4,13 +4,14 @@ import {
   delegationReceipt as buildReceiptText,
   delegationReturn as buildReturnText,
 } from "../../dist/delegation/delivery.js";
-import { applyFilterList, mergeFilterLayers } from "../../dist/sessions/policy.js";
+import { applyFilterList } from "../../dist/sessions/policy.js";
 import { defaultAgentDir } from "../../dist/settings.js";
 import {
   booleanOr as chooseBoolean,
   errorMessage as getErrorMessage,
   formatDuration,
   isRecord,
+  mergeFilterLayers,
   nonNegativeInteger as parseIntegerRadius,
   shortestUniqueSessionId,
   shortSessionId,

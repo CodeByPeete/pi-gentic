@@ -36,6 +36,13 @@ export function stringList(value: unknown): string[] | undefined {
     .filter(Boolean);
 }
 
+export function mergeFilterLayers(...layers: unknown[]) {
+  const filters = layers.filter(Array.isArray);
+
+  if (filters.length === 0) return undefined;
+  return filters.some((layer) => layer.length === 0) ? [] : filters.flatMap((layer) => layer);
+}
+
 export function firstText(content: unknown) {
   return Array.isArray(content) ? content.find((item) => item?.type === "text")?.text : undefined;
 }

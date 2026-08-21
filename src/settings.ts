@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { Schema } from "effect";
-import { ancestorPaths, uniquePaths } from "./shared/values.js";
+import { ancestorPaths, mergeFilterLayers, uniquePaths } from "./shared/values.js";
 import type { UnknownRecord } from "./shared/values.js";
 import {
   booleanValue,
@@ -98,20 +98,29 @@ export function loadConfiguration(options: UnknownRecord = {}) {
   const settings = createDefaultSettings();
   const agentsByName = new Map<string, AgentDefinition>();
   const diagnostics: UnknownRecord[] = [];
+  const systemPromptFileRoots = {
+    agentDefaults: new Map<string, string>(),
+    agentlessSession: new Map<string, string>(),
+    agents: new Map<string, Map<string, string>>(),
+  };
 
   for (const root of roots) {
     const settingsPath = path.join(root, "settings.json");
     const rootSettings = readJsonObject(settingsPath, diagnostics);
 
     if (rootSettings) {
+      registerSystemPromptFileRoots(systemPromptFileRoots.agentDefaults, root, rootSettings.agentDefaults);
+      registerSystemPromptFileRoots(systemPromptFileRoots.agentlessSession, root, rootSettings.agentlessSession);
       mergeRootSettings(settings, rootSettings);
 
       for (const definition of normalizeAgentDefinitions(rootSettings.agentDefinitions, settingsPath, diagnostics)) {
+        systemPromptFileRoots.agents.set(definition.name.toLowerCase(), promptFileRoots(root, definition));
         agentsByName.set(String(definition.name), definition);
       }
     }
 
     for (const definition of loadMarkdownAgents(path.join(root, "agents"), diagnostics)) {
+      systemPromptFileRoots.agents.set(definition.name.toLowerCase(), promptFileRoots(root, definition));
       agentsByName.set(String(definition.name), definition);
     }
   }
@@ -123,7 +132,42 @@ export function loadConfiguration(options: UnknownRecord = {}) {
     agents,
     diagnostics,
     roots,
+    systemPromptFileRoots,
   };
+}
+
+export function systemPromptFilePath(rule: unknown) {
+  if (typeof rule !== "string") return undefined;
+  const value = rule.trim();
+  const prefix = value[0] ?? "";
+
+  if (!value || ["!", "-"].includes(prefix)) return undefined;
+  const filePath = prefix === "+" ? value.slice(1) : value;
+
+  return filePath && !filePath.includes("*") && !filePath.includes("?") ? filePath : undefined;
+}
+
+export function systemPromptFileKey(filePath: string) {
+  const normalized = path.normalize(filePath);
+
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function promptFileRoots(root: string, policy: unknown) {
+  const registry = new Map<string, string>();
+  registerSystemPromptFileRoots(registry, root, policy);
+
+  return registry;
+}
+
+function registerSystemPromptFileRoots(registry: Map<string, string>, root: string, policy: unknown) {
+  if (!isRecord(policy)) return;
+
+  for (const rule of toStringArray(policy.systemPromptFiles) ?? []) {
+    const filePath = systemPromptFilePath(rule);
+
+    if (filePath) registry.set(systemPromptFileKey(filePath), root);
+  }
 }
 
 function createDefaultSettings() {
@@ -140,13 +184,13 @@ function mergeRootSettings(target: UnknownRecord, source: unknown) {
   if (!isRecord(source)) return;
 
   if (isRecord(source.agentlessSession))
-    target.agentlessSession = mergeObjects(
+    target.agentlessSession = mergeRootPolicy(
       isRecord(target.agentlessSession) ? target.agentlessSession : {},
       source.agentlessSession,
     );
 
   if (isRecord(source.agentDefaults))
-    target.agentDefaults = mergeObjects(
+    target.agentDefaults = mergeRootPolicy(
       isRecord(target.agentDefaults) ? target.agentDefaults : {},
       source.agentDefaults,
     );
@@ -160,6 +204,16 @@ function mergeRootSettings(target: UnknownRecord, source: unknown) {
 
   if (typeof source.sessionMessagingScope === "string" && ["tree", "all"].includes(source.sessionMessagingScope))
     target.sessionMessagingScope = source.sessionMessagingScope;
+}
+
+function mergeRootPolicy(base: UnknownRecord, patch: UnknownRecord) {
+  const merged = mergeObjects(base, patch);
+
+  if (Array.isArray(patch.systemPromptFiles)) {
+    merged.systemPromptFiles = mergeFilterLayers(base.systemPromptFiles, patch.systemPromptFiles);
+  }
+
+  return merged;
 }
 
 function mergeObjects(base: UnknownRecord, patch: UnknownRecord) {

@@ -391,6 +391,19 @@ def close_resume_selector(proc, label, timeout=10):
     )
 
 
+def refresh_resume_until(proc, label, completed, timeout=20):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        remaining = max(0.1, deadline - time.time())
+        close_resume_selector(proc, f"close resume before {label}", min(10, remaining))
+        proc.write("/resume\r")
+        text = wait_for(label, lambda value: "Resume Session" in value, min(10, remaining))
+        if completed(text):
+            return text
+        time.sleep(0.25)
+    raise TimeoutError(f"Timed out waiting for {label}\n--- screen ---\n{screen_text()}")
+
+
 def tree_session_line(needle):
     return next((line for line in reversed(screen_text().splitlines()) if needle in line and ("└─" in line or "├─" in line)), "")
 
@@ -756,14 +769,11 @@ def capture_prompt_preflight_switch():
             time.sleep(0.1)
         if not completion_marker.exists():
             raise AssertionError("Submitted prompt did not complete after switching sessions")
-        close_resume_selector(proc, "resume selector closes after submitted prompt completion")
-        proc.write("/resume\r")
-        completed = wait_for(
+        completed = refresh_resume_until(
+            proc,
             "submitted session becomes inactive after completion",
-            lambda value: "Resume Session" in value
-            and "019ff21f" in value
+            lambda value: "019ff21f" in value
             and "Inactive:" not in next((line for line in value.splitlines() if "019ff21f" in line), ""),
-            timeout=20,
         )
         if "This extension ctx is stale" in completed:
             raise AssertionError("Submitted prompt resumed through a stale session")

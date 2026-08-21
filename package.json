@@ -55,7 +55,7 @@
     "prepack": "npm run build",
     "pack:dry": "npm pack --dry-run",
     "lint": "oxlint src test",
-    "check:dead-code": "knip --no-progress --include files,dependencies,unlisted,binaries,exports,types",
+    "check:dead-code": "npm run build && knip --no-progress --include files,dependencies,unlisted,binaries,exports,types",
     "test:host": "npm run build && node --test test/delegation/active-calls.test.js test/pi/host.test.js test/pi/runtime.test.js test/pi/resume.test.js test/pi/transitions.test.js",
     "test:coverage:host": "npm run build && node --experimental-test-coverage --test-coverage-lines=93 --test-coverage-functions=93 --test-coverage-branches=79 --test-coverage-include=dist/pi/**/*.js --test \"test/**/*.test.js\""
   },
